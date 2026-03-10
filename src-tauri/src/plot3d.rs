@@ -146,6 +146,296 @@ impl Precision {
     }
 }
 
+// Marching Cubes lookup tables
+// Edge table: for each of 256 cube configurations, which edges are crossed
+const EDGE_TABLE: [i32; 256] = [
+    0x0, 0x109, 0x203, 0x30a, 0x406, 0x50f, 0x605, 0x70c, 0x80c, 0x905, 0xa0f, 0xb06, 0xc0a, 0xd03,
+    0xe09, 0xf00, 0x190, 0x99, 0x393, 0x29a, 0x596, 0x49f, 0x795, 0x69c, 0x99c, 0x895, 0xb9f,
+    0xa96, 0xd9a, 0xc93, 0xf99, 0xe90, 0x230, 0x339, 0x33, 0x13a, 0x636, 0x73f, 0x435, 0x53c,
+    0xa3c, 0xb35, 0x83f, 0x936, 0xe3a, 0xf33, 0xc39, 0xd30, 0x3a0, 0x2a9, 0x1a3, 0xaa, 0x7a6,
+    0x6af, 0x5a5, 0x4ac, 0xbac, 0xaa5, 0x9af, 0x8a6, 0xfaa, 0xea3, 0xda9, 0xca0, 0x460, 0x569,
+    0x663, 0x76a, 0x66, 0x16f, 0x265, 0x36c, 0xc6c, 0xd65, 0xe6f, 0xf66, 0x86a, 0x963, 0xa69,
+    0xb60, 0x5f0, 0x4f9, 0x7f3, 0x6fa, 0x1f6, 0xff, 0x3f5, 0x2fc, 0xdfc, 0xcf5, 0xfff, 0xef6,
+    0x9fa, 0x8f3, 0xbf9, 0xaf0, 0x650, 0x759, 0x453, 0x55a, 0x256, 0x35f, 0x55, 0x15c, 0xe5c,
+    0xf55, 0xc5f, 0xd56, 0xa5a, 0xb53, 0x859, 0x950, 0x7c0, 0x6c9, 0x5c3, 0x4ca, 0x3c6, 0x2cf,
+    0x1c5, 0xcc, 0xfcc, 0xec5, 0xdcf, 0xcc6, 0xbca, 0xac3, 0x9c9, 0x8c0, 0x8c0, 0x9c9, 0xac3,
+    0xbca, 0xcc6, 0xdcf, 0xec5, 0xfcc, 0xcc, 0x1c5, 0x2cf, 0x3c6, 0x4ca, 0x5c3, 0x6c9, 0x7c0,
+    0x950, 0x859, 0xb53, 0xa5a, 0xd56, 0xc5f, 0xf55, 0xe5c, 0x15c, 0x55, 0x35f, 0x256, 0x55a,
+    0x453, 0x759, 0x650, 0xaf0, 0xbf9, 0x8f3, 0x9fa, 0xef6, 0xfff, 0xcf5, 0xdfc, 0x2fc, 0x3f5,
+    0xff, 0x1f6, 0x6fa, 0x7f3, 0x4f9, 0x5f0, 0xb60, 0xa69, 0x963, 0x86a, 0xf66, 0xe6f, 0xd65,
+    0xc6c, 0x36c, 0x265, 0x16f, 0x66, 0x76a, 0x663, 0x569, 0x460, 0xca0, 0xda9, 0xea3, 0xfaa,
+    0x8a6, 0x9af, 0xaa5, 0xbac, 0x4ac, 0x5a5, 0x6af, 0x7a6, 0xaa, 0x1a3, 0x2a9, 0x3a0, 0xd30,
+    0xc39, 0xf33, 0xe3a, 0x936, 0x83f, 0xb35, 0xa3c, 0x53c, 0x435, 0x73f, 0x636, 0x13a, 0x33,
+    0x339, 0x230, 0xe90, 0xf99, 0xc93, 0xd9a, 0xa96, 0xb9f, 0x895, 0x99c, 0x69c, 0x795, 0x49f,
+    0x596, 0x29a, 0x393, 0x99, 0x190, 0xf00, 0xe09, 0xd03, 0xc0a, 0xb06, 0xa0f, 0x905, 0x80c,
+    0x70c, 0x605, 0x50f, 0x406, 0x30a, 0x203, 0x109, 0x0,
+];
+
+// Triangle table: for each configuration, lists of edges that form triangles
+// -1 marks end of triangle list for that configuration
+const TRI_TABLE: [[i32; 16]; 256] = [
+    [
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    ],
+    [0, 8, 3, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [0, 1, 9, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [1, 8, 3, 9, 8, 1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [1, 2, 10, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [0, 8, 3, 1, 2, 10, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [9, 2, 10, 0, 2, 9, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [2, 8, 3, 2, 10, 8, 10, 9, 8, -1, -1, -1, -1, -1, -1, -1],
+    [3, 11, 2, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [0, 11, 2, 8, 11, 0, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [1, 9, 0, 2, 3, 11, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [1, 11, 2, 1, 9, 11, 9, 8, 11, -1, -1, -1, -1, -1, -1, -1],
+    [3, 10, 1, 11, 10, 3, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [0, 10, 1, 0, 8, 10, 8, 11, 10, -1, -1, -1, -1, -1, -1, -1],
+    [3, 9, 0, 3, 11, 9, 11, 10, 9, -1, -1, -1, -1, -1, -1, -1],
+    [9, 8, 10, 10, 8, 11, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [4, 7, 8, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [4, 3, 0, 7, 3, 4, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [0, 1, 9, 8, 4, 7, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [4, 1, 9, 4, 7, 1, 7, 3, 1, -1, -1, -1, -1, -1, -1, -1],
+    [1, 2, 10, 8, 4, 7, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [3, 4, 7, 3, 0, 4, 1, 2, 10, -1, -1, -1, -1, -1, -1, -1],
+    [9, 2, 10, 9, 0, 2, 8, 4, 7, -1, -1, -1, -1, -1, -1, -1],
+    [2, 10, 9, 2, 9, 7, 2, 7, 3, 7, 9, 4, -1, -1, -1, -1],
+    [8, 4, 7, 3, 11, 2, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [11, 4, 7, 11, 2, 4, 2, 0, 4, -1, -1, -1, -1, -1, -1, -1],
+    [9, 0, 1, 8, 4, 7, 2, 3, 11, -1, -1, -1, -1, -1, -1, -1],
+    [4, 7, 11, 9, 4, 11, 9, 11, 2, 9, 2, 1, -1, -1, -1, -1],
+    [3, 10, 1, 3, 11, 10, 7, 8, 4, -1, -1, -1, -1, -1, -1, -1],
+    [1, 11, 10, 1, 4, 11, 1, 0, 4, 7, 11, 4, -1, -1, -1, -1],
+    [4, 7, 8, 9, 0, 11, 9, 11, 10, 11, 0, 3, -1, -1, -1, -1],
+    [4, 7, 11, 4, 11, 9, 9, 11, 10, -1, -1, -1, -1, -1, -1, -1],
+    [9, 5, 4, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [9, 5, 4, 0, 8, 3, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [0, 5, 4, 1, 5, 0, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [8, 5, 4, 8, 3, 5, 3, 1, 5, -1, -1, -1, -1, -1, -1, -1],
+    [1, 2, 10, 9, 5, 4, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [3, 0, 8, 1, 2, 10, 4, 9, 5, -1, -1, -1, -1, -1, -1, -1],
+    [5, 2, 10, 5, 4, 2, 4, 0, 2, -1, -1, -1, -1, -1, -1, -1],
+    [2, 10, 5, 3, 2, 5, 3, 5, 4, 3, 4, 8, -1, -1, -1, -1],
+    [9, 5, 4, 2, 3, 11, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [0, 11, 2, 0, 8, 11, 4, 9, 5, -1, -1, -1, -1, -1, -1, -1],
+    [0, 5, 4, 0, 1, 5, 2, 3, 11, -1, -1, -1, -1, -1, -1, -1],
+    [2, 1, 5, 2, 5, 8, 2, 8, 11, 4, 8, 5, -1, -1, -1, -1],
+    [10, 3, 11, 10, 1, 3, 9, 5, 4, -1, -1, -1, -1, -1, -1, -1],
+    [4, 9, 5, 0, 8, 1, 8, 10, 1, 8, 11, 10, -1, -1, -1, -1],
+    [5, 4, 0, 5, 0, 11, 5, 11, 10, 11, 0, 3, -1, -1, -1, -1],
+    [5, 4, 8, 5, 8, 10, 10, 8, 11, -1, -1, -1, -1, -1, -1, -1],
+    [9, 7, 8, 5, 7, 9, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [9, 3, 0, 9, 5, 3, 5, 7, 3, -1, -1, -1, -1, -1, -1, -1],
+    [0, 7, 8, 0, 1, 7, 1, 5, 7, -1, -1, -1, -1, -1, -1, -1],
+    [1, 5, 3, 3, 5, 7, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [9, 7, 8, 9, 5, 7, 10, 1, 2, -1, -1, -1, -1, -1, -1, -1],
+    [10, 1, 2, 9, 5, 0, 5, 3, 0, 5, 7, 3, -1, -1, -1, -1],
+    [8, 0, 2, 8, 2, 5, 8, 5, 7, 10, 5, 2, -1, -1, -1, -1],
+    [2, 10, 5, 2, 5, 3, 3, 5, 7, -1, -1, -1, -1, -1, -1, -1],
+    [7, 9, 5, 7, 8, 9, 3, 11, 2, -1, -1, -1, -1, -1, -1, -1],
+    [9, 5, 7, 9, 7, 2, 9, 2, 0, 2, 7, 11, -1, -1, -1, -1],
+    [2, 3, 11, 0, 1, 8, 1, 7, 8, 1, 5, 7, -1, -1, -1, -1],
+    [11, 2, 1, 11, 1, 7, 7, 1, 5, -1, -1, -1, -1, -1, -1, -1],
+    [9, 5, 8, 8, 5, 7, 10, 1, 3, 10, 3, 11, -1, -1, -1, -1],
+    [5, 7, 0, 5, 0, 9, 7, 11, 0, 1, 0, 10, 11, 10, 0, -1],
+    [11, 10, 0, 11, 0, 3, 10, 5, 0, 8, 0, 7, 5, 7, 0, -1],
+    [11, 10, 5, 7, 11, 5, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [10, 6, 5, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [0, 8, 3, 5, 10, 6, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [9, 0, 1, 5, 10, 6, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [1, 8, 3, 1, 9, 8, 5, 10, 6, -1, -1, -1, -1, -1, -1, -1],
+    [1, 6, 5, 2, 6, 1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [1, 6, 5, 1, 2, 6, 3, 0, 8, -1, -1, -1, -1, -1, -1, -1],
+    [9, 6, 5, 9, 0, 6, 0, 2, 6, -1, -1, -1, -1, -1, -1, -1],
+    [5, 9, 8, 5, 8, 2, 5, 2, 6, 3, 2, 8, -1, -1, -1, -1],
+    [2, 3, 11, 10, 6, 5, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [11, 0, 8, 11, 2, 0, 10, 6, 5, -1, -1, -1, -1, -1, -1, -1],
+    [0, 1, 9, 2, 3, 11, 5, 10, 6, -1, -1, -1, -1, -1, -1, -1],
+    [5, 10, 6, 1, 9, 2, 9, 11, 2, 9, 8, 11, -1, -1, -1, -1],
+    [6, 3, 11, 6, 5, 3, 5, 1, 3, -1, -1, -1, -1, -1, -1, -1],
+    [0, 8, 11, 0, 11, 5, 0, 5, 1, 5, 11, 6, -1, -1, -1, -1],
+    [3, 11, 6, 0, 3, 6, 0, 6, 5, 0, 5, 9, -1, -1, -1, -1],
+    [6, 5, 9, 6, 9, 11, 11, 9, 8, -1, -1, -1, -1, -1, -1, -1],
+    [5, 10, 6, 4, 7, 8, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [4, 3, 0, 4, 7, 3, 6, 5, 10, -1, -1, -1, -1, -1, -1, -1],
+    [1, 9, 0, 5, 10, 6, 8, 4, 7, -1, -1, -1, -1, -1, -1, -1],
+    [10, 6, 5, 1, 9, 7, 1, 7, 3, 7, 9, 4, -1, -1, -1, -1],
+    [6, 1, 2, 6, 5, 1, 4, 7, 8, -1, -1, -1, -1, -1, -1, -1],
+    [1, 2, 5, 5, 2, 6, 3, 0, 4, 3, 4, 7, -1, -1, -1, -1],
+    [8, 4, 7, 9, 0, 5, 0, 6, 5, 0, 2, 6, -1, -1, -1, -1],
+    [7, 3, 9, 7, 9, 4, 3, 2, 9, 5, 9, 6, 2, 6, 9, -1],
+    [3, 11, 2, 7, 8, 4, 10, 6, 5, -1, -1, -1, -1, -1, -1, -1],
+    [5, 10, 6, 4, 7, 2, 4, 2, 0, 2, 7, 11, -1, -1, -1, -1],
+    [0, 1, 9, 4, 7, 8, 2, 3, 11, 5, 10, 6, -1, -1, -1, -1],
+    [9, 2, 1, 9, 11, 2, 9, 4, 11, 7, 11, 4, 5, 10, 6, -1],
+    [8, 4, 7, 3, 11, 5, 3, 5, 1, 5, 11, 6, -1, -1, -1, -1],
+    [5, 1, 11, 5, 11, 6, 1, 0, 11, 7, 11, 4, 0, 4, 11, -1],
+    [0, 5, 9, 0, 6, 5, 0, 3, 6, 11, 6, 3, 8, 4, 7, -1],
+    [6, 5, 9, 6, 9, 11, 4, 7, 9, 7, 11, 9, -1, -1, -1, -1],
+    [10, 4, 9, 6, 4, 10, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [4, 10, 6, 4, 9, 10, 0, 8, 3, -1, -1, -1, -1, -1, -1, -1],
+    [10, 0, 1, 10, 6, 0, 6, 4, 0, -1, -1, -1, -1, -1, -1, -1],
+    [8, 3, 1, 8, 1, 6, 8, 6, 4, 6, 1, 10, -1, -1, -1, -1],
+    [1, 4, 9, 1, 2, 4, 2, 6, 4, -1, -1, -1, -1, -1, -1, -1],
+    [3, 0, 8, 1, 2, 9, 2, 4, 9, 2, 6, 4, -1, -1, -1, -1],
+    [0, 2, 4, 4, 2, 6, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [8, 3, 2, 8, 2, 4, 4, 2, 6, -1, -1, -1, -1, -1, -1, -1],
+    [10, 4, 9, 10, 6, 4, 11, 2, 3, -1, -1, -1, -1, -1, -1, -1],
+    [0, 8, 2, 2, 8, 11, 4, 9, 10, 4, 10, 6, -1, -1, -1, -1],
+    [3, 11, 2, 0, 1, 6, 0, 6, 4, 6, 1, 10, -1, -1, -1, -1],
+    [6, 4, 1, 6, 1, 10, 4, 8, 1, 2, 1, 11, 8, 11, 1, -1],
+    [9, 6, 4, 9, 3, 6, 9, 1, 3, 11, 6, 3, -1, -1, -1, -1],
+    [8, 11, 1, 8, 1, 0, 11, 6, 1, 9, 1, 4, 6, 4, 1, -1],
+    [3, 11, 6, 3, 6, 0, 0, 6, 4, -1, -1, -1, -1, -1, -1, -1],
+    [6, 4, 8, 11, 6, 8, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [7, 10, 6, 7, 8, 10, 8, 9, 10, -1, -1, -1, -1, -1, -1, -1],
+    [0, 7, 3, 0, 10, 7, 0, 9, 10, 6, 7, 10, -1, -1, -1, -1],
+    [10, 6, 7, 1, 10, 7, 1, 7, 8, 1, 8, 0, -1, -1, -1, -1],
+    [10, 6, 7, 10, 7, 1, 1, 7, 3, -1, -1, -1, -1, -1, -1, -1],
+    [1, 2, 6, 1, 6, 8, 1, 8, 9, 8, 6, 7, -1, -1, -1, -1],
+    [2, 6, 9, 2, 9, 1, 6, 7, 9, 0, 9, 3, 7, 3, 9, -1],
+    [7, 8, 0, 7, 0, 6, 6, 0, 2, -1, -1, -1, -1, -1, -1, -1],
+    [7, 3, 2, 6, 7, 2, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [2, 3, 11, 10, 6, 8, 10, 8, 9, 8, 6, 7, -1, -1, -1, -1],
+    [2, 0, 7, 2, 7, 11, 0, 9, 7, 6, 7, 10, 9, 10, 7, -1],
+    [1, 8, 0, 1, 7, 8, 1, 10, 7, 6, 7, 10, 2, 3, 11, -1],
+    [11, 2, 1, 11, 1, 7, 10, 6, 1, 6, 7, 1, -1, -1, -1, -1],
+    [8, 9, 6, 8, 6, 7, 9, 1, 6, 11, 6, 3, 1, 3, 6, -1],
+    [0, 9, 1, 11, 6, 7, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [7, 8, 0, 7, 0, 6, 3, 11, 0, 11, 6, 0, -1, -1, -1, -1],
+    [7, 11, 6, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [7, 6, 11, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [3, 0, 8, 11, 7, 6, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [0, 1, 9, 11, 7, 6, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [8, 1, 9, 8, 3, 1, 11, 7, 6, -1, -1, -1, -1, -1, -1, -1],
+    [10, 1, 2, 6, 11, 7, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [1, 2, 10, 3, 0, 8, 6, 11, 7, -1, -1, -1, -1, -1, -1, -1],
+    [2, 9, 0, 2, 10, 9, 6, 11, 7, -1, -1, -1, -1, -1, -1, -1],
+    [6, 11, 7, 2, 10, 3, 10, 8, 3, 10, 9, 8, -1, -1, -1, -1],
+    [7, 2, 3, 6, 2, 7, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [7, 0, 8, 7, 6, 0, 6, 2, 0, -1, -1, -1, -1, -1, -1, -1],
+    [2, 7, 6, 2, 3, 7, 0, 1, 9, -1, -1, -1, -1, -1, -1, -1],
+    [1, 6, 2, 1, 8, 6, 1, 9, 8, 8, 7, 6, -1, -1, -1, -1],
+    [10, 7, 6, 10, 1, 7, 1, 3, 7, -1, -1, -1, -1, -1, -1, -1],
+    [10, 7, 6, 1, 7, 10, 1, 8, 7, 1, 0, 8, -1, -1, -1, -1],
+    [0, 3, 7, 0, 7, 10, 0, 10, 9, 6, 10, 7, -1, -1, -1, -1],
+    [7, 6, 10, 7, 10, 8, 8, 10, 9, -1, -1, -1, -1, -1, -1, -1],
+    [6, 8, 4, 11, 8, 6, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [3, 6, 11, 3, 0, 6, 0, 4, 6, -1, -1, -1, -1, -1, -1, -1],
+    [8, 6, 11, 8, 4, 6, 9, 0, 1, -1, -1, -1, -1, -1, -1, -1],
+    [9, 4, 6, 9, 6, 3, 9, 3, 1, 11, 3, 6, -1, -1, -1, -1],
+    [6, 8, 4, 6, 11, 8, 2, 10, 1, -1, -1, -1, -1, -1, -1, -1],
+    [1, 2, 10, 3, 0, 11, 0, 6, 11, 0, 4, 6, -1, -1, -1, -1],
+    [4, 11, 8, 4, 6, 11, 0, 2, 9, 2, 10, 9, -1, -1, -1, -1],
+    [10, 9, 3, 10, 3, 2, 9, 4, 3, 11, 3, 6, 4, 6, 3, -1],
+    [8, 2, 3, 8, 4, 2, 4, 6, 2, -1, -1, -1, -1, -1, -1, -1],
+    [0, 4, 2, 4, 6, 2, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [1, 9, 0, 2, 3, 4, 2, 4, 6, 4, 3, 8, -1, -1, -1, -1],
+    [1, 9, 4, 1, 4, 2, 2, 4, 6, -1, -1, -1, -1, -1, -1, -1],
+    [8, 1, 3, 8, 6, 1, 8, 4, 6, 6, 10, 1, -1, -1, -1, -1],
+    [10, 1, 0, 10, 0, 6, 6, 0, 4, -1, -1, -1, -1, -1, -1, -1],
+    [4, 6, 3, 4, 3, 8, 6, 10, 3, 0, 3, 9, 10, 9, 3, -1],
+    [10, 9, 4, 6, 10, 4, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [4, 9, 5, 7, 6, 11, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [0, 8, 3, 4, 9, 5, 11, 7, 6, -1, -1, -1, -1, -1, -1, -1],
+    [5, 0, 1, 5, 4, 0, 7, 6, 11, -1, -1, -1, -1, -1, -1, -1],
+    [11, 7, 6, 8, 3, 4, 3, 5, 4, 3, 1, 5, -1, -1, -1, -1],
+    [9, 5, 4, 10, 1, 2, 7, 6, 11, -1, -1, -1, -1, -1, -1, -1],
+    [6, 11, 7, 1, 2, 10, 0, 8, 3, 4, 9, 5, -1, -1, -1, -1],
+    [7, 6, 11, 5, 4, 10, 4, 2, 10, 4, 0, 2, -1, -1, -1, -1],
+    [3, 4, 8, 3, 5, 4, 3, 2, 5, 10, 5, 2, 11, 7, 6, -1],
+    [7, 2, 3, 7, 6, 2, 5, 4, 9, -1, -1, -1, -1, -1, -1, -1],
+    [9, 5, 4, 0, 8, 6, 0, 6, 2, 6, 8, 7, -1, -1, -1, -1],
+    [3, 6, 2, 3, 7, 6, 1, 5, 0, 5, 4, 0, -1, -1, -1, -1],
+    [6, 2, 8, 6, 8, 7, 2, 1, 8, 4, 8, 5, 1, 5, 8, -1],
+    [9, 5, 4, 10, 1, 6, 1, 7, 6, 1, 3, 7, -1, -1, -1, -1],
+    [1, 6, 10, 1, 7, 6, 1, 0, 7, 8, 7, 0, 9, 5, 4, -1],
+    [4, 0, 10, 4, 10, 5, 0, 3, 10, 6, 10, 7, 3, 7, 10, -1],
+    [7, 6, 10, 7, 10, 8, 5, 4, 10, 4, 8, 10, -1, -1, -1, -1],
+    [6, 9, 5, 6, 11, 9, 11, 8, 9, -1, -1, -1, -1, -1, -1, -1],
+    [3, 6, 11, 0, 6, 3, 0, 5, 6, 0, 9, 5, -1, -1, -1, -1],
+    [0, 11, 8, 0, 5, 11, 0, 1, 5, 5, 6, 11, -1, -1, -1, -1],
+    [6, 11, 3, 6, 3, 5, 5, 3, 1, -1, -1, -1, -1, -1, -1, -1],
+    [1, 2, 10, 9, 5, 11, 9, 11, 8, 11, 5, 6, -1, -1, -1, -1],
+    [0, 11, 3, 0, 6, 11, 0, 9, 6, 5, 6, 9, 1, 2, 10, -1],
+    [11, 8, 5, 11, 5, 6, 8, 0, 5, 10, 5, 2, 0, 2, 5, -1],
+    [6, 11, 3, 6, 3, 5, 2, 10, 3, 10, 5, 3, -1, -1, -1, -1],
+    [5, 8, 9, 5, 2, 8, 5, 6, 2, 3, 8, 2, -1, -1, -1, -1],
+    [9, 5, 6, 9, 6, 0, 0, 6, 2, -1, -1, -1, -1, -1, -1, -1],
+    [1, 5, 8, 1, 8, 0, 5, 6, 8, 3, 8, 2, 6, 2, 8, -1],
+    [1, 5, 6, 2, 1, 6, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [1, 3, 6, 1, 6, 10, 3, 8, 6, 5, 6, 9, 8, 9, 6, -1],
+    [10, 1, 0, 10, 0, 6, 9, 5, 0, 5, 6, 0, -1, -1, -1, -1],
+    [0, 3, 8, 5, 6, 10, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [10, 5, 6, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [11, 5, 10, 7, 5, 11, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [11, 5, 10, 11, 7, 5, 8, 3, 0, -1, -1, -1, -1, -1, -1, -1],
+    [5, 11, 7, 5, 10, 11, 1, 9, 0, -1, -1, -1, -1, -1, -1, -1],
+    [10, 7, 5, 10, 11, 7, 9, 8, 1, 8, 3, 1, -1, -1, -1, -1],
+    [11, 1, 2, 11, 7, 1, 7, 5, 1, -1, -1, -1, -1, -1, -1, -1],
+    [0, 8, 3, 1, 2, 7, 1, 7, 5, 7, 2, 11, -1, -1, -1, -1],
+    [9, 7, 5, 9, 2, 7, 9, 0, 2, 2, 11, 7, -1, -1, -1, -1],
+    [7, 5, 2, 7, 2, 11, 5, 9, 2, 3, 2, 8, 9, 8, 2, -1],
+    [2, 5, 10, 2, 3, 5, 3, 7, 5, -1, -1, -1, -1, -1, -1, -1],
+    [8, 2, 0, 8, 5, 2, 8, 7, 5, 10, 2, 5, -1, -1, -1, -1],
+    [9, 0, 1, 5, 10, 3, 5, 3, 7, 3, 10, 2, -1, -1, -1, -1],
+    [9, 8, 2, 9, 2, 1, 8, 7, 2, 10, 2, 5, 7, 5, 2, -1],
+    [1, 3, 5, 3, 7, 5, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [0, 8, 7, 0, 7, 1, 1, 7, 5, -1, -1, -1, -1, -1, -1, -1],
+    [9, 0, 3, 9, 3, 5, 5, 3, 7, -1, -1, -1, -1, -1, -1, -1],
+    [9, 8, 7, 5, 9, 7, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [5, 8, 4, 5, 10, 8, 10, 11, 8, -1, -1, -1, -1, -1, -1, -1],
+    [5, 0, 4, 5, 11, 0, 5, 10, 11, 11, 3, 0, -1, -1, -1, -1],
+    [0, 1, 9, 8, 4, 10, 8, 10, 11, 10, 4, 5, -1, -1, -1, -1],
+    [10, 11, 4, 10, 4, 5, 11, 3, 4, 9, 4, 1, 3, 1, 4, -1],
+    [2, 5, 1, 2, 8, 5, 2, 11, 8, 4, 5, 8, -1, -1, -1, -1],
+    [0, 4, 11, 0, 11, 3, 4, 5, 11, 2, 11, 1, 5, 1, 11, -1],
+    [0, 2, 5, 0, 5, 9, 2, 11, 5, 4, 5, 8, 11, 8, 5, -1],
+    [9, 4, 5, 2, 11, 3, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [2, 5, 10, 3, 5, 2, 3, 4, 5, 3, 8, 4, -1, -1, -1, -1],
+    [5, 10, 2, 5, 2, 4, 4, 2, 0, -1, -1, -1, -1, -1, -1, -1],
+    [3, 10, 2, 3, 5, 10, 3, 8, 5, 4, 5, 8, 0, 1, 9, -1],
+    [5, 10, 2, 5, 2, 4, 1, 9, 2, 9, 4, 2, -1, -1, -1, -1],
+    [8, 4, 5, 8, 5, 3, 3, 5, 1, -1, -1, -1, -1, -1, -1, -1],
+    [0, 4, 5, 1, 0, 5, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [8, 4, 5, 8, 5, 3, 9, 0, 5, 0, 3, 5, -1, -1, -1, -1],
+    [9, 4, 5, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [4, 11, 7, 4, 9, 11, 9, 10, 11, -1, -1, -1, -1, -1, -1, -1],
+    [0, 8, 3, 4, 9, 7, 9, 11, 7, 9, 10, 11, -1, -1, -1, -1],
+    [1, 10, 11, 1, 11, 4, 1, 4, 0, 7, 4, 11, -1, -1, -1, -1],
+    [3, 1, 4, 3, 4, 8, 1, 10, 4, 7, 4, 11, 10, 11, 4, -1],
+    [4, 11, 7, 9, 11, 4, 9, 2, 11, 9, 1, 2, -1, -1, -1, -1],
+    [9, 7, 4, 9, 11, 7, 9, 1, 11, 2, 11, 1, 0, 8, 3, -1],
+    [11, 7, 4, 11, 4, 2, 2, 4, 0, -1, -1, -1, -1, -1, -1, -1],
+    [11, 7, 4, 11, 4, 2, 8, 3, 4, 3, 2, 4, -1, -1, -1, -1],
+    [2, 9, 10, 2, 7, 9, 2, 3, 7, 7, 4, 9, -1, -1, -1, -1],
+    [9, 10, 7, 9, 7, 4, 10, 2, 7, 8, 7, 0, 2, 0, 7, -1],
+    [3, 7, 10, 3, 10, 2, 7, 4, 10, 1, 10, 0, 4, 0, 10, -1],
+    [1, 10, 2, 8, 7, 4, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [4, 9, 1, 4, 1, 7, 7, 1, 3, -1, -1, -1, -1, -1, -1, -1],
+    [4, 9, 1, 4, 1, 7, 0, 8, 1, 8, 7, 1, -1, -1, -1, -1],
+    [4, 0, 3, 7, 4, 3, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [4, 8, 7, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [9, 10, 8, 10, 11, 8, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [3, 0, 9, 3, 9, 11, 11, 9, 10, -1, -1, -1, -1, -1, -1, -1],
+    [0, 1, 10, 0, 10, 8, 8, 10, 11, -1, -1, -1, -1, -1, -1, -1],
+    [3, 1, 10, 11, 3, 10, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [1, 2, 11, 1, 11, 9, 9, 11, 8, -1, -1, -1, -1, -1, -1, -1],
+    [3, 0, 9, 3, 9, 11, 1, 2, 9, 2, 11, 9, -1, -1, -1, -1],
+    [0, 2, 11, 8, 0, 11, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [3, 2, 11, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [2, 3, 8, 2, 8, 10, 10, 8, 9, -1, -1, -1, -1, -1, -1, -1],
+    [9, 10, 2, 0, 9, 2, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [2, 3, 8, 2, 8, 10, 0, 1, 8, 1, 10, 8, -1, -1, -1, -1],
+    [1, 10, 2, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [1, 3, 8, 9, 1, 8, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [0, 9, 1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [0, 3, 8, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    ],
+];
+
 impl Plot3DGrid {
     /// Calculate total number of points
     pub fn total_points(&self) -> usize {
@@ -1251,6 +1541,526 @@ impl Plot3DGrid {
     fn linear_index(i: usize, j: usize, k: usize, dim_i: usize, dim_j: usize) -> usize {
         k * dim_i * dim_j + j * dim_i + i
     }
+
+    /// Extract iso-surface at given scalar field level using marching cubes
+    pub fn extract_iso_surface(
+        &self,
+        solution: &Plot3DSolution,
+        scalar_field: crate::solution::ScalarField,
+        level: f32,
+        respect_iblank: bool,
+        show_fringe_points: bool,
+        iblank_filter_mode: crate::IblankFilterMode,
+    ) -> Result<MeshGeometry, String> {
+        use crate::solution::compute_scalar_field;
+
+        let i_dim = self.dimensions.i as usize;
+        let j_dim = self.dimensions.j as usize;
+        let k_dim = self.dimensions.k as usize;
+
+        if i_dim < 2 || j_dim < 2 || k_dim < 2 {
+            return Ok(MeshGeometry {
+                vertices: vec![],
+                indices: vec![],
+                triangle_indices: vec![],
+                normals: vec![],
+                vertex_count: 0,
+                face_count: 0,
+                colors: None,
+                vertex_cell_data: None,
+            });
+        }
+
+        // Compute scalar field values for all points in the 3D volume
+        let scalar_values = compute_scalar_field(solution, scalar_field);
+
+        let mut vertices = Vec::new();
+        let mut triangles = Vec::new();
+
+        // Iterate over all cells
+        for k in 0..k_dim - 1 {
+            for j in 0..j_dim - 1 {
+                for i in 0..i_dim - 1 {
+                    // Get 8 corner indices of hexahedral cell
+                    let corners = [
+                        Self::linear_index(i, j, k, i_dim, j_dim),
+                        Self::linear_index(i + 1, j, k, i_dim, j_dim),
+                        Self::linear_index(i + 1, j + 1, k, i_dim, j_dim),
+                        Self::linear_index(i, j + 1, k, i_dim, j_dim),
+                        Self::linear_index(i, j, k + 1, i_dim, j_dim),
+                        Self::linear_index(i + 1, j, k + 1, i_dim, j_dim),
+                        Self::linear_index(i + 1, j + 1, k + 1, i_dim, j_dim),
+                        Self::linear_index(i, j + 1, k + 1, i_dim, j_dim),
+                    ];
+
+                    // Apply IBLANK filtering
+                    if respect_iblank {
+                        if let Some(ref iblank) = self.iblank {
+                            let should_skip = match iblank_filter_mode {
+                                crate::IblankFilterMode::Vertex => corners.iter().all(|&idx| {
+                                    crate::is_hidden_iblank_point(
+                                        Some(iblank),
+                                        idx,
+                                        respect_iblank,
+                                        show_fringe_points,
+                                    )
+                                }),
+                                crate::IblankFilterMode::Cell => corners.iter().any(|&idx| {
+                                    crate::is_hidden_iblank_point(
+                                        Some(iblank),
+                                        idx,
+                                        respect_iblank,
+                                        show_fringe_points,
+                                    )
+                                }),
+                            };
+                            if should_skip {
+                                continue;
+                            }
+                        }
+                    }
+
+                    // Get scalar values at corners
+                    let values: Vec<f32> = corners.iter().map(|&idx| scalar_values[idx]).collect();
+
+                    // Classify cell configuration (which vertices are above/below iso-level)
+                    let mut cube_index = 0;
+                    for (i, &val) in values.iter().enumerate() {
+                        if val > level {
+                            cube_index |= 1 << i;
+                        }
+                    }
+
+                    // Skip if cell doesn't intersect iso-surface
+                    if cube_index == 0 || cube_index == 255 {
+                        continue;
+                    }
+
+                    // Compute interpolated vertices on edges
+                    // Edge table: pairs of corner indices for each of 12 edges
+                    let edge_pairs = [
+                        (0, 1),
+                        (1, 2),
+                        (2, 3),
+                        (3, 0), // bottom face: edges 0-3
+                        (4, 5),
+                        (5, 6),
+                        (6, 7),
+                        (7, 4), // top face: edges 4-7
+                        (0, 4),
+                        (1, 5),
+                        (2, 6),
+                        (3, 7), // vertical edges: edges 8-11
+                    ];
+
+                    let mut edge_vertices_pos = [None; 12];
+
+                    for (edge_idx, (v1_idx, v2_idx)) in edge_pairs.iter().enumerate() {
+                        // Check if this edge is crossed by checking if the bit is set
+                        if (EDGE_TABLE[cube_index] & (1 << edge_idx)) != 0 {
+                            let val1 = values[*v1_idx];
+                            let val2 = values[*v2_idx];
+
+                            // Linear interpolation to find crossing point
+                            let t = if (val2 - val1).abs() < 1e-6 {
+                                0.5
+                            } else {
+                                (level - val1) / (val2 - val1)
+                            };
+
+                            let c1 = corners[*v1_idx];
+                            let c2 = corners[*v2_idx];
+
+                            let x = self.x_coords[c1] + t * (self.x_coords[c2] - self.x_coords[c1]);
+                            let y = self.y_coords[c1] + t * (self.y_coords[c2] - self.y_coords[c1]);
+                            let z = self.z_coords[c1] + t * (self.z_coords[c2] - self.z_coords[c1]);
+
+                            edge_vertices_pos[edge_idx] = Some((x, y, z));
+                        }
+                    }
+
+                    // Create triangles using the triangle table
+                    let tri_config = &TRI_TABLE[cube_index];
+                    let mut tri_idx = 0;
+                    while tri_idx < tri_config.len() && tri_config[tri_idx] != -1 {
+                        // Get three edge indices that form a triangle
+                        let e0 = tri_config[tri_idx] as usize;
+                        let e1 = tri_config[tri_idx + 1] as usize;
+                        let e2 = tri_config[tri_idx + 2] as usize;
+
+                        if let (Some(p0), Some(p1), Some(p2)) = (
+                            edge_vertices_pos[e0],
+                            edge_vertices_pos[e1],
+                            edge_vertices_pos[e2],
+                        ) {
+                            let base_idx = (vertices.len() / 3) as u32;
+
+                            vertices.push(p0.0);
+                            vertices.push(p0.1);
+                            vertices.push(p0.2);
+
+                            vertices.push(p1.0);
+                            vertices.push(p1.1);
+                            vertices.push(p1.2);
+
+                            vertices.push(p2.0);
+                            vertices.push(p2.1);
+                            vertices.push(p2.2);
+
+                            triangles.push(base_idx);
+                            triangles.push(base_idx + 1);
+                            triangles.push(base_idx + 2);
+                        }
+
+                        tri_idx += 3;
+                    }
+                }
+            }
+        }
+
+        // Calculate counts before moving data
+        let vertex_count = vertices.len() / 3;
+        let face_count = triangles.len() / 3;
+
+        // Compute normals (simplified: use face normals)
+        let mut normals = vec![0.0; vertices.len()];
+        for tri_idx in (0..triangles.len()).step_by(3) {
+            let i0 = triangles[tri_idx] as usize * 3;
+            let i1 = triangles[tri_idx + 1] as usize * 3;
+            let i2 = triangles[tri_idx + 2] as usize * 3;
+
+            let v0 = [vertices[i0], vertices[i0 + 1], vertices[i0 + 2]];
+            let v1 = [vertices[i1], vertices[i1 + 1], vertices[i1 + 2]];
+            let v2 = [vertices[i2], vertices[i2 + 1], vertices[i2 + 2]];
+
+            // Compute face normal
+            let e1 = [v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]];
+            let e2 = [v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]];
+            let normal = [
+                e1[1] * e2[2] - e1[2] * e2[1],
+                e1[2] * e2[0] - e1[0] * e2[2],
+                e1[0] * e2[1] - e1[1] * e2[0],
+            ];
+
+            // Accumulate to vertex normals
+            for &idx in &[i0, i1, i2] {
+                normals[idx] += normal[0];
+                normals[idx + 1] += normal[1];
+                normals[idx + 2] += normal[2];
+            }
+        }
+
+        // Normalize vertex normals
+        for i in (0..normals.len()).step_by(3) {
+            let len = (normals[i] * normals[i]
+                + normals[i + 1] * normals[i + 1]
+                + normals[i + 2] * normals[i + 2])
+                .sqrt();
+            if len > 1e-6 {
+                normals[i] /= len;
+                normals[i + 1] /= len;
+                normals[i + 2] /= len;
+            }
+        }
+
+        Ok(MeshGeometry {
+            vertices,
+            indices: vec![], // Not used for solid rendering
+            triangle_indices: triangles,
+            normals,
+            vertex_count,
+            face_count,
+            colors: None,
+            vertex_cell_data: None,
+        })
+    }
+
+    /// Extract contour lines from I/J/K slice at specified level
+    pub fn extract_slice_contours(
+        &self,
+        solution: &Plot3DSolution,
+        plane: &str,
+        index: usize,
+        scalar_field: crate::solution::ScalarField,
+        level: f32,
+        respect_iblank: bool,
+        show_fringe_points: bool,
+        iblank_filter_mode: crate::IblankFilterMode,
+    ) -> Result<Vec<f32>, String> {
+        use crate::solution::compute_scalar_field;
+
+        // First, create a slice
+        let sliced_grid = self.slice_grid(plane, index as u32)?;
+
+        // Compute scalar values for the full 3D volume
+        let scalar_values = compute_scalar_field(solution, scalar_field);
+
+        // Map slice vertices to original indices to get their scalar values
+        let i_dim = self.dimensions.i as usize;
+        let j_dim = self.dimensions.j as usize;
+        let slice_i = sliced_grid.dimensions.i as usize;
+        let slice_j = sliced_grid.dimensions.j as usize;
+
+        let mut slice_scalars = Vec::new();
+        match plane.to_uppercase().as_str() {
+            "I" => {
+                for k_idx in 0..slice_j {
+                    for j_idx in 0..slice_i {
+                        let orig_idx = Self::linear_index(index, j_idx, k_idx, i_dim, j_dim);
+                        slice_scalars.push(scalar_values[orig_idx]);
+                    }
+                }
+            }
+            "J" => {
+                for k_idx in 0..slice_j {
+                    for i_idx in 0..slice_i {
+                        let orig_idx = Self::linear_index(i_idx, index, k_idx, i_dim, j_dim);
+                        slice_scalars.push(scalar_values[orig_idx]);
+                    }
+                }
+            }
+            "K" => {
+                for j_idx in 0..slice_j {
+                    for i_idx in 0..slice_i {
+                        let orig_idx = Self::linear_index(i_idx, j_idx, index, i_dim, j_dim);
+                        slice_scalars.push(scalar_values[orig_idx]);
+                    }
+                }
+            }
+            _ => return Err(format!("Invalid plane: {}", plane)),
+        }
+
+        // Extract contour lines from the sliced 2D grid
+        extract_contour_lines_2d(
+            &sliced_grid,
+            &slice_scalars,
+            level,
+            respect_iblank,
+            show_fringe_points,
+            iblank_filter_mode,
+        )
+    }
+
+    /// Extract contour lines from arbitrary plane at specified level
+    pub fn extract_arbitrary_plane_contours(
+        &self,
+        solution: &Plot3DSolution,
+        plane_point: [f32; 3],
+        plane_normal: [f32; 3],
+        scalar_field: crate::solution::ScalarField,
+        level: f32,
+        respect_iblank: bool,
+        show_fringe_points: bool,
+        iblank_filter_mode: crate::IblankFilterMode,
+    ) -> Result<Vec<f32>, String> {
+        // Slice the grid with the arbitrary plane
+        let sliced_grid = self.slice_arbitrary_plane(
+            plane_point,
+            plane_normal,
+            respect_iblank,
+            show_fringe_points,
+            iblank_filter_mode,
+        )?;
+
+        // Get scalar values at vertices using vertex_cell_data
+        if sliced_grid.vertex_cell_data.is_none() {
+            return Ok(vec![]); // No interpolation data available
+        }
+
+        let vertex_cell_data = sliced_grid.vertex_cell_data.as_ref().unwrap();
+        let mut slice_scalars = Vec::new();
+
+        for vcd in vertex_cell_data.iter() {
+            // Interpolate scalar value from cell corners
+            let mut scalar_val = 0.0;
+            let i_dim = self.dimensions.i as usize;
+            let j_dim = self.dimensions.j as usize;
+
+            // Get indices of 8 cell corners
+            let corners = [
+                Self::linear_index(vcd.cell_i, vcd.cell_j, vcd.cell_k, i_dim, j_dim),
+                Self::linear_index(vcd.cell_i + 1, vcd.cell_j, vcd.cell_k, i_dim, j_dim),
+                Self::linear_index(vcd.cell_i + 1, vcd.cell_j + 1, vcd.cell_k, i_dim, j_dim),
+                Self::linear_index(vcd.cell_i, vcd.cell_j + 1, vcd.cell_k, i_dim, j_dim),
+                Self::linear_index(vcd.cell_i, vcd.cell_j, vcd.cell_k + 1, i_dim, j_dim),
+                Self::linear_index(vcd.cell_i + 1, vcd.cell_j, vcd.cell_k + 1, i_dim, j_dim),
+                Self::linear_index(vcd.cell_i + 1, vcd.cell_j + 1, vcd.cell_k + 1, i_dim, j_dim),
+                Self::linear_index(vcd.cell_i, vcd.cell_j + 1, vcd.cell_k + 1, i_dim, j_dim),
+            ];
+
+            // Compute scalar field at corners and interpolate
+            use crate::solution::compute_scalar_field;
+            let scalar_values = compute_scalar_field(solution, scalar_field);
+
+            for (i, &corner_idx) in corners.iter().enumerate() {
+                scalar_val += vcd.weights[i] * scalar_values[corner_idx];
+            }
+
+            slice_scalars.push(scalar_val);
+        }
+
+        // The sliced_grid has triangle_indices we can use
+        extract_contour_lines_from_triangles(
+            &sliced_grid.vertices,
+            &sliced_grid.triangle_indices,
+            &slice_scalars,
+            level,
+        )
+    }
+}
+
+/// Extract contour lines from 2D structured grid
+/// Returns flat array of line segment endpoints (x1,y1,z1, x2,y2,z2, ...)
+fn extract_contour_lines_2d(
+    grid: &Plot3DGrid,
+    scalar_values: &[f32],
+    level: f32,
+    respect_iblank: bool,
+    show_fringe_points: bool,
+    iblank_filter_mode: crate::IblankFilterMode,
+) -> Result<Vec<f32>, String> {
+    let i_dim = grid.dimensions.i as usize;
+    let j_dim = grid.dimensions.j as usize;
+
+    if i_dim < 2 || j_dim < 2 {
+        return Ok(vec![]);
+    }
+
+    let mut line_segments = Vec::new();
+
+    // Iterate over all quads in the 2D grid
+    for j in 0..j_dim - 1 {
+        for i in 0..i_dim - 1 {
+            // Get 4 corners of quad
+            let corners = [
+                j * i_dim + i,
+                j * i_dim + i + 1,
+                (j + 1) * i_dim + i + 1,
+                (j + 1) * i_dim + i,
+            ];
+
+            // Apply IBLANK filtering
+            if respect_iblank {
+                if let Some(ref iblank) = grid.iblank {
+                    let should_skip = match iblank_filter_mode {
+                        crate::IblankFilterMode::Vertex => corners.iter().all(|&idx| {
+                            crate::is_hidden_iblank_point(
+                                Some(iblank),
+                                idx,
+                                respect_iblank,
+                                show_fringe_points,
+                            )
+                        }),
+                        crate::IblankFilterMode::Cell => corners.iter().any(|&idx| {
+                            crate::is_hidden_iblank_point(
+                                Some(iblank),
+                                idx,
+                                respect_iblank,
+                                show_fringe_points,
+                            )
+                        }),
+                    };
+                    if should_skip {
+                        continue;
+                    }
+                }
+            }
+
+            // Get scalar values at corners
+            let values: Vec<f32> = corners.iter().map(|&idx| scalar_values[idx]).collect();
+
+            // Check each edge of the quad for contour crossings
+            let edges = [(0, 1), (1, 2), (2, 3), (3, 0)];
+
+            for (v1_idx, v2_idx) in edges.iter() {
+                let val1 = values[*v1_idx];
+                let val2 = values[*v2_idx];
+
+                // Check if edge crosses contour level
+                if (val1 <= level && val2 > level) || (val1 > level && val2 <= level) {
+                    // Linear interpolation
+                    let t = if (val2 - val1).abs() < 1e-6 {
+                        0.5
+                    } else {
+                        (level - val1) / (val2 - val1)
+                    };
+
+                    let c1 = corners[*v1_idx];
+                    let c2 = corners[*v2_idx];
+
+                    let x = grid.x_coords[c1] + t * (grid.x_coords[c2] - grid.x_coords[c1]);
+                    let y = grid.y_coords[c1] + t * (grid.y_coords[c2] - grid.y_coords[c1]);
+                    let z = grid.z_coords[c1] + t * (grid.z_coords[c2] - grid.z_coords[c1]);
+
+                    line_segments.push(x);
+                    line_segments.push(y);
+                    line_segments.push(z);
+                }
+            }
+        }
+    }
+
+    Ok(line_segments)
+}
+
+/// Extract contour lines from triangulated mesh
+/// Returns flat array of line segment endpoints (x1,y1,z1, x2,y2,z2, ...)
+fn extract_contour_lines_from_triangles(
+    vertices: &[f32],
+    triangle_indices: &[u32],
+    scalar_values: &[f32],
+    level: f32,
+) -> Result<Vec<f32>, String> {
+    let mut line_segments = Vec::new();
+
+    // Iterate over all triangles
+    for tri_idx in (0..triangle_indices.len()).step_by(3) {
+        let i0 = triangle_indices[tri_idx] as usize;
+        let i1 = triangle_indices[tri_idx + 1] as usize;
+        let i2 = triangle_indices[tri_idx + 2] as usize;
+
+        let v0 = scalar_values[i0];
+        let v1 = scalar_values[i1];
+        let v2 = scalar_values[i2];
+
+        // Check each edge of triangle for crossing
+        let edges = [(i0, i1, v0, v1), (i1, i2, v1, v2), (i2, i0, v2, v0)];
+        let mut crossings = Vec::new();
+
+        for (idx1, idx2, val1, val2) in edges.iter() {
+            if (val1 <= &level && val2 > &level) || (val1 > &level && val2 <= &level) {
+                // Linear interpolation
+                let t = if (val2 - val1).abs() < 1e-6 {
+                    0.5
+                } else {
+                    (level - val1) / (val2 - val1)
+                };
+
+                let p1_offset = idx1 * 3;
+                let p2_offset = idx2 * 3;
+
+                let x = vertices[p1_offset] + t * (vertices[p2_offset] - vertices[p1_offset]);
+                let y = vertices[p1_offset + 1]
+                    + t * (vertices[p2_offset + 1] - vertices[p1_offset + 1]);
+                let z = vertices[p1_offset + 2]
+                    + t * (vertices[p2_offset + 2] - vertices[p1_offset + 2]);
+
+                crossings.push((x, y, z));
+            }
+        }
+
+        // A triangle should have 0 or 2 crossings (or rarely 1 if level passes through vertex)
+        if crossings.len() >= 2 {
+            line_segments.push(crossings[0].0);
+            line_segments.push(crossings[0].1);
+            line_segments.push(crossings[0].2);
+            line_segments.push(crossings[1].0);
+            line_segments.push(crossings[1].1);
+            line_segments.push(crossings[1].2);
+        }
+    }
+
+    Ok(line_segments)
 }
 
 impl Plot3DSolution {

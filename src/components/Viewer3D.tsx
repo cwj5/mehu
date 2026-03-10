@@ -1,7 +1,11 @@
 import { Canvas } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import { useState, useEffect, useMemo, useRef } from 'react';
+import * as THREE from 'three';
 import { BufferGeometry, BufferAttribute, ShaderMaterial } from 'three';
+import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js';
+import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeometry.js';
+import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import { invoke } from '@tauri-apps/api/core';
 import { logger } from '../utils/logger';
 import type { GridItem, GridSlice, ArbitrarySlice } from '../types/grids';
@@ -42,6 +46,9 @@ interface Viewer3DProps {
     sliceEnabled?: boolean;
     gridSlices?: Record<string, GridSlice[]>;
     arbitrarySlices?: ArbitrarySlice[];
+    contoursEnabled?: boolean;
+    contourLevel?: number;
+    contourDisplayMode?: 'surfaces' | 'lines' | 'both';
     onSlicesChange?: (slices: Record<string, GridSlice[]>) => void;
     onLoadingChange?: (isLoading: boolean) => void;
 }
@@ -348,6 +355,54 @@ function MeshRenderer({
     );
 }
 
+// Iso-surface renderer (solid single-color mesh)
+function IsoSurfaceRenderer({ meshGeometry, color }: { meshGeometry: MeshGeometry; color: string }) {
+    const geometry = useMemo(() => {
+        const geo = new BufferGeometry();
+        geo.setAttribute('position', new BufferAttribute(new Float32Array(meshGeometry.vertices), 3));
+        geo.setAttribute('normal', new BufferAttribute(new Float32Array(meshGeometry.normals), 3));
+        geo.setIndex(new BufferAttribute(new Uint32Array(meshGeometry.triangle_indices), 1));
+        geo.computeBoundingSphere();
+        return geo;
+    }, [meshGeometry]);
+
+    return (
+        <mesh geometry={geometry} frustumCulled={true}>
+            <meshStandardMaterial color={color} />
+        </mesh>
+    );
+}
+
+// Contour line renderer (thick line segments using LineSegments2)
+function ContourLineRenderer({ lineData, color }: { lineData: Float32Array; color: string }) {
+    const lineSegments = useMemo(() => {
+        const geometry = new LineSegmentsGeometry();
+        geometry.setPositions(lineData);
+
+        const material = new LineMaterial({
+            color: color,
+            linewidth: 3, // in pixels
+            resolution: new THREE.Vector2(window.innerWidth, window.innerHeight),
+        });
+
+        const segments = new LineSegments2(geometry, material);
+        segments.computeLineDistances();
+        return segments;
+    }, [lineData, color]);
+
+    useEffect(() => {
+        const handleResize = () => {
+            if (lineSegments.material instanceof LineMaterial) {
+                lineSegments.material.resolution.set(window.innerWidth, window.innerHeight);
+            }
+        };
+        window.addEventListener('resize', handleResize);
+        return () => window.removeEventListener('resize', handleResize);
+    }, [lineSegments]);
+
+    return <primitive object={lineSegments} frustumCulled={true} />;
+}
+
 export default function Viewer3D({
     grids,
     selectedGridIds,
@@ -362,6 +417,9 @@ export default function Viewer3D({
     sliceEnabled = false,
     gridSlices = {},
     arbitrarySlices = [],
+    contoursEnabled = false,
+    contourLevel = 0.5,
+    contourDisplayMode = 'both',
     onSlicesChange,
     onLoadingChange
 }: Viewer3DProps) {
@@ -369,6 +427,10 @@ export default function Viewer3D({
     const [loadingById, setLoadingById] = useState<Record<string, number>>({});
     const [error, setError] = useState<string | null>(null);
     const autoCreatedSlicesRef = useRef(false);
+
+    // Contour state
+    const [isoSurfaceGeometries, setIsoSurfaceGeometries] = useState<Record<string, MeshGeometry>>({});
+    const [contourLineGeometries, setContourLineGeometries] = useState<Record<string, Float32Array>>({});
 
     type MeshResult = { id: string; mesh: MeshGeometry } | { id: string; error: string };
 
@@ -989,11 +1051,132 @@ export default function Viewer3D({
             });
         };
     }, [grids, ignoreIblank, showFringePoints, iblankFilterMode, scalarField, colorScheme, sliceEnabled, gridSlices, appliedSlicesKey]);
-
     const visibleGrids = useMemo(
         () => getVisibleGridItems(grids, selectedGridIds, isolateSelected),
         [grids, isolateSelected, selectedGridIds]
     );
+
+
+    // Contour extraction effect
+    useEffect(() => {
+        if (!contoursEnabled || scalarField === 'none') {
+            // Clear contours when disabled or no field selected
+            setIsoSurfaceGeometries({});
+            setContourLineGeometries({});
+            return;
+        }
+
+        const gridsWithSolution = grids.filter(g => g.hasSolution && g.solutionCacheId && g.gridCacheId);
+        if (gridsWithSolution.length === 0) {
+            return;
+        }
+
+        logger.info(`Extracting contours at level ${contourLevel} for field ${scalarField}`, 'Viewer3D');
+
+        // Extract iso-surfaces for each grid with solution
+        const isoSurfacePromises = gridsWithSolution.map(async (gridItem) => {
+            try {
+                const mesh = await invoke<MeshGeometry>('extract_iso_surface_by_id', {
+                    gridId: gridItem.gridCacheId!,
+                    solutionId: gridItem.solutionCacheId!,
+                    scalarField: scalarField,
+                    levelNormalized: contourLevel,
+                    respectIblank: !ignoreIblank,
+                    showFringePoints: showFringePoints,
+                    iblankFilterMode: iblankFilterMode,
+                });
+                return { id: gridItem.id, mesh };
+            } catch (err) {
+                logger.warn(`Failed to extract iso-surface for grid ${gridItem.id}: ${err}`, 'Viewer3D');
+                return null;
+            }
+        });
+
+        // Extract contour lines for slices (only visible grids)
+        const visibleGridIds = new Set(visibleGrids.map(g => g.id));
+        const sliceContourPromises = gridsWithSolution
+            .filter(gridItem => visibleGridIds.has(gridItem.id))
+            .flatMap((gridItem) => {
+                const slices = gridSlices[gridItem.id] || [];
+                return slices.map(async (slice) => {
+                    try {
+                        const lineData = await invoke<number[]>('extract_slice_contours_by_id', {
+                            gridId: gridItem.gridCacheId!,
+                            solutionId: gridItem.solutionCacheId!,
+                            plane: slice.plane,
+                            index: slice.index,
+                            scalarField: scalarField,
+                            levelNormalized: contourLevel,
+                            respectIblank: !ignoreIblank,
+                            showFringePoints: showFringePoints,
+                            iblankFilterMode: iblankFilterMode,
+                        });
+                        return { id: `slice::${gridItem.id}::${slice.id}`, lineData: new Float32Array(lineData) };
+                    } catch (err) {
+                        logger.warn(`Failed to extract slice contours for ${gridItem.id}/${slice.id}: ${err}`, 'Viewer3D');
+                        return null;
+                    }
+                });
+            });
+
+        // Extract contour lines for arbitrary planes (only visible grids)
+        const arbitraryContourPromises = (arbitrarySlices || [])
+            .filter(s => s.enabled && s.applied)
+            .flatMap((slice) => {
+                return gridsWithSolution
+                    .filter(gridItem => visibleGridIds.has(gridItem.id))
+                    .map(async (gridItem) => {
+                        try {
+                            const lineData = await invoke<number[]>('extract_arbitrary_plane_contours_by_id', {
+                                gridId: gridItem.gridCacheId!,
+                                solutionId: gridItem.solutionCacheId!,
+                                planePoint: slice.planePoint,
+                                planeNormal: slice.planeNormal,
+                                scalarField: scalarField,
+                                levelNormalized: contourLevel,
+                                respectIblank: !ignoreIblank,
+                                showFringePoints: showFringePoints,
+                                iblankFilterMode: iblankFilterMode,
+                            });
+                            return { id: `arbitrary::${slice.id}::${gridItem.id}`, lineData: new Float32Array(lineData) };
+                        } catch (err) {
+                            // Plane may not intersect this grid - expected
+                            return null;
+                        }
+                    });
+            });
+
+        Promise.all([
+            Promise.all(isoSurfacePromises),
+            Promise.all(sliceContourPromises),
+            Promise.all(arbitraryContourPromises),
+        ]).then(([isoResults, sliceResults, arbitraryResults]) => {
+            // Update iso-surfaces
+            const newIsoSurfaces: Record<string, MeshGeometry> = {};
+            isoResults.forEach(result => {
+                if (result && result.mesh.vertex_count > 0) {
+                    newIsoSurfaces[result.id] = result.mesh;
+                }
+            });
+            setIsoSurfaceGeometries(newIsoSurfaces);
+
+            // Update contour lines
+            const newContourLines: Record<string, Float32Array> = {};
+            [...sliceResults, ...arbitraryResults].forEach(result => {
+                if (result && result.lineData.length > 0) {
+                    newContourLines[result.id] = result.lineData;
+                }
+            });
+            setContourLineGeometries(newContourLines);
+
+            logger.info(
+                `Contours extracted: ${Object.keys(newIsoSurfaces).length} iso-surfaces, ${Object.keys(newContourLines).length} contour lines`,
+                'Viewer3D'
+            );
+        }).catch(err => {
+            logger.error(`Failed to extract contours: ${err}`, 'Viewer3D');
+        });
+    }, [contoursEnabled, contourLevel, scalarField, grids, gridSlices, arbitrarySlices, ignoreIblank, showFringePoints, iblankFilterMode, visibleGrids]);
 
     const enabledArbitraryIds = useMemo(
         () => new Set((arbitrarySlices || []).filter(s => s.applied && s.enabled).map(s => s.id)),
@@ -1029,6 +1212,8 @@ export default function Viewer3D({
                         return null;
                     }
                     const dimmed = selectedGridIds.length > 0 && !selectedGridIds.includes(gridItem.id) && !isolateSelected;
+                    // Use grey color when contours are enabled, otherwise use grid color
+                    const displayColor = contoursEnabled ? '#808080' : gridItem.color;
 
                     return (
                         <group key={gridItem.id}>
@@ -1036,7 +1221,7 @@ export default function Viewer3D({
                             {shadingMode === 'smooth' && (
                                 <SolidMeshRenderer
                                     meshGeometry={mesh}
-                                    color={gridItem.color}
+                                    color={displayColor}
                                     dimmed={dimmed}
                                 />
                             )}
@@ -1044,7 +1229,7 @@ export default function Viewer3D({
                             {showWireframe && (
                                 <MeshRenderer
                                     meshGeometry={mesh}
-                                    color={gridItem.color}
+                                    color={displayColor}
                                     dimmed={dimmed}
                                 />
                             )}
@@ -1061,8 +1246,8 @@ export default function Viewer3D({
                         return enabledArbitraryIds.has(sliceId);
                     })
                     .map(([id, mesh]) => {
-                        // Arbitrary slices use a fixed color (light blue)
-                        const sliceColor = '#60a5fa';
+                        // Use grey when contours enabled, otherwise light blue
+                        const sliceColor = contoursEnabled ? '#808080' : '#60a5fa';
                         return (
                             <group key={id}>
                                 {shadingMode === 'smooth' && (
@@ -1082,6 +1267,24 @@ export default function Viewer3D({
                             </group>
                         );
                     })}
+
+                {/* Render iso-surfaces */}
+                {contoursEnabled && (contourDisplayMode === 'surfaces' || contourDisplayMode === 'both') &&
+                    Object.entries(isoSurfaceGeometries).map(([id, mesh]) => (
+                        <group key={`iso::${id}`}>
+                            <IsoSurfaceRenderer meshGeometry={mesh} color="#3b82f6" />
+                        </group>
+                    ))
+                }
+
+                {/* Render contour lines */}
+                {contoursEnabled && (contourDisplayMode === 'lines' || contourDisplayMode === 'both') &&
+                    Object.entries(contourLineGeometries).map(([id, lineData]) => (
+                        <group key={`contour::${id}`}>
+                            <ContourLineRenderer lineData={lineData} color="#000000" />
+                        </group>
+                    ))
+                }
 
                 {/* Camera controls */}
                 <OrbitControls enableDamping dampingFactor={0.05} />

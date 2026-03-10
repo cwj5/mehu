@@ -35,3 +35,21 @@ export interface SolutionMetadata {
     grid_index: number;
     dimensions: { i: number; j: number; k: number };
 }
+
+// Contour-related types
+export interface ContourSettings {
+    enabled: boolean;
+    level: number; // 0.0 to 1.0 normalized
+}
+
+export interface IsoSurfaceGeometry {
+    gridId: string;
+    positions: Float32Array;
+    normals: Float32Array;
+    indices: Uint32Array;
+}
+
+export interface ContourLineGeometry {
+    sliceId: string;
+    positions: Float32Array; // line segments as pairs of points
+}

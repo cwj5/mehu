@@ -106,6 +106,12 @@ const App = () => {
   const [gridSlices, setGridSlices] = useState<Record<string, GridSlice[]>>({});
   const [arbitrarySlices, setArbitrarySlices] = useState<ArbitrarySlice[]>([]);
 
+  // Contour state
+  const [contoursEnabled, setContoursEnabled] = useState(false);
+  const [contourLevel, setContourLevel] = useState(0.5);
+  const [contourLevelWarning, setContourLevelWarning] = useState("");
+  const [contourDisplayMode, setContourDisplayMode] = useState<'surfaces' | 'lines' | 'both'>('both');
+
 
   // Arbitrary slice management
   const addArbitrarySlice = () => {
@@ -185,6 +191,19 @@ const App = () => {
         s.id === sliceId ? { ...s, ...updates } : s
       )
     }));
+  };
+
+  // Contour level validation and clamping
+  const handleContourLevelChange = (value: number) => {
+    if (value < 0 || value > 1) {
+      const clamped = Math.max(0, Math.min(1, value));
+      setContourLevel(clamped);
+      setContourLevelWarning(`Level clamped to valid range [0, 1]`);
+      setTimeout(() => setContourLevelWarning(""), 3000);
+    } else {
+      setContourLevel(value);
+      setContourLevelWarning("");
+    }
   };
 
   // Debug: Log whenever loading state changes
@@ -651,6 +670,95 @@ const App = () => {
                       onScalarFieldChange={handleScalarFieldChange}
                       onColorSchemeChange={handleColorSchemeChange}
                     />
+                  </div>
+                )}
+
+                {/* Contour Controls Section */}
+                {hasSolution && (
+                  <div style={{ marginBottom: '12px', paddingBottom: '12px', borderBottom: '2px solid #334155' }}>
+                    <div style={{
+                      fontSize: '10px',
+                      fontWeight: '600',
+                      color: '#cbd5e1',
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.05em',
+                      marginBottom: '6px',
+                      paddingBottom: '4px',
+                      borderBottom: '1px solid #334155'
+                    }}>
+                      Contours
+                    </div>
+
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '11px' }}>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <input
+                          type="checkbox"
+                          checked={contoursEnabled}
+                          onChange={(e) => setContoursEnabled(e.target.checked)}
+                        />
+                        Enable Contours
+                      </label>
+
+                      {contoursEnabled && (
+                        <div style={{ paddingLeft: '8px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                          <label style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                            <span style={{ fontSize: '10px', color: '#94a3b8' }}>
+                              Display:
+                            </span>
+                            <select
+                              value={contourDisplayMode}
+                              onChange={(e) => setContourDisplayMode(e.target.value as 'surfaces' | 'lines' | 'both')}
+                              style={{
+                                padding: '4px 6px',
+                                background: '#1a2640',
+                                color: '#e2e8f0',
+                                border: '1px solid #334155',
+                                borderRadius: '3px',
+                                fontSize: '11px',
+                              }}
+                            >
+                              <option value="both">Surfaces & Lines</option>
+                              <option value="surfaces">Surfaces Only</option>
+                              <option value="lines">Lines Only</option>
+                            </select>
+                          </label>
+                          <label style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                            <span style={{ fontSize: '10px', color: '#94a3b8' }}>
+                              Contour Level (0-1):
+                            </span>
+                            <input
+                              type="number"
+                              min="0"
+                              max="1"
+                              step="0.01"
+                              value={contourLevel}
+                              onChange={(e) => handleContourLevelChange(parseFloat(e.target.value) || 0)}
+                              style={{
+                                padding: '4px 6px',
+                                background: '#1a2640',
+                                color: '#e2e8f0',
+                                border: '1px solid #334155',
+                                borderRadius: '3px',
+                                fontSize: '11px',
+                              }}
+                            />
+                          </label>
+                          {contourLevelWarning && (
+                            <div style={{
+                              marginTop: '4px',
+                              padding: '4px',
+                              background: '#422006',
+                              color: '#fbbf24',
+                              fontSize: '9px',
+                              borderRadius: '2px',
+                              border: '1px solid #78350f'
+                            }}>
+                              ⚠ {contourLevelWarning}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )}
 
@@ -1219,6 +1327,9 @@ const App = () => {
               sliceEnabled={sliceEnabled}
               gridSlices={gridSlices}
               arbitrarySlices={arbitrarySlices}
+              contoursEnabled={contoursEnabled}
+              contourLevel={contourLevel}
+              contourDisplayMode={contourDisplayMode}
               onSlicesChange={setGridSlices}
               onLoadingChange={handleViewer3DLoadingChange}
             />

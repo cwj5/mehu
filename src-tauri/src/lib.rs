@@ -1964,6 +1964,298 @@ fn get_solution_field_range(solutionId: String, field: String) -> Result<FieldRa
 }
 
 // ============================================================================
+// Contour Extraction Commands
+// ============================================================================
+
+/// Extract iso-surface from volume data at specified scalar field level
+#[allow(non_snake_case)]
+#[tauri::command]
+fn extract_iso_surface_by_id(
+    gridId: String,
+    solutionId: String,
+    scalarField: String,
+    levelNormalized: f64,
+    respectIblank: Option<bool>,
+    showFringePoints: Option<bool>,
+    iblankFilterMode: Option<String>,
+    _window: WebviewWindow,
+) -> Result<MeshGeometry, String> {
+    use solution::ScalarField;
+
+    let (effective_respect_iblank, effective_show_fringe_points, effective_filter_mode) =
+        normalize_iblank_flags(respectIblank, showFringePoints, iblankFilterMode);
+
+    // Parse scalar field
+    let field_enum = ScalarField::from_str(&scalarField)
+        .ok_or_else(|| format!("Unknown scalar field: {}", scalarField))?;
+
+    // Load grid from cache
+    let grid = {
+        let cache = GRID_CACHE
+            .lock()
+            .map_err(|_| "Grid cache lock poisoned".to_string())?;
+        let cached = cache
+            .get(&gridId)
+            .ok_or_else(|| format!("Grid not found in cache: {}", gridId))?;
+        Arc::clone(&cached.grid)
+    };
+
+    // Load solution from cache
+    let solution = {
+        let cache = SOLUTION_CACHE_V2
+            .lock()
+            .map_err(|_| "Solution cache lock poisoned".to_string())?;
+        let cached = cache
+            .get(&solutionId)
+            .ok_or_else(|| format!("Solution not found in cache: {}", solutionId))?;
+        Arc::clone(&cached.solution)
+    };
+
+    // Get field range to compute actual level
+    let mut min: Option<f32> = None;
+    let mut max: Option<f32> = None;
+    for idx in 0..solution.rho.len() {
+        let gamma = solution.gamma.as_ref().map(|g| g[idx]);
+        let value = compute_scalar_field_from_components(
+            solution.rho[idx],
+            solution.rhou[idx],
+            solution.rhov[idx],
+            solution.rhow[idx],
+            solution.rhoe[idx],
+            gamma,
+            field_enum,
+        );
+        if value.is_finite() {
+            min = Some(match min {
+                Some(current) => current.min(value),
+                None => value,
+            });
+            max = Some(match max {
+                Some(current) => current.max(value),
+                None => value,
+            });
+        }
+    }
+
+    let (min_val, max_val) = match (min, max) {
+        (Some(min), Some(max)) => (min, max),
+        _ => return Err("No finite field values found".to_string()),
+    };
+
+    // Compute actual level from normalized value
+    let level = min_val + (max_val - min_val) * levelNormalized as f32;
+
+    log_info(&format!(
+        "Extracting iso-surface for grid {} at level {} (normalized={}, range=[{}, {}])",
+        gridId, level, levelNormalized, min_val, max_val
+    ));
+
+    // TODO: Call marching cubes implementation (Step 3)
+    grid.extract_iso_surface(
+        &solution,
+        field_enum,
+        level,
+        effective_respect_iblank,
+        effective_show_fringe_points,
+        effective_filter_mode,
+    )
+}
+
+/// Extract contour lines from I/J/K slice at specified level
+#[allow(non_snake_case)]
+#[tauri::command]
+fn extract_slice_contours_by_id(
+    gridId: String,
+    solutionId: String,
+    plane: String,
+    index: usize,
+    scalarField: String,
+    levelNormalized: f64,
+    respectIblank: Option<bool>,
+    showFringePoints: Option<bool>,
+    iblankFilterMode: Option<String>,
+    _window: WebviewWindow,
+) -> Result<Vec<f32>, String> {
+    use solution::ScalarField;
+
+    let (effective_respect_iblank, effective_show_fringe_points, effective_filter_mode) =
+        normalize_iblank_flags(respectIblank, showFringePoints, iblankFilterMode);
+
+    // Parse scalar field
+    let field_enum = ScalarField::from_str(&scalarField)
+        .ok_or_else(|| format!("Unknown scalar field: {}", scalarField))?;
+
+    // Load grid from cache
+    let grid = {
+        let cache = GRID_CACHE
+            .lock()
+            .map_err(|_| "Grid cache lock poisoned".to_string())?;
+        let cached = cache
+            .get(&gridId)
+            .ok_or_else(|| format!("Grid not found in cache: {}", gridId))?;
+        Arc::clone(&cached.grid)
+    };
+
+    // Load solution from cache
+    let solution = {
+        let cache = SOLUTION_CACHE_V2
+            .lock()
+            .map_err(|_| "Solution cache lock poisoned".to_string())?;
+        let cached = cache
+            .get(&solutionId)
+            .ok_or_else(|| format!("Solution not found in cache: {}", solutionId))?;
+        Arc::clone(&cached.solution)
+    };
+
+    // Get field range
+    let mut min: Option<f32> = None;
+    let mut max: Option<f32> = None;
+    for idx in 0..solution.rho.len() {
+        let gamma = solution.gamma.as_ref().map(|g| g[idx]);
+        let value = compute_scalar_field_from_components(
+            solution.rho[idx],
+            solution.rhou[idx],
+            solution.rhov[idx],
+            solution.rhow[idx],
+            solution.rhoe[idx],
+            gamma,
+            field_enum,
+        );
+        if value.is_finite() {
+            min = Some(match min {
+                Some(current) => current.min(value),
+                None => value,
+            });
+            max = Some(match max {
+                Some(current) => current.max(value),
+                None => value,
+            });
+        }
+    }
+
+    let (min_val, max_val) = match (min, max) {
+        (Some(min), Some(max)) => (min, max),
+        _ => return Err("No finite field values found".to_string()),
+    };
+
+    let level = min_val + (max_val - min_val) * levelNormalized as f32;
+
+    log_info(&format!(
+        "Extracting slice contours for grid {} plane {} index {} at level {}",
+        gridId, plane, index, level
+    ));
+
+    // TODO: Call contour-line extraction implementation (Step 4)
+    grid.extract_slice_contours(
+        &solution,
+        &plane,
+        index,
+        field_enum,
+        level,
+        effective_respect_iblank,
+        effective_show_fringe_points,
+        effective_filter_mode,
+    )
+}
+
+/// Extract contour lines from arbitrary plane at specified level
+#[allow(non_snake_case)]
+#[tauri::command]
+fn extract_arbitrary_plane_contours_by_id(
+    gridId: String,
+    solutionId: String,
+    planePoint: [f32; 3],
+    planeNormal: [f32; 3],
+    scalarField: String,
+    levelNormalized: f64,
+    respectIblank: Option<bool>,
+    showFringePoints: Option<bool>,
+    iblankFilterMode: Option<String>,
+    _window: WebviewWindow,
+) -> Result<Vec<f32>, String> {
+    use solution::ScalarField;
+
+    let (effective_respect_iblank, effective_show_fringe_points, effective_filter_mode) =
+        normalize_iblank_flags(respectIblank, showFringePoints, iblankFilterMode);
+
+    // Parse scalar field
+    let field_enum = ScalarField::from_str(&scalarField)
+        .ok_or_else(|| format!("Unknown scalar field: {}", scalarField))?;
+
+    // Load grid from cache
+    let grid = {
+        let cache = GRID_CACHE
+            .lock()
+            .map_err(|_| "Grid cache lock poisoned".to_string())?;
+        let cached = cache
+            .get(&gridId)
+            .ok_or_else(|| format!("Grid not found in cache: {}", gridId))?;
+        Arc::clone(&cached.grid)
+    };
+
+    // Load solution from cache
+    let solution = {
+        let cache = SOLUTION_CACHE_V2
+            .lock()
+            .map_err(|_| "Solution cache lock poisoned".to_string())?;
+        let cached = cache
+            .get(&solutionId)
+            .ok_or_else(|| format!("Solution not found in cache: {}", solutionId))?;
+        Arc::clone(&cached.solution)
+    };
+
+    // Get field range
+    let mut min: Option<f32> = None;
+    let mut max: Option<f32> = None;
+    for idx in 0..solution.rho.len() {
+        let gamma = solution.gamma.as_ref().map(|g| g[idx]);
+        let value = compute_scalar_field_from_components(
+            solution.rho[idx],
+            solution.rhou[idx],
+            solution.rhov[idx],
+            solution.rhow[idx],
+            solution.rhoe[idx],
+            gamma,
+            field_enum,
+        );
+        if value.is_finite() {
+            min = Some(match min {
+                Some(current) => current.min(value),
+                None => value,
+            });
+            max = Some(match max {
+                Some(current) => current.max(value),
+                None => value,
+            });
+        }
+    }
+
+    let (min_val, max_val) = match (min, max) {
+        (Some(min), Some(max)) => (min, max),
+        _ => return Err("No finite field values found".to_string()),
+    };
+
+    let level = min_val + (max_val - min_val) * levelNormalized as f32;
+
+    log_info(&format!(
+        "Extracting arbitrary plane contours for grid {} at level {}",
+        gridId, level
+    ));
+
+    // TODO: Call contour-line extraction implementation (Step 4)
+    grid.extract_arbitrary_plane_contours(
+        &solution,
+        planePoint,
+        planeNormal,
+        field_enum,
+        level,
+        effective_respect_iblank,
+        effective_show_fringe_points,
+        effective_filter_mode,
+    )
+}
+
+// ============================================================================
 // Cache Management Commands
 // ============================================================================
 
@@ -2273,6 +2565,9 @@ pub fn run() {
             compute_solution_colors_sliced,
             compute_solution_colors_arbitrary_plane,
             get_solution_field_range,
+            extract_iso_surface_by_id,
+            extract_slice_contours_by_id,
+            extract_arbitrary_plane_contours_by_id,
             list_cached_grids,
             list_cached_solutions,
             get_grid_metadata,
