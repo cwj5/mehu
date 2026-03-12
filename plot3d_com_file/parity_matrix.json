@@ -1,0 +1,94 @@
+{
+    "schemaVersion": 1,
+    "lastUpdated": "2026-03-12",
+    "parityStates": [
+        "supported",
+        "script-only",
+        "gui-only",
+        "not-supported"
+    ],
+    "capabilities": [
+        {
+            "id": "READ",
+            "status": "not-supported",
+            "ticket": "TKT-004",
+            "notes": "Parser/executor implementation pending"
+        },
+        {
+            "id": "FUNCTION",
+            "status": "not-supported",
+            "ticket": "TKT-003",
+            "notes": "Legacy function-number mapping not implemented"
+        },
+        {
+            "id": "VIEW",
+            "status": "not-supported",
+            "ticket": "TKT-009",
+            "notes": "Legacy-to-Three.js translation layer pending"
+        },
+        {
+            "id": "VPOINT",
+            "status": "not-supported",
+            "ticket": "TKT-009",
+            "notes": "Legacy-to-Three.js translation layer pending"
+        },
+        {
+            "id": "MINMAX",
+            "status": "not-supported",
+            "ticket": "TKT-002",
+            "notes": "Shared PlotState model pending"
+        },
+        {
+            "id": "CONTOURS",
+            "status": "not-supported",
+            "ticket": "TKT-007",
+            "notes": "Absolute multi-level contour model pending"
+        },
+        {
+            "id": "PLOT",
+            "status": "not-supported",
+            "ticket": "TKT-005",
+            "notes": "RenderIntent commit pipeline pending"
+        },
+        {
+            "id": "WALLS",
+            "status": "not-supported",
+            "ticket": "TKT-008",
+            "notes": "Range-based WALLS GUI and state model pending"
+        },
+        {
+            "id": "SUBSETS",
+            "status": "not-supported",
+            "ticket": "TKT-008",
+            "notes": "Range-based SUBSETS GUI and state model pending"
+        },
+        {
+            "id": "FSURFACE",
+            "status": "not-supported",
+            "ticket": "TKT-008",
+            "notes": "FSURFACE controls and execution semantics pending"
+        },
+        {
+            "id": "TEXT",
+            "status": "not-supported",
+            "ticket": "TKT-008",
+            "notes": "Plot text state and GUI controls pending"
+        },
+        {
+            "id": "SHOW",
+            "status": "not-supported",
+            "ticket": "TKT-008",
+            "notes": "SHOW status output and GUI display pending"
+        }
+    ],
+    "outOfScopeCommands": [
+        "HELP",
+        "LIST",
+        "MAP",
+        "CLEAR",
+        "EXIT",
+        "QUIT",
+        "VECTORS",
+        "RAKES"
+    ]
+}
