@@ -124,7 +124,9 @@ Relevant decisions:
 1. The enum remains canonical.
 2. Legacy number parsing is a translation layer concern.
 
-### TKT-004: Implement strict parser and validator for `.com` files 🚧 IN PROGRESS
+### ~~TKT-004: Implement strict parser and validator for `.com` files~~ ✅ COMPLETE
+
+Completed: 2026-03-12. Implemented `src-tauri/src/com_parser.rs` with tokenizer, alias table, include handling (with cycle detection), command dispatch for all in-scope capabilities, and 15 unit tests covering all three acceptance criteria.
 
 Goal:
 Parse supported legacy command syntax into typed actions.

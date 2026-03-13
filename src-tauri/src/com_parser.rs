@@ -355,7 +355,8 @@ fn parse_contours(args: &[String], file: &Path, line: u32, out: &mut ParsedScrip
     }
 
     let mut qualifier_values: HashMap<String, Option<String>> = HashMap::new();
-    let mut manual_values: Vec<f64> = Vec::new();
+    // Positional numeric values; their interpretation depends on the active qualifier mode.
+    let mut positional_values: Vec<f64> = Vec::new();
 
     for arg in args {
         if let Some((name, value)) = parse_qualifier(arg) {
@@ -378,18 +379,18 @@ fn parse_contours(args: &[String], file: &Path, line: u32, out: &mut ParsedScrip
                 } else {
                     let mut v = start;
                     while v <= end {
-                        manual_values.push(v);
+                        positional_values.push(v);
                         v += increment;
                     }
                 }
             } else {
-                manual_values.extend(tuple_values);
+                positional_values.extend(tuple_values);
             }
             continue;
         }
 
         if let Some(number) = parse_f64(arg) {
-            manual_values.push(number);
+            positional_values.push(number);
             continue;
         }
 
@@ -403,41 +404,25 @@ fn parse_contours(args: &[String], file: &Path, line: u32, out: &mut ParsedScrip
         ));
     }
 
-    if let Some(value) = qualifier_values
-        .get("AUTOMATIC")
-        .and_then(|v| v.as_ref())
-        .and_then(|s| s.parse::<u32>().ok())
-    {
-        out.actions
-            .push(PlotAction::SetContourSpec(ContourSpec::Automatic {
-                count: value,
-            }));
-        return;
-    }
-
-    if qualifier_values.contains_key("AUTOMATIC") {
-        out.actions
-            .push(PlotAction::SetContourSpec(ContourSpec::Automatic {
-                count: 10,
-            }));
-        return;
-    }
-
-    if let Some(increment_value) = qualifier_values
-        .get("INCREMENT")
-        .and_then(|v| v.as_ref())
-        .and_then(|s| s.parse::<f64>().ok())
-    {
+    // /INCREMENT mode: explicit qualifier takes priority.
+    if qualifier_values.contains_key("INCREMENT") {
+        let increment = qualifier_values
+            .get("INCREMENT")
+            .and_then(|v| v.as_ref())
+            .and_then(|s| s.parse::<f64>().ok())
+            .or_else(|| positional_values.first().copied())
+            .unwrap_or(0.1);
         out.actions
             .push(PlotAction::SetContourSpec(ContourSpec::Increment {
                 start: 0.0,
-                increment: increment_value,
+                increment,
             }));
         return;
     }
 
-    if qualifier_values.contains_key("MANUAL") || !manual_values.is_empty() {
-        let entries = manual_values
+    // /MANUAL mode: explicit qualifier takes priority.
+    if qualifier_values.contains_key("MANUAL") {
+        let entries = positional_values
             .into_iter()
             .map(|value| ContourEntry { value, color: None })
             .collect::<Vec<_>>();
@@ -446,8 +431,26 @@ fn parse_contours(args: &[String], file: &Path, line: u32, out: &mut ParsedScrip
         return;
     }
 
+    // Default / /AUTOMATIC mode.
+    // A bare positional number means "max number of automatic levels" per the PLOT3D spec:
+    //   CONTOURS [max number of levels]
+    // /AUTOMATIC=n or first positional value (cast to u32) sets the count.
+    let count = qualifier_values
+        .get("AUTOMATIC")
+        .and_then(|v| v.as_ref())
+        .and_then(|s| s.parse::<u32>().ok())
+        .or_else(|| positional_values.first().map(|&v| v as u32))
+        .unwrap_or(10);
+
+    out.actions
+        .push(PlotAction::SetContourSpec(ContourSpec::Automatic { count }));
+
+    // Warn about truly unknown qualifiers; known non-state qualifiers are silently accepted.
     for qualifier in qualifier_values.keys() {
-        if qualifier != "AUTOMATIC" && qualifier != "INCREMENT" && qualifier != "MANUAL" {
+        if !matches!(
+            qualifier.as_str(),
+            "AUTOMATIC" | "RANGE" | "ATTRIBUTES" | "NOATTRIBUTES"
+        ) {
             out.diagnostics.push(diagnostic(
                 cap::CONTOURS,
                 DiagnosticSeverity::Warning,
@@ -943,5 +946,236 @@ mod tests {
         assert!(parsed.diagnostics[0]
             .message
             .contains("Unsupported command"));
+    }
+
+    // ── CONTOURS modes ────────────────────────────────────────────────────────
+
+    #[test]
+    fn contours_bare_count_is_automatic() {
+        // PLOT3D spec: "CONTOURS [max number of levels]" — a bare integer is
+        // the automatic level count, NOT a manual contour value.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("c.com");
+        fs::write(&file, "CONTOURS 15\n").expect("write");
+
+        let parsed = parse_com_file(&file).expect("parse");
+        assert_eq!(parsed.actions.len(), 1);
+        assert_eq!(
+            parsed.actions[0],
+            PlotAction::SetContourSpec(ContourSpec::Automatic { count: 15 })
+        );
+    }
+
+    #[test]
+    fn contours_increment_mode() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("c.com");
+        fs::write(&file, "CONTOURS/INCREMENT 0.5\n").expect("write");
+
+        let parsed = parse_com_file(&file).expect("parse");
+        assert_eq!(parsed.actions.len(), 1);
+        if let PlotAction::SetContourSpec(ContourSpec::Increment {
+            start: _,
+            increment,
+        }) = parsed.actions[0]
+        {
+            assert!((increment - 0.5).abs() < 1e-9, "increment should be 0.5");
+        } else {
+            panic!("expected Increment spec, got {:?}", parsed.actions[0]);
+        }
+    }
+
+    #[test]
+    fn contours_manual_tuple_expands_levels() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("c.com");
+        // (0.1, 0.9, 0.2) → levels: 0.1, 0.3, 0.5, 0.7, 0.9  (5 entries)
+        fs::write(&file, "CONTOURS/MANUAL (0.1,0.9,0.2)\n").expect("write");
+
+        let parsed = parse_com_file(&file).expect("parse");
+        let warnings: Vec<_> = parsed
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == DiagnosticSeverity::Warning)
+            .collect();
+        assert!(warnings.is_empty(), "unexpected warnings: {:?}", warnings);
+        assert_eq!(parsed.actions.len(), 1);
+        if let PlotAction::SetContourSpec(ContourSpec::Manual { entries }) = &parsed.actions[0] {
+            assert_eq!(entries.len(), 5);
+            assert!((entries[0].value - 0.1).abs() < 1e-9);
+        } else {
+            panic!("expected Manual spec, got {:?}", parsed.actions[0]);
+        }
+    }
+
+    #[test]
+    fn contours_negative_increment_warns() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("c.com");
+        fs::write(&file, "CONTOURS/MANUAL (0.1,1.0,-0.1)\n").expect("write");
+
+        let parsed = parse_com_file(&file).expect("parse");
+        assert!(
+            parsed
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("increment must be > 0")),
+            "expected increment warning, got {:?}",
+            parsed.diagnostics
+        );
+    }
+
+    // ── VPOINT malformed inputs ───────────────────────────────────────────────
+
+    #[test]
+    fn vpoint_too_few_args_warns() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("v.com");
+        fs::write(&file, "VPOINT 1.0 2.0\n").expect("write");
+
+        let parsed = parse_com_file(&file).expect("parse");
+        assert!(parsed.actions.is_empty());
+        assert!(
+            parsed
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("3 numeric values")),
+            "expected arity warning, got {:?}",
+            parsed.diagnostics
+        );
+    }
+
+    #[test]
+    fn vpoint_non_numeric_args_warn() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("v.com");
+        fs::write(&file, "VPOINT abc def ghi\n").expect("write");
+
+        let parsed = parse_com_file(&file).expect("parse");
+        assert!(parsed.actions.is_empty());
+        assert!(
+            parsed
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("must be numeric")),
+            "expected numeric warning, got {:?}",
+            parsed.diagnostics
+        );
+    }
+
+    // ── Alias resolution ─────────────────────────────────────────────────────
+
+    #[test]
+    fn command_aliases_resolve_correctly() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("alias.com");
+        fs::write(&file, "FUN 100\nVP 1.0 2.0 3.0\nMM -1.0 1.0\nPL/SURFACE\n").expect("write");
+
+        let parsed = parse_com_file(&file).expect("parse");
+        // SetScalarField(Density) + SetViewpoint + SetMinMax + SetPlotMode(Surface3d) + CommitPlot
+        assert_eq!(parsed.actions.len(), 5);
+        assert_eq!(
+            parsed.actions[0],
+            PlotAction::SetScalarField(ScalarField::Density)
+        );
+        assert_eq!(
+            parsed.actions[1],
+            PlotAction::SetViewpoint(ViewPoint {
+                x: 1.0,
+                y: 2.0,
+                z: 3.0
+            })
+        );
+        assert!(matches!(parsed.actions[2], PlotAction::SetMinMax(_)));
+        assert_eq!(
+            parsed.actions[3],
+            PlotAction::SetPlotMode(PlotMode::Surface3d)
+        );
+        assert_eq!(parsed.actions[4], PlotAction::CommitPlot);
+    }
+
+    // ── Include cycle detection ───────────────────────────────────────────────
+
+    #[test]
+    fn include_cycle_returns_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let a = dir.path().join("a.com");
+        let b = dir.path().join("b.com");
+        fs::write(&a, "INCLUDE b.com\n").expect("write a");
+        fs::write(&b, "INCLUDE a.com\n").expect("write b");
+
+        let result = parse_com_file(&a);
+        assert!(result.is_err(), "expected an error for include cycle");
+        assert!(
+            result.unwrap_err().contains("cycle"),
+            "error message should mention cycle"
+        );
+    }
+
+    // ── Full integration test ─────────────────────────────────────────────────
+
+    #[test]
+    fn full_realistic_script_parses_correctly() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("session.com");
+        let script = r#"
+! Load geometry and solution
+READ grid.xyz q.dat
+! Select pressure function
+FUNCTION 110
+VIEW -Z
+VPOINT 1.0 2.0 3.0
+MINMAX -1.0 1.0
+CONTOURS 15
+TEXT "Pressure" 0.1 0.9
+WALLS 1
+PLOT/CONTOUR
+"#;
+        fs::write(&file, script).expect("write");
+
+        let parsed = parse_com_file(&file).expect("parse");
+
+        // No warnings (only info-level READ diagnostic is expected)
+        let warnings: Vec<_> = parsed
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == DiagnosticSeverity::Warning)
+            .collect();
+        assert!(warnings.is_empty(), "unexpected warnings: {:?}", warnings);
+
+        // Expected action sequence:
+        // 0 SetDataset, 1 SetScalarField(Pressure), 2 SetAxisView(MinusZ),
+        // 3 SetViewpoint, 4 SetMinMax, 5 SetContourSpec(Automatic{15}),
+        // 6 AddTextAnnotation, 7 SetWalls, 8 SetPlotMode(Contours), 9 CommitPlot
+        assert_eq!(parsed.actions.len(), 10);
+        assert!(matches!(parsed.actions[0], PlotAction::SetDataset(_)));
+        assert_eq!(
+            parsed.actions[1],
+            PlotAction::SetScalarField(ScalarField::Pressure)
+        );
+        assert_eq!(parsed.actions[2], PlotAction::SetAxisView(AxisView::MinusZ));
+        assert_eq!(
+            parsed.actions[3],
+            PlotAction::SetViewpoint(ViewPoint {
+                x: 1.0,
+                y: 2.0,
+                z: 3.0
+            })
+        );
+        assert!(matches!(parsed.actions[4], PlotAction::SetMinMax(_)));
+        assert_eq!(
+            parsed.actions[5],
+            PlotAction::SetContourSpec(ContourSpec::Automatic { count: 15 })
+        );
+        assert!(matches!(
+            parsed.actions[6],
+            PlotAction::AddTextAnnotation(_)
+        ));
+        assert!(matches!(parsed.actions[7], PlotAction::SetWalls(_)));
+        assert_eq!(
+            parsed.actions[8],
+            PlotAction::SetPlotMode(PlotMode::Contours)
+        );
+        assert_eq!(parsed.actions[9], PlotAction::CommitPlot);
     }
 }
