@@ -1,7 +1,8 @@
 use crate::function_mapping::map_legacy_function_number;
 use crate::plot_state::{
-    cap, AxisView, ContourEntry, ContourSpec, DatasetRef, Diagnostic, DiagnosticSeverity,
-    FsurfaceSpec, GridSubset, IndexRange, PlotAction, PlotMode, PlotText, ScalarField, ViewPoint,
+    cap, AxisBounds, AxisView, ContourEntry, ContourSpec, DatasetRef, Diagnostic,
+    DiagnosticSeverity, FsurfaceSpec, GridSubset, IndexRange, MinMaxOverride, PlotAction, PlotMode,
+    PlotText, ScalarField, ViewPoint,
 };
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -224,7 +225,7 @@ fn parse_view(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {
             Some(file.to_string_lossy().to_string()),
             Some(line),
             Some(1),
-            "VIEW requires an axis token (e.g. X, -Z)",
+            "VIEW requires an axis or plane token (e.g. X, -Z, XY, TOP)",
         ));
         return;
     }
@@ -237,6 +238,12 @@ fn parse_view(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {
         "-Y" => Some(AxisView::MinusY),
         "Z" | "+Z" => Some(AxisView::PlusZ),
         "-Z" => Some(AxisView::MinusZ),
+        "XY" | "TOP" => Some(AxisView::PlaneXY),
+        "XZ" | "SIDE" => Some(AxisView::PlaneXZ),
+        "YZ" | "FRONT" => Some(AxisView::PlaneYZ),
+        "YX" => Some(AxisView::PlaneYX),
+        "ZX" => Some(AxisView::PlaneZX),
+        "ZY" => Some(AxisView::PlaneZY),
         _ => None,
     };
 
@@ -250,7 +257,7 @@ fn parse_view(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {
             Some(line),
             Some(1),
             format!(
-                "Unsupported VIEW argument '{}' (expected X/Y/Z or signed axis)",
+                "Unsupported VIEW argument '{}' (expected X/Y/Z, ±axis, or plane e.g. XY/TOP)",
                 args[0]
             ),
         ));
@@ -302,47 +309,106 @@ fn parse_vpoint(args: &[String], file: &Path, line: u32, out: &mut ParsedScript)
 }
 
 fn parse_minmax(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {
-    if args.len() < 2 {
-        out.diagnostics.push(diagnostic(
-            cap::MINMAX,
-            DiagnosticSeverity::Warning,
-            Some(file.to_string_lossy().to_string()),
-            Some(line),
-            Some(1),
-            "MINMAX requires at least min and max values",
-        ));
-        return;
-    }
+    // Collect axis-selection qualifiers and numeric values separately.
+    // Known non-state qualifiers like /INCREMENT, /XSCALE are silently accepted.
+    let mut active_axes: Vec<&str> = Vec::new();
+    let mut numeric_args: Vec<f64> = Vec::new();
 
-    let min = parse_f64(&args[0]);
-    let max = parse_f64(&args[1]);
-    match (min, max) {
-        (Some(min), Some(max)) => {
-            out.actions
-                .push(PlotAction::SetMinMax(crate::plot_state::MinMaxOverride {
-                    min: Some(min),
-                    max: Some(max),
-                }));
-            if args.len() > 2 {
-                out.diagnostics.push(diagnostic(
+    for arg in args {
+        if let Some((name, _)) = parse_qualifier(arg) {
+            match name.as_str() {
+                "X" => active_axes.push("x"),
+                "Y" => active_axes.push("y"),
+                "Z" => active_axes.push("z"),
+                // Known advisory or unimplemented qualifiers — silently accepted.
+                "NOX" | "NOY" | "NOZ" | "INCREMENT" | "XSCALE" | "YSCALE" | "ZSCALE" => {}
+                _ => out.diagnostics.push(diagnostic(
                     cap::MINMAX,
-                    DiagnosticSeverity::Info,
+                    DiagnosticSeverity::Warning,
                     Some(file.to_string_lossy().to_string()),
                     Some(line),
                     Some(1),
-                    "MINMAX extra values detected; parser currently uses the first min/max pair",
+                    format!("Unknown MINMAX qualifier '/{}' ignored", name),
+                )),
+            }
+            continue;
+        }
+        match parse_f64(arg) {
+            Some(v) => numeric_args.push(v),
+            None => out.diagnostics.push(diagnostic(
+                cap::MINMAX,
+                DiagnosticSeverity::Warning,
+                Some(file.to_string_lossy().to_string()),
+                Some(line),
+                Some(1),
+                format!("Non-numeric MINMAX value '{}' ignored", arg),
+            )),
+        }
+    }
+
+    let mut mm = MinMaxOverride::default();
+
+    if active_axes.is_empty() {
+        // Positional mode: pairs go to X, Y, Z in order.
+        if numeric_args.len() < 2 {
+            out.diagnostics.push(diagnostic(
+                cap::MINMAX,
+                DiagnosticSeverity::Warning,
+                Some(file.to_string_lossy().to_string()),
+                Some(line),
+                Some(1),
+                "MINMAX requires at least 2 values (xmin xmax)",
+            ));
+            return;
+        }
+        mm.x = Some(AxisBounds {
+            min: numeric_args[0],
+            max: numeric_args[1],
+        });
+        if numeric_args.len() >= 4 {
+            mm.y = Some(AxisBounds {
+                min: numeric_args[2],
+                max: numeric_args[3],
+            });
+        }
+        if numeric_args.len() >= 6 {
+            mm.z = Some(AxisBounds {
+                min: numeric_args[4],
+                max: numeric_args[5],
+            });
+        }
+    } else {
+        // Axis-qualifier mode: each qualifier consumes the next pair of values.
+        for (i, axis) in active_axes.iter().enumerate() {
+            let start = i * 2;
+            if numeric_args.len() < start + 2 {
+                out.diagnostics.push(diagnostic(
+                    cap::MINMAX,
+                    DiagnosticSeverity::Warning,
+                    Some(file.to_string_lossy().to_string()),
+                    Some(line),
+                    Some(1),
+                    format!(
+                        "MINMAX /{} requires 2 values (min max)",
+                        axis.to_uppercase()
+                    ),
                 ));
+                continue;
+            }
+            let bounds = AxisBounds {
+                min: numeric_args[start],
+                max: numeric_args[start + 1],
+            };
+            match *axis {
+                "x" => mm.x = Some(bounds),
+                "y" => mm.y = Some(bounds),
+                "z" => mm.z = Some(bounds),
+                _ => {}
             }
         }
-        _ => out.diagnostics.push(diagnostic(
-            cap::MINMAX,
-            DiagnosticSeverity::Warning,
-            Some(file.to_string_lossy().to_string()),
-            Some(line),
-            Some(1),
-            "MINMAX values must be numeric",
-        )),
     }
+
+    out.actions.push(PlotAction::SetMinMax(mm));
 }
 
 fn parse_contours(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {
@@ -657,11 +723,47 @@ fn parse_read(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {
         return;
     }
 
-    // Temporary parse representation: store raw path strings in dataset IDs so
-    // executor can resolve/cache them in TKT-005.
+    // Support both qualifier form (READ/XYZ=grid.p3d /Q=sol.q) and positional
+    // form (READ grid.p3d sol.q).  Path-to-cache resolution is deferred to the
+    // executor (TKT-005).
+    let mut grid_path: Option<String> = None;
+    let mut solution_path: Option<String> = None;
+    let mut positional: Vec<String> = Vec::new();
+
+    for arg in args {
+        if let Some((name, value)) = parse_qualifier(arg) {
+            match name.as_str() {
+                "XYZ" | "GRID" => grid_path = value,
+                "Q" | "SOLUTION" => solution_path = value,
+                // Known qualifiers that don't affect the dataset reference.
+                "1D" | "2D" | "3D" | "FORMATTED" | "UNFORMATTED" | "BINARY" | "PLANES"
+                | "WHOLE" | "CHECK" | "NOCHECK" | "BLANK" | "NOBLANK" | "MGRID" | "MDATASET"
+                | "FUNCTION" => {}
+                _ => out.diagnostics.push(diagnostic(
+                    cap::READ,
+                    DiagnosticSeverity::Warning,
+                    Some(file.to_string_lossy().to_string()),
+                    Some(line),
+                    Some(1),
+                    format!("Unknown READ qualifier '/{}' ignored", name),
+                )),
+            }
+            continue;
+        }
+        positional.push(arg.clone());
+    }
+
+    // Fall back to positional if qualifier form was not used.
+    if grid_path.is_none() {
+        grid_path = positional.first().cloned();
+    }
+    if solution_path.is_none() {
+        solution_path = positional.get(1).cloned();
+    }
+
     let dataset = DatasetRef {
-        grid_id: args.first().cloned(),
-        solution_id: args.get(1).cloned(),
+        grid_id: grid_path,
+        solution_id: solution_path,
     };
     out.actions.push(PlotAction::SetDataset(dataset));
     out.diagnostics.push(diagnostic(
@@ -1177,5 +1279,161 @@ PLOT/CONTOUR
             PlotAction::SetPlotMode(PlotMode::Contours)
         );
         assert_eq!(parsed.actions[9], PlotAction::CommitPlot);
+    }
+}
+
+// ── VIEW plane tokens ─────────────────────────────────────────────────────
+
+#[test]
+fn view_plane_tokens_produce_plane_variants() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("v.com");
+    fs::write(
+        &file,
+        "VIEW XY\nVIEW TOP\nVIEW XZ\nVIEW SIDE\nVIEW YZ\nVIEW FRONT\nVIEW YX\n",
+    )
+    .expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+    let warnings: Vec<_> = parsed
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == DiagnosticSeverity::Warning)
+        .collect();
+    assert!(warnings.is_empty(), "unexpected warnings: {:?}", warnings);
+    assert_eq!(parsed.actions.len(), 7);
+    assert_eq!(
+        parsed.actions[0],
+        PlotAction::SetAxisView(AxisView::PlaneXY)
+    );
+    assert_eq!(
+        parsed.actions[1],
+        PlotAction::SetAxisView(AxisView::PlaneXY)
+    );
+    assert_eq!(
+        parsed.actions[2],
+        PlotAction::SetAxisView(AxisView::PlaneXZ)
+    );
+    assert_eq!(
+        parsed.actions[3],
+        PlotAction::SetAxisView(AxisView::PlaneXZ)
+    );
+    assert_eq!(
+        parsed.actions[4],
+        PlotAction::SetAxisView(AxisView::PlaneYZ)
+    );
+    assert_eq!(
+        parsed.actions[5],
+        PlotAction::SetAxisView(AxisView::PlaneYZ)
+    );
+    assert_eq!(
+        parsed.actions[6],
+        PlotAction::SetAxisView(AxisView::PlaneYX)
+    );
+}
+
+// ── MINMAX per-axis ───────────────────────────────────────────────────────
+
+#[test]
+fn minmax_positional_all_axes() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("m.com");
+    fs::write(&file, "MINMAX -1.0 1.0 -2.0 2.0 -3.0 3.0\n").expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+    assert_eq!(parsed.actions.len(), 1);
+    if let PlotAction::SetMinMax(mm) = &parsed.actions[0] {
+        assert_eq!(
+            mm.x,
+            Some(AxisBounds {
+                min: -1.0,
+                max: 1.0
+            })
+        );
+        assert_eq!(
+            mm.y,
+            Some(AxisBounds {
+                min: -2.0,
+                max: 2.0
+            })
+        );
+        assert_eq!(
+            mm.z,
+            Some(AxisBounds {
+                min: -3.0,
+                max: 3.0
+            })
+        );
+    } else {
+        panic!("expected SetMinMax, got {:?}", parsed.actions[0]);
+    }
+}
+
+#[test]
+fn minmax_y_qualifier_only() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("m.com");
+    fs::write(&file, "MINMAX/Y -2.0 2.0\n").expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+    let warnings: Vec<_> = parsed
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == DiagnosticSeverity::Warning)
+        .collect();
+    assert!(warnings.is_empty(), "unexpected warnings: {:?}", warnings);
+    assert_eq!(parsed.actions.len(), 1);
+    if let PlotAction::SetMinMax(mm) = &parsed.actions[0] {
+        assert_eq!(mm.x, None);
+        assert_eq!(
+            mm.y,
+            Some(AxisBounds {
+                min: -2.0,
+                max: 2.0
+            })
+        );
+        assert_eq!(mm.z, None);
+    } else {
+        panic!("expected SetMinMax, got {:?}", parsed.actions[0]);
+    }
+}
+
+// ── READ qualifier form ───────────────────────────────────────────────────
+
+#[test]
+fn read_qualifier_form() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("r.com");
+    fs::write(&file, "READ/XYZ=grid.p3d /Q=solution.q\n").expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+    let warnings: Vec<_> = parsed
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == DiagnosticSeverity::Warning)
+        .collect();
+    assert!(warnings.is_empty(), "unexpected warnings: {:?}", warnings);
+    assert_eq!(parsed.actions.len(), 1);
+    if let PlotAction::SetDataset(ds) = &parsed.actions[0] {
+        assert_eq!(ds.grid_id.as_deref(), Some("grid.p3d"));
+        assert_eq!(ds.solution_id.as_deref(), Some("solution.q"));
+    } else {
+        panic!("expected SetDataset, got {:?}", parsed.actions[0]);
+    }
+}
+
+#[test]
+fn read_positional_form_still_works() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("r.com");
+    fs::write(&file, "READ grid.p3d solution.q\n").expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+    assert_eq!(parsed.actions.len(), 1);
+    if let PlotAction::SetDataset(ds) = &parsed.actions[0] {
+        assert_eq!(ds.grid_id.as_deref(), Some("grid.p3d"));
+        assert_eq!(ds.solution_id.as_deref(), Some("solution.q"));
+    } else {
+        panic!("expected SetDataset, got {:?}", parsed.actions[0]);
     }
 }

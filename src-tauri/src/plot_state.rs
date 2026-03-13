@@ -184,6 +184,14 @@ pub enum AxisView {
     MinusY,
     PlusZ,
     MinusZ,
+    /// Two-axis plane views for 2D and function-surface (carpet) plots.
+    /// XY = TOP, XZ = SIDE, YZ = FRONT in legacy PLOT3D terminology.
+    PlaneXY,
+    PlaneXZ,
+    PlaneYZ,
+    PlaneYX,
+    PlaneZX,
+    PlaneZY,
     /// No axis-aligned preset; an explicit viewpoint is used instead.
     Custom,
 }
@@ -207,12 +215,22 @@ pub struct ViewPoint {
 // MINMAX overrides
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// User-specified scalar range overrides.  When `None` the global data range is
-/// used for color scaling.
+/// Inclusive axis bounds; `min` must be strictly less than `max`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AxisBounds {
+    pub min: f64,
+    pub max: f64,
+}
+
+/// Per-axis plot range overrides from the `MINMAX` command.
+///
+/// Each spatial axis is independently optional; `None` means use the data
+/// range for that axis.
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MinMaxOverride {
-    pub min: Option<f64>,
-    pub max: Option<f64>,
+    pub x: Option<AxisBounds>,
+    pub y: Option<AxisBounds>,
+    pub z: Option<AxisBounds>,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -500,19 +518,25 @@ pub fn apply_action(mut state: PlotState, action: PlotAction) -> (PlotState, Vec
         }
 
         PlotAction::SetMinMax(mm) => {
-            if let (Some(min), Some(max)) = (mm.min, mm.max) {
-                if min >= max {
-                    diags.push(Diagnostic::warning(
-                        cap::MINMAX,
-                        format!("MINMAX min ({min}) must be less than max ({max}); ignored"),
-                    ));
-                    // Leave state unchanged.
-                } else {
-                    state.minmax = mm;
-                }
-            } else {
-                state.minmax = mm;
-            }
+            let mut apply_axis =
+                |label: &str, bounds: Option<AxisBounds>, dest: &mut Option<AxisBounds>| {
+                    if let Some(ref b) = bounds {
+                        if b.min >= b.max {
+                            diags.push(Diagnostic::warning(
+                                cap::MINMAX,
+                                format!(
+                                "MINMAX {label}-axis min ({}) must be less than max ({}); ignored",
+                                b.min, b.max
+                            ),
+                            ));
+                            return;
+                        }
+                    }
+                    *dest = bounds;
+                };
+            apply_axis("x", mm.x, &mut state.minmax.x);
+            apply_axis("y", mm.y, &mut state.minmax.y);
+            apply_axis("z", mm.z, &mut state.minmax.z);
         }
 
         PlotAction::SetContourSpec(spec) => {
@@ -664,8 +688,9 @@ mod tests {
     fn set_minmax_accepts_valid_range() {
         let state = default_state();
         let mm = MinMaxOverride {
-            min: Some(0.5),
-            max: Some(2.5),
+            x: Some(AxisBounds { min: 0.5, max: 2.5 }),
+            y: None,
+            z: None,
         };
         let (new_state, diags) = apply_action(state, PlotAction::SetMinMax(mm.clone()));
         assert_eq!(new_state.minmax, mm);
@@ -676,8 +701,9 @@ mod tests {
     fn set_minmax_rejects_inverted_range() {
         let state = default_state();
         let mm = MinMaxOverride {
-            min: Some(5.0),
-            max: Some(1.0),
+            x: Some(AxisBounds { min: 5.0, max: 1.0 }),
+            y: None,
+            z: None,
         };
         let (new_state, diags) = apply_action(state, PlotAction::SetMinMax(mm));
         // State must be unchanged.
@@ -691,8 +717,9 @@ mod tests {
     fn set_minmax_rejects_equal_min_max() {
         let state = default_state();
         let mm = MinMaxOverride {
-            min: Some(3.0),
-            max: Some(3.0),
+            x: Some(AxisBounds { min: 3.0, max: 3.0 }),
+            y: None,
+            z: None,
         };
         let (_, diags) = apply_action(state, PlotAction::SetMinMax(mm));
         assert!(!diags.is_empty());
@@ -702,8 +729,9 @@ mod tests {
     fn set_minmax_accepts_partial_override() {
         let state = default_state();
         let mm = MinMaxOverride {
-            min: Some(0.0),
-            max: None,
+            x: None,
+            y: Some(AxisBounds { min: 0.0, max: 1.0 }),
+            z: None,
         };
         let (new_state, diags) = apply_action(state, PlotAction::SetMinMax(mm.clone()));
         assert_eq!(new_state.minmax, mm);
@@ -945,15 +973,15 @@ mod tests {
         let (s3, _) = apply_action(
             s2,
             PlotAction::SetMinMax(MinMaxOverride {
-                min: Some(0.1),
-                max: Some(1.2),
+                x: Some(AxisBounds { min: 0.1, max: 1.2 }),
+                y: None,
+                z: None,
             }),
         );
         let (s4, _) = apply_action(s3, PlotAction::SetPlotMode(PlotMode::Lines));
         assert_eq!(s4.scalar_field, ScalarField::Density);
         assert_eq!(s4.contour_spec, ContourSpec::Automatic { count: 5 });
-        assert_eq!(s4.minmax.min, Some(0.1));
-        assert_eq!(s4.minmax.max, Some(1.2));
+        assert_eq!(s4.minmax.x, Some(AxisBounds { min: 0.1, max: 1.2 }));
         assert_eq!(s4.plot_mode, PlotMode::Lines);
     }
 
