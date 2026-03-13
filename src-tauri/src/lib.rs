@@ -27,7 +27,7 @@ use plot3d::{
     read_plot3d_grid_with_metadata, read_plot3d_solution, read_plot3d_solution_ascii,
     GridDimensions, MeshGeometry, Plot3DFunction, Plot3DGrid, Plot3DSolution, SolutionFileMetadata,
 };
-use plot_state::{apply_action, PlotAction, PlotState};
+use plot_state::{apply_action, ApplyActionResult, PlotAction, PlotState};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -1014,8 +1014,8 @@ fn convert_grid_to_mesh(
 }
 
 /// Helper function to compute a scalar field value from a single point's solution data
-fn compute_scalar_field_value(solution: &Plot3DSolution, field: solution::ScalarField) -> f32 {
-    use solution::ScalarField;
+fn compute_scalar_field_value(solution: &Plot3DSolution, field: plot_state::ScalarField) -> f32 {
+    use plot_state::ScalarField;
 
     if solution.rho.is_empty() {
         return 0.0;
@@ -1061,6 +1061,7 @@ fn compute_scalar_field_value(solution: &Plot3DSolution, field: solution::Scalar
         }
 
         ScalarField::Energy => solution.rhoe[0],
+        ScalarField::None => 0.0,
     }
 }
 
@@ -1072,9 +1073,9 @@ fn compute_scalar_field_from_components(
     rhow: f32,
     rhoe: f32,
     gamma: Option<f32>,
-    field: solution::ScalarField,
+    field: plot_state::ScalarField,
 ) -> f32 {
-    use solution::ScalarField;
+    use plot_state::ScalarField;
 
     match field {
         ScalarField::Density => rho,
@@ -1106,6 +1107,7 @@ fn compute_scalar_field_from_components(
             }
         }
         ScalarField::Energy => rhoe,
+        ScalarField::None => 0.0,
     }
 }
 
@@ -1278,7 +1280,8 @@ fn compute_solution_colors(
     iblank_filter_mode: Option<String>,
     window: WebviewWindow,
 ) -> Result<MeshGeometry, String> {
-    use solution::{compute_colors, compute_scalar_field_surface, ColorScheme, ScalarField};
+    use plot_state::ScalarField;
+    use solution::{compute_colors, compute_scalar_field_surface, ColorScheme};
 
     let _ = window.emit("loading-start", format!("Computing {} field...", field));
 
@@ -1427,7 +1430,8 @@ fn compute_solution_colors_sliced(
     global_max: Option<f32>,
     window: WebviewWindow,
 ) -> Result<MeshGeometry, String> {
-    use solution::{compute_colors_with_range, ColorScheme, ScalarField};
+    use plot_state::ScalarField;
+    use solution::{compute_colors_with_range, ColorScheme};
 
     let _ = window.emit(
         "loading-start",
@@ -1676,7 +1680,8 @@ fn compute_solution_colors_arbitrary_plane(
     global_max: Option<f32>,
     window: WebviewWindow,
 ) -> Result<MeshGeometry, String> {
-    use solution::{compute_colors_with_range, ColorScheme, ScalarField};
+    use plot_state::ScalarField;
+    use solution::{compute_colors_with_range, ColorScheme};
 
     let _ = window.emit(
         "loading-start",
@@ -1900,7 +1905,7 @@ pub struct FieldRange {
 #[allow(non_snake_case)]
 #[tauri::command]
 fn get_solution_field_range(solutionId: String, field: String) -> Result<FieldRange, String> {
-    use solution::ScalarField;
+    use plot_state::ScalarField;
 
     // Load solution from cache
     let solution = {
@@ -1986,7 +1991,7 @@ fn extract_iso_surface_by_id(
     iblankFilterMode: Option<String>,
     _window: WebviewWindow,
 ) -> Result<MeshGeometry, String> {
-    use solution::ScalarField;
+    use plot_state::ScalarField;
 
     let (effective_respect_iblank, effective_show_fringe_points, effective_filter_mode) =
         normalize_iblank_flags(respectIblank, showFringePoints, iblankFilterMode);
@@ -2082,7 +2087,7 @@ fn extract_slice_contours_by_id(
     iblankFilterMode: Option<String>,
     _window: WebviewWindow,
 ) -> Result<Vec<f32>, String> {
-    use solution::ScalarField;
+    use plot_state::ScalarField;
 
     let (effective_respect_iblank, effective_show_fringe_points, effective_filter_mode) =
         normalize_iblank_flags(respectIblank, showFringePoints, iblankFilterMode);
@@ -2179,7 +2184,7 @@ fn extract_arbitrary_plane_contours_by_id(
     iblankFilterMode: Option<String>,
     _window: WebviewWindow,
 ) -> Result<Vec<f32>, String> {
-    use solution::ScalarField;
+    use plot_state::ScalarField;
 
     let (effective_respect_iblank, effective_show_fringe_points, effective_filter_mode) =
         normalize_iblank_flags(respectIblank, showFringePoints, iblankFilterMode);
@@ -2561,16 +2566,17 @@ fn get_plot_state() -> Result<PlotState, String> {
 /// The frontend should call this instead of mutating state directly so that
 /// script execution and GUI interactions always share the same state path.
 #[tauri::command]
-fn apply_plot_action(
-    action: PlotAction,
-) -> Result<(PlotState, Vec<plot_state::Diagnostic>), String> {
+fn apply_plot_action(action: PlotAction) -> Result<ApplyActionResult, String> {
     let mut guard = PLOT_STATE
         .lock()
         .map_err(|e| format!("Failed to lock plot state: {e}"))?;
     let current = guard.clone();
-    let (new_state, diags) = apply_action(current, action);
+    let (new_state, diagnostics) = apply_action(current, action);
     *guard = new_state.clone();
-    Ok((new_state, diags))
+    Ok(ApplyActionResult {
+        state: new_state,
+        diagnostics,
+    })
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

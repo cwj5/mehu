@@ -24,32 +24,7 @@ impl ColorScheme {
     }
 }
 
-/// Scalar field types
-#[derive(Debug, Clone, Copy)]
-pub enum ScalarField {
-    Density,
-    VelocityMagnitude,
-    MomentumX,
-    MomentumY,
-    MomentumZ,
-    Pressure,
-    Energy,
-}
-
-impl ScalarField {
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "density" => Some(ScalarField::Density),
-            "velocity_magnitude" => Some(ScalarField::VelocityMagnitude),
-            "momentum_x" => Some(ScalarField::MomentumX),
-            "momentum_y" => Some(ScalarField::MomentumY),
-            "momentum_z" => Some(ScalarField::MomentumZ),
-            "pressure" => Some(ScalarField::Pressure),
-            "energy" => Some(ScalarField::Energy),
-            _ => None,
-        }
-    }
-}
+use crate::plot_state::ScalarField;
 
 /// Compute a scalar field from solution data
 #[allow(dead_code)]
@@ -117,6 +92,10 @@ pub fn compute_scalar_field(solution: &Plot3DSolution, field: ScalarField) -> Ve
         ScalarField::Energy => {
             result = solution.rhoe.clone();
         }
+
+        // None means "no scalar field selected"; return an empty vec so callers
+        // can detect the unset case without panicking.
+        ScalarField::None => {}
     }
 
     result
@@ -180,6 +159,9 @@ pub fn compute_scalar_field_surface(
                         0.0
                     }
                 }
+
+                // None means no field selected; treat as zero.
+                ScalarField::None => 0.0,
             };
 
             values.push(value);

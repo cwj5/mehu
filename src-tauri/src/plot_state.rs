@@ -59,6 +59,24 @@ impl Default for ScalarField {
     }
 }
 
+impl ScalarField {
+    /// Parse a lowercase snake_case string into a `ScalarField` variant.
+    /// Returns `None` for unknown strings; `ScalarField::None` is not a valid
+    /// string form — it is the default/unset state, not a named field.
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "density" => Some(ScalarField::Density),
+            "velocity_magnitude" => Some(ScalarField::VelocityMagnitude),
+            "momentum_x" => Some(ScalarField::MomentumX),
+            "momentum_y" => Some(ScalarField::MomentumY),
+            "momentum_z" => Some(ScalarField::MomentumZ),
+            "pressure" => Some(ScalarField::Pressure),
+            "energy" => Some(ScalarField::Energy),
+            _ => None,
+        }
+    }
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Contour model  (absolute physical values, multi-level)
 // ──────────────────────────────────────────────────────────────────────────────
@@ -352,6 +370,20 @@ impl Diagnostic {
             message: message.into(),
         }
     }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Tauri command return type
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Named return value for the `apply_plot_action` Tauri command.
+/// Using a struct rather than a bare tuple gives the frontend clearly-named
+/// fields (`result.state`, `result.diagnostics`) and keeps the API stable if
+/// we need to add fields later.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApplyActionResult {
+    pub state: PlotState,
+    pub diagnostics: Vec<Diagnostic>,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
