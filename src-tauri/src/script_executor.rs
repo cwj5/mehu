@@ -1,3 +1,4 @@
+use crate::com_parser::ParsedScript;
 use crate::plot_state::{apply_action, Diagnostic, PlotAction, PlotState};
 use serde::{Deserialize, Serialize};
 
@@ -56,6 +57,17 @@ pub fn execute_actions(initial_state: PlotState, actions: &[PlotAction]) -> Scri
     }
 }
 
+/// Execute a fully parsed script, preserving parser diagnostics and appending
+/// execution diagnostics.
+pub fn execute_parsed_script(
+    initial_state: PlotState,
+    parsed: &ParsedScript,
+) -> ScriptExecutionResult {
+    let mut result = execute_actions(initial_state, &parsed.actions);
+    result.diagnostics.splice(0..0, parsed.diagnostics.clone());
+    result
+}
+
 fn format_show_output(state: &PlotState) -> String {
     format!(
         "SHOW: field={:?}, mode={:?}, axis_view={:?}, text_annotations={}, walls={}, subsets={}",
@@ -71,7 +83,9 @@ fn format_show_output(state: &PlotState) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::com_parser::parse_com_file;
     use crate::plot_state::{AxisView, PlotMode, PlotText, ScalarField};
+    use std::fs;
 
     #[test]
     fn plot_is_only_render_intent_boundary() {
@@ -125,5 +139,46 @@ mod tests {
         assert!(result.show_output[0].contains("SHOW:"));
         assert_eq!(result.intents.len(), 1);
         assert!(!result.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn multiple_plot_actions_emit_multiple_intents_in_order() {
+        let initial = PlotState::default();
+        let actions = vec![
+            PlotAction::SetScalarField(ScalarField::Density),
+            PlotAction::CommitPlot,
+            PlotAction::SetScalarField(ScalarField::Pressure),
+            PlotAction::CommitPlot,
+        ];
+
+        let result = execute_actions(initial, &actions);
+        assert_eq!(result.intents.len(), 2);
+        assert_eq!(result.intents[0].state.scalar_field, ScalarField::Density);
+        assert_eq!(result.intents[1].state.scalar_field, ScalarField::Pressure);
+    }
+
+    #[test]
+    fn execute_parsed_script_merges_parser_and_execution_diagnostics() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("exec.com");
+        fs::write(&file, "UNKNOWN_CMD\nSHOW\nPLOT/CONTOUR\n").expect("write script");
+
+        let parsed = parse_com_file(&file).expect("parse script");
+        let result = execute_parsed_script(PlotState::default(), &parsed);
+
+        assert_eq!(result.intents.len(), 1);
+        assert_eq!(result.show_output.len(), 1);
+        assert!(result
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("Unsupported command")));
+        assert!(result
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("Show status requested")));
+        assert!(result
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("Plot committed")));
     }
 }

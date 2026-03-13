@@ -158,7 +158,9 @@ Relevant decisions:
 1. Soft-fail unsupported commands.
 2. Include-file paths are expected to be relative to the parsed file until proven otherwise.
 
-### TKT-005: Implement command executor and RenderIntent 🚧 IN PROGRESS
+### ~~TKT-005: Implement command executor and RenderIntent~~ ✅ COMPLETE
+
+Completed: 2026-03-12. Added `src-tauri/src/script_executor.rs` with `RenderIntent`, `ScriptExecutionResult`, `execute_actions`, and `execute_parsed_script`; wired `execute_com_script` Tauri command in `src-tauri/src/lib.rs`; `PLOT` now emits render intents at commit boundaries, `SHOW` produces executor output, parsed and execution diagnostics are merged, and final `PlotState` is persisted to shared backend state.
 
 Goal:
 Apply parsed actions to `PlotState` and emit `RenderIntent` values on `PLOT`.

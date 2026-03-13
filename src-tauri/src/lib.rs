@@ -31,7 +31,7 @@ use plot3d::{
     GridDimensions, MeshGeometry, Plot3DFunction, Plot3DGrid, Plot3DSolution, SolutionFileMetadata,
 };
 use plot_state::{apply_action, ApplyActionResult, PlotAction, PlotState};
-use script_executor::{execute_actions, ScriptExecutionResult};
+use script_executor::{execute_parsed_script, ScriptExecutionResult};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -2647,8 +2647,7 @@ fn execute_com_script(path: String) -> Result<ScriptExecutionResult, String> {
         .lock()
         .map_err(|e| format!("Failed to lock plot state: {e}"))?;
     let current = guard.clone();
-    let mut result = execute_actions(current, &parsed.actions);
-    result.diagnostics.splice(0..0, parsed.diagnostics);
+    let result = execute_parsed_script(current, &parsed);
     *guard = result.final_state.clone();
     Ok(result)
 }
