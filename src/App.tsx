@@ -61,6 +61,7 @@ type PlotActionPayload =
   | { kind: 'set_scalar_field'; field: BackendScalarField }
   | { kind: 'set_plot_mode'; mode: BackendPlotMode }
   | { kind: 'set_viewpoint'; vp: { x: number; y: number; z: number } }
+  | { kind: 'commit_plot' }
   | {
     kind: 'set_contour_spec';
     mode: 'manual';
@@ -185,6 +186,10 @@ const App = () => {
     }
   };
 
+  const commitPlot = async () => {
+    await dispatchPlotAction({ kind: 'commit_plot' });
+  };
+
 
   // Arbitrary slice management
   const addArbitrarySlice = () => {
@@ -267,24 +272,26 @@ const App = () => {
   };
 
   // Contour level validation and clamping
-  const handleContourLevelChange = (value: number) => {
+  const handleContourLevelChange = async (value: number) => {
     if (value < 0 || value > 1) {
       const clamped = Math.max(0, Math.min(1, value));
       setContourLevel(clamped);
-      void dispatchPlotAction({
+      await dispatchPlotAction({
         kind: 'set_contour_spec',
         mode: 'manual',
         entries: [{ value: clamped, color: null }],
       });
+      await commitPlot();
       setContourLevelWarning(`Level clamped to valid range [0, 1]`);
       setTimeout(() => setContourLevelWarning(""), 3000);
     } else {
       setContourLevel(value);
-      void dispatchPlotAction({
+      await dispatchPlotAction({
         kind: 'set_contour_spec',
         mode: 'manual',
         entries: [{ value, color: null }],
       });
+      await commitPlot();
       setContourLevelWarning("");
     }
   };
@@ -463,10 +470,12 @@ const App = () => {
     // Rust will emit loading events
     setCurrentScalarField(field);
     await dispatchPlotAction({ kind: 'set_scalar_field', field: field as BackendScalarField });
+    await commitPlot();
   };
 
   const handleCameraCommit = async (vp: { x: number; y: number; z: number }) => {
     await dispatchPlotAction({ kind: 'set_viewpoint', vp });
+    await commitPlot();
   };
 
   useEffect(() => {
@@ -819,7 +828,10 @@ const App = () => {
                             const mode: BackendPlotMode = enabled
                               ? (contourDisplayMode === 'lines' ? 'lines' : 'contours')
                               : 'surface3d';
-                            void dispatchPlotAction({ kind: 'set_plot_mode', mode });
+                            void (async () => {
+                              await dispatchPlotAction({ kind: 'set_plot_mode', mode });
+                              await commitPlot();
+                            })();
                           }}
                         />
                         Enable Contours
@@ -838,7 +850,10 @@ const App = () => {
                                 setContourDisplayMode(nextMode);
                                 if (contoursEnabled) {
                                   const mode: BackendPlotMode = nextMode === 'lines' ? 'lines' : 'contours';
-                                  void dispatchPlotAction({ kind: 'set_plot_mode', mode });
+                                  void (async () => {
+                                    await dispatchPlotAction({ kind: 'set_plot_mode', mode });
+                                    await commitPlot();
+                                  })();
                                 }
                               }}
                               style={{
@@ -865,7 +880,9 @@ const App = () => {
                               max="1"
                               step="0.01"
                               value={contourLevel}
-                              onChange={(e) => handleContourLevelChange(parseFloat(e.target.value) || 0)}
+                              onChange={(e) => {
+                                void handleContourLevelChange(parseFloat(e.target.value) || 0);
+                              }}
                               style={{
                                 padding: '4px 6px',
                                 background: '#1a2640',
