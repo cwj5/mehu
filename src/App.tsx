@@ -72,6 +72,18 @@ interface ApplyPlotActionResult {
   diagnostics: BackendDiagnostic[];
 }
 
+const extractFirstManualContourValue = (spec: unknown): number | null => {
+  if (!spec || typeof spec !== 'object') {
+    return null;
+  }
+  const raw = spec as { mode?: string; entries?: Array<{ value?: number }> };
+  if (raw.mode !== 'manual' || !Array.isArray(raw.entries) || raw.entries.length === 0) {
+    return null;
+  }
+  const value = raw.entries[0]?.value;
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+};
+
 const GRID_COLORS = [
   "#6366f1",
   "#22c55e",
@@ -460,6 +472,31 @@ const App = () => {
   useEffect(() => {
     void syncPlotStateFromBackend();
   }, []);
+
+  // Keep UI controls aligned with backend PlotState for migrated capabilities.
+  useEffect(() => {
+    if (!backendPlotState) {
+      return;
+    }
+
+    setCurrentScalarField(backendPlotState.scalar_field as ScalarField);
+
+    if (backendPlotState.plot_mode === 'surface3d') {
+      setContoursEnabled(false);
+    } else {
+      setContoursEnabled(true);
+      if (backendPlotState.plot_mode === 'lines') {
+        setContourDisplayMode('lines');
+      } else {
+        setContourDisplayMode('both');
+      }
+    }
+
+    const contourValue = extractFirstManualContourValue(backendPlotState.contour_spec);
+    if (contourValue !== null) {
+      setContourLevel(contourValue);
+    }
+  }, [backendPlotState]);
 
   // Callback from Viewer3D when it's done loading meshes
   const handleViewer3DLoadingChange = () => {
