@@ -97,13 +97,15 @@ function CameraCommitControls({
 }) {
     const { camera } = useThree();
     const settleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const lastPosRef = useRef<{ x: number; y: number; z: number } | null>(null);
-    const stableSamplesRef = useRef(0);
 
-    // Damping continues briefly after pointer release; wait for motion to settle
-    // before committing and before allowing backend viewpoint re-sync.
-    const settleThreshold2 = 1e-6;
-    const requiredStableSamples = 4;
+    const enableDamping = true;
+    const dampingFactor = 0.15;
+
+    // Derive "idle" debounce from OrbitControls damping settings.
+    // Smaller damping factors decay more slowly, so we wait longer.
+    const settleDelayMs = enableDamping
+        ? Math.max(80, Math.min(350, Math.round(30 / Math.max(dampingFactor, 0.001))))
+        : 40;
 
     const clearSettleTimer = () => {
         if (settleTimerRef.current) {
@@ -112,70 +114,47 @@ function CameraCommitControls({
         }
     };
 
-    const scheduleSettleCheck = () => {
+    const scheduleCommitAfterIdle = () => {
         clearSettleTimer();
         settleTimerRef.current = setTimeout(() => {
-            const current = {
-                x: camera.position.x,
-                y: camera.position.y,
-                z: camera.position.z,
-            };
-
-            const last = lastPosRef.current;
-            if (!last) {
-                lastPosRef.current = current;
-                stableSamplesRef.current = 0;
-                scheduleSettleCheck();
-                return;
+            isUserNavigatingRef.current = false;
+            if (onCameraCommit) {
+                onCameraCommit({
+                    x: camera.position.x,
+                    y: camera.position.y,
+                    z: camera.position.z,
+                });
             }
-
-            const dx = current.x - last.x;
-            const dy = current.y - last.y;
-            const dz = current.z - last.z;
-            const dist2 = dx * dx + dy * dy + dz * dz;
-
-            if (dist2 < settleThreshold2) {
-                stableSamplesRef.current += 1;
-            } else {
-                stableSamplesRef.current = 0;
-            }
-
-            lastPosRef.current = current;
-
-            if (stableSamplesRef.current >= requiredStableSamples) {
-                isUserNavigatingRef.current = false;
-                if (onCameraCommit) {
-                    onCameraCommit(current);
-                }
-                clearSettleTimer();
-                return;
-            }
-
-            scheduleSettleCheck();
-        }, 25);
+        }, settleDelayMs);
     };
 
     const handleStart = () => {
         isUserNavigatingRef.current = true;
-        stableSamplesRef.current = 0;
-        lastPosRef.current = {
-            x: camera.position.x,
-            y: camera.position.y,
-            z: camera.position.z,
-        };
         clearSettleTimer();
     };
 
-    const handleEnd = () => {
-        // Keep navigation lock active until damping settles.
+    const handleChange = () => {
+        // Treat any camera change as active navigation and debounce until idle.
         isUserNavigatingRef.current = true;
-        stableSamplesRef.current = 0;
-        lastPosRef.current = {
-            x: camera.position.x,
-            y: camera.position.y,
-            z: camera.position.z,
-        };
-        scheduleSettleCheck();
+        scheduleCommitAfterIdle();
+    };
+
+    const handleEnd = () => {
+        if (!enableDamping) {
+            isUserNavigatingRef.current = false;
+            if (onCameraCommit) {
+                onCameraCommit({
+                    x: camera.position.x,
+                    y: camera.position.y,
+                    z: camera.position.z,
+                });
+            }
+            return;
+        }
+        // Damping continues after pointer release; wait for "change" events to
+        // go quiet before committing.
+        isUserNavigatingRef.current = true;
+        scheduleCommitAfterIdle();
     };
 
     useEffect(() => {
@@ -186,9 +165,10 @@ function CameraCommitControls({
 
     return (
         <OrbitControls
-            enableDamping
-            dampingFactor={0.05}
+            enableDamping={enableDamping}
+            dampingFactor={dampingFactor}
             onStart={handleStart}
+            onChange={handleChange}
             onEnd={handleEnd}
         />
     );
