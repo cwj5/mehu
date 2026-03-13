@@ -193,7 +193,9 @@ Relevant decisions:
 
 ## Milestone B: GUI parity
 
-### TKT-006: Refactor GUI state flow to use PlotAction commits
+### TKT-006: Refactor GUI state flow to use PlotAction commits 🚧 IN PROGRESS
+
+Started: 2026-03-12. First migration slice complete: scalar-field and contour controls in `src/App.tsx` now dispatch backend `apply_plot_action` updates, `SolutionViewer` is controlled from app-level state, and a backend `PlotState` dev inspector panel was added to the sidebar.
 
 Goal:
 Move GUI capability-bearing state changes onto the shared action/state path.

@@ -32,6 +32,44 @@ interface FileMetadata {
   gridCount: number;
 }
 
+type BackendScalarField =
+  | 'none'
+  | 'density'
+  | 'velocity_magnitude'
+  | 'momentum_x'
+  | 'momentum_y'
+  | 'momentum_z'
+  | 'pressure'
+  | 'energy';
+
+type BackendPlotMode = 'surface3d' | 'contours' | 'lines';
+
+interface BackendPlotState {
+  scalar_field: BackendScalarField;
+  plot_mode: BackendPlotMode;
+  contour_spec: unknown;
+}
+
+interface BackendDiagnostic {
+  capability: string;
+  severity: 'info' | 'warning' | 'error';
+  message: string;
+}
+
+type PlotActionPayload =
+  | { kind: 'set_scalar_field'; field: BackendScalarField }
+  | { kind: 'set_plot_mode'; mode: BackendPlotMode }
+  | {
+    kind: 'set_contour_spec';
+    mode: 'manual';
+    entries: Array<{ value: number; color: number[] | null }>;
+  };
+
+interface ApplyPlotActionResult {
+  state: BackendPlotState;
+  diagnostics: BackendDiagnostic[];
+}
+
 const GRID_COLORS = [
   "#6366f1",
   "#22c55e",
@@ -111,6 +149,27 @@ const App = () => {
   const [contourLevel, setContourLevel] = useState(0.5);
   const [contourLevelWarning, setContourLevelWarning] = useState("");
   const [contourDisplayMode, setContourDisplayMode] = useState<'surfaces' | 'lines' | 'both'>('both');
+  const [backendPlotState, setBackendPlotState] = useState<BackendPlotState | null>(null);
+  const [backendDiagnostics, setBackendDiagnostics] = useState<BackendDiagnostic[]>([]);
+
+  const syncPlotStateFromBackend = async () => {
+    try {
+      const state = await invoke<BackendPlotState>('get_plot_state');
+      setBackendPlotState(state);
+    } catch (e) {
+      logger.warn(`Failed to sync backend plot state: ${e}`, 'App');
+    }
+  };
+
+  const dispatchPlotAction = async (action: PlotActionPayload) => {
+    try {
+      const result = await invoke<ApplyPlotActionResult>('apply_plot_action', { action });
+      setBackendPlotState(result.state);
+      setBackendDiagnostics(result.diagnostics);
+    } catch (e) {
+      logger.error(`Failed to dispatch plot action ${action.kind}: ${e}`, 'App');
+    }
+  };
 
 
   // Arbitrary slice management
@@ -198,10 +257,20 @@ const App = () => {
     if (value < 0 || value > 1) {
       const clamped = Math.max(0, Math.min(1, value));
       setContourLevel(clamped);
+      void dispatchPlotAction({
+        kind: 'set_contour_spec',
+        mode: 'manual',
+        entries: [{ value: clamped, color: null }],
+      });
       setContourLevelWarning(`Level clamped to valid range [0, 1]`);
       setTimeout(() => setContourLevelWarning(""), 3000);
     } else {
       setContourLevel(value);
+      void dispatchPlotAction({
+        kind: 'set_contour_spec',
+        mode: 'manual',
+        entries: [{ value, color: null }],
+      });
       setContourLevelWarning("");
     }
   };
@@ -379,7 +448,12 @@ const App = () => {
   const handleScalarFieldChange = async (field: ScalarField) => {
     // Rust will emit loading events
     setCurrentScalarField(field);
+    await dispatchPlotAction({ kind: 'set_scalar_field', field: field as BackendScalarField });
   };
+
+  useEffect(() => {
+    void syncPlotStateFromBackend();
+  }, []);
 
   // Callback from Viewer3D when it's done loading meshes
   const handleViewer3DLoadingChange = () => {
@@ -667,6 +741,8 @@ const App = () => {
                   <div>
                     <SolutionViewer
                       selectedGrid={anyGridHasSolution ? (grids.find(g => g.solution) || grids[0]) : null}
+                      selectedField={currentScalarField}
+                      selectedColorScheme={currentColorScheme}
                       onScalarFieldChange={handleScalarFieldChange}
                       onColorSchemeChange={handleColorSchemeChange}
                     />
@@ -694,7 +770,14 @@ const App = () => {
                         <input
                           type="checkbox"
                           checked={contoursEnabled}
-                          onChange={(e) => setContoursEnabled(e.target.checked)}
+                          onChange={(e) => {
+                            const enabled = e.target.checked;
+                            setContoursEnabled(enabled);
+                            const mode: BackendPlotMode = enabled
+                              ? (contourDisplayMode === 'lines' ? 'lines' : 'contours')
+                              : 'surface3d';
+                            void dispatchPlotAction({ kind: 'set_plot_mode', mode });
+                          }}
                         />
                         Enable Contours
                       </label>
@@ -707,7 +790,14 @@ const App = () => {
                             </span>
                             <select
                               value={contourDisplayMode}
-                              onChange={(e) => setContourDisplayMode(e.target.value as 'surfaces' | 'lines' | 'both')}
+                              onChange={(e) => {
+                                const nextMode = e.target.value as 'surfaces' | 'lines' | 'both';
+                                setContourDisplayMode(nextMode);
+                                if (contoursEnabled) {
+                                  const mode: BackendPlotMode = nextMode === 'lines' ? 'lines' : 'contours';
+                                  void dispatchPlotAction({ kind: 'set_plot_mode', mode });
+                                }
+                              }}
                               style={{
                                 padding: '4px 6px',
                                 background: '#1a2640',
@@ -1307,6 +1397,34 @@ const App = () => {
                     ))}
                   </div>
                 )}
+
+                <div style={{ marginTop: '10px', background: '#0b1120', padding: '10px', borderRadius: '8px', fontSize: '11px' }}>
+                  <div style={{ fontWeight: 600, marginBottom: '6px' }}>Backend PlotState (Dev)</div>
+                  <button
+                    onClick={() => void syncPlotStateFromBackend()}
+                    style={{
+                      marginBottom: '8px',
+                      width: '100%',
+                      padding: '5px 6px',
+                      background: '#1f2937',
+                      color: '#e2e8f0',
+                      border: '1px solid #334155',
+                      borderRadius: '4px',
+                      cursor: 'pointer',
+                      fontSize: '11px',
+                    }}
+                  >
+                    Refresh
+                  </button>
+                  <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: '#94a3b8' }}>
+                    {backendPlotState ? JSON.stringify(backendPlotState, null, 2) : 'No backend state loaded yet.'}
+                  </pre>
+                  {backendDiagnostics.length > 0 && (
+                    <div style={{ marginTop: '8px', color: '#facc15' }}>
+                      Last diagnostics: {backendDiagnostics.length}
+                    </div>
+                  )}
+                </div>
               </>
             )}
 
