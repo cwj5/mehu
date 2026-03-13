@@ -666,23 +666,66 @@ fn parse_walls_or_subsets(
             Some(file.to_string_lossy().to_string()),
             Some(line),
             Some(1),
-            format!("{} requires at least a grid index", capability),
+            format!("{} requires a grid index or /GRID=n qualifier", capability),
         ));
         return;
     }
 
-    let grid = match args[0].parse::<u32>() {
-        Ok(v) if v > 0 => v,
-        _ => {
-            out.diagnostics.push(diagnostic(
-                capability,
-                DiagnosticSeverity::Warning,
-                Some(file.to_string_lossy().to_string()),
-                Some(line),
-                Some(1),
-                format!("{} first argument must be a 1-based grid index", capability),
-            ));
-            return;
+    let mut grid_from_qualifier: Option<u32> = None;
+    let mut positional: Vec<String> = Vec::new();
+
+    for arg in args {
+        if let Some((name, value)) = parse_qualifier(arg) {
+            match name.as_str() {
+                "GRID" => {
+                    if let Some(v) = value.and_then(|s| s.parse::<u32>().ok()).filter(|&v| v > 0) {
+                        grid_from_qualifier = Some(v);
+                    } else {
+                        out.diagnostics.push(diagnostic(
+                            capability,
+                            DiagnosticSeverity::Warning,
+                            Some(file.to_string_lossy().to_string()),
+                            Some(line),
+                            Some(1),
+                            format!("{} /GRID must be a 1-based integer", capability),
+                        ));
+                    }
+                }
+                // Known legacy qualifiers currently accepted but not modeled in PlotState.
+                "ADD" | "ATTRIBUTES" | "NOATTRIBUTES" => {}
+                _ => out.diagnostics.push(diagnostic(
+                    capability,
+                    DiagnosticSeverity::Warning,
+                    Some(file.to_string_lossy().to_string()),
+                    Some(line),
+                    Some(1),
+                    format!("Unknown {} qualifier '/{}' ignored", capability, name),
+                )),
+            }
+            continue;
+        }
+        positional.push(arg.clone());
+    }
+
+    let grid = if let Some(v) = grid_from_qualifier {
+        v
+    } else {
+        match positional.first().and_then(|s| s.parse::<u32>().ok()) {
+            Some(v) if v > 0 => v,
+            _ => {
+                out.diagnostics.push(diagnostic(
+                    capability,
+                    DiagnosticSeverity::Warning,
+                    Some(file.to_string_lossy().to_string()),
+                    Some(line),
+                    Some(1),
+                    format!(
+                        "{} requires a 1-based grid index (positional or /GRID)",
+                        capability
+                    ),
+                ));
+                return;
+            }
         }
     };
 
@@ -693,13 +736,25 @@ fn parse_walls_or_subsets(
         k_range: None,
     };
 
-    if let Some(range) = args.get(1).and_then(|s| parse_index_range(s)) {
+    // Range arguments are positional only and follow the optional positional grid.
+    let range_start = if grid_from_qualifier.is_some() { 0 } else { 1 };
+
+    if let Some(range) = positional
+        .get(range_start)
+        .and_then(|s| parse_index_range(s))
+    {
         subset.i_range = Some(range);
     }
-    if let Some(range) = args.get(2).and_then(|s| parse_index_range(s)) {
+    if let Some(range) = positional
+        .get(range_start + 1)
+        .and_then(|s| parse_index_range(s))
+    {
         subset.j_range = Some(range);
     }
-    if let Some(range) = args.get(3).and_then(|s| parse_index_range(s)) {
+    if let Some(range) = positional
+        .get(range_start + 2)
+        .and_then(|s| parse_index_range(s))
+    {
         subset.k_range = Some(range);
     }
 
@@ -1435,5 +1490,43 @@ fn read_positional_form_still_works() {
         assert_eq!(ds.solution_id.as_deref(), Some("solution.q"));
     } else {
         panic!("expected SetDataset, got {:?}", parsed.actions[0]);
+    }
+}
+
+#[test]
+fn walls_grid_qualifier_sets_grid_id() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("walls.com");
+    fs::write(&file, "WALLS/GRID=3 1:10 2:20 3:30\n").expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+    assert_eq!(parsed.actions.len(), 1);
+    if let PlotAction::SetWalls(walls) = &parsed.actions[0] {
+        assert_eq!(walls.len(), 1);
+        assert_eq!(walls[0].grid, 3);
+        assert_eq!(walls[0].i_range.as_ref().map(|r| r.start), Some(1));
+        assert_eq!(walls[0].j_range.as_ref().map(|r| r.start), Some(2));
+        assert_eq!(walls[0].k_range.as_ref().map(|r| r.start), Some(3));
+    } else {
+        panic!("expected SetWalls, got {:?}", parsed.actions[0]);
+    }
+}
+
+#[test]
+fn subsets_grid_qualifier_sets_grid_id() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("subsets.com");
+    fs::write(&file, "SUBSETS/GRID=2 (5,15) (6,16) (7,17)\n").expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+    assert_eq!(parsed.actions.len(), 1);
+    if let PlotAction::SetSubsets(subsets) = &parsed.actions[0] {
+        assert_eq!(subsets.len(), 1);
+        assert_eq!(subsets[0].grid, 2);
+        assert_eq!(subsets[0].i_range.as_ref().map(|r| r.start), Some(5));
+        assert_eq!(subsets[0].j_range.as_ref().map(|r| r.start), Some(6));
+        assert_eq!(subsets[0].k_range.as_ref().map(|r| r.start), Some(7));
+    } else {
+        panic!("expected SetSubsets, got {:?}", parsed.actions[0]);
     }
 }
