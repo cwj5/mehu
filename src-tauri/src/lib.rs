@@ -2635,6 +2635,43 @@ fn apply_plot_action(action: PlotAction) -> Result<ApplyActionResult, String> {
     })
 }
 
+/// Convenience command: set scalar field via a stable argument shape.
+#[tauri::command]
+fn set_plot_scalar_field(field: plot_state::ScalarField) -> Result<ApplyActionResult, String> {
+    apply_plot_action(PlotAction::SetScalarField(field))
+}
+
+/// Convenience command: set plot mode via a stable argument shape.
+#[tauri::command]
+fn set_plot_mode(mode: plot_state::PlotMode) -> Result<ApplyActionResult, String> {
+    apply_plot_action(PlotAction::SetPlotMode(mode))
+}
+
+/// Convenience command: set camera viewpoint via a stable argument shape.
+#[tauri::command]
+fn set_plot_viewpoint(vp: plot_state::ViewPoint) -> Result<ApplyActionResult, String> {
+    apply_plot_action(PlotAction::SetViewpoint(vp))
+}
+
+/// Convenience command: set a single manual contour level.
+#[tauri::command]
+fn set_plot_contour_level(level: f64) -> Result<ApplyActionResult, String> {
+    apply_plot_action(PlotAction::SetContourSpec(
+        plot_state::ContourSpec::Manual {
+            entries: vec![plot_state::ContourEntry {
+                value: level,
+                color: None,
+            }],
+        },
+    ))
+}
+
+/// Convenience command: commit current plot state boundary.
+#[tauri::command]
+fn commit_plot() -> Result<ApplyActionResult, String> {
+    apply_plot_action(PlotAction::CommitPlot)
+}
+
 /// Parse and execute a legacy `.com` file against shared `PlotState`.
 ///
 /// This command applies all parsed actions in order, emits render intents on
@@ -2701,6 +2738,11 @@ pub fn run() {
             open_about_window,
             get_plot_state,
             apply_plot_action,
+            set_plot_scalar_field,
+            set_plot_mode,
+            set_plot_viewpoint,
+            set_plot_contour_level,
+            commit_plot,
             execute_com_script,
         ])
         .run(tauri::generate_context!())

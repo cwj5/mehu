@@ -57,17 +57,6 @@ interface BackendDiagnostic {
   message: string;
 }
 
-type PlotActionPayload =
-  | { kind: 'set_scalar_field'; field: BackendScalarField }
-  | { kind: 'set_plot_mode'; mode: BackendPlotMode }
-  | { kind: 'set_viewpoint'; vp: { x: number; y: number; z: number } }
-  | { kind: 'commit_plot' }
-  | {
-    kind: 'set_contour_spec';
-    mode: 'manual';
-    entries: Array<{ value: number; color: number[] | null }>;
-  };
-
 interface ApplyPlotActionResult {
   state: BackendPlotState;
   diagnostics: BackendDiagnostic[];
@@ -176,18 +165,54 @@ const App = () => {
     }
   };
 
-  const dispatchPlotAction = async (action: PlotActionPayload) => {
+  const updateBackendFromResult = (result: ApplyPlotActionResult) => {
+    setBackendPlotState(result.state);
+    setBackendDiagnostics(result.diagnostics);
+  };
+
+  const setPlotScalarField = async (field: BackendScalarField) => {
     try {
-      const result = await invoke<ApplyPlotActionResult>('apply_plot_action', { action });
-      setBackendPlotState(result.state);
-      setBackendDiagnostics(result.diagnostics);
+      const result = await invoke<ApplyPlotActionResult>('set_plot_scalar_field', { field });
+      updateBackendFromResult(result);
     } catch (e) {
-      logger.error(`Failed to dispatch plot action ${action.kind}: ${e}`, 'App');
+      logger.error(`Failed to set plot scalar field: ${e}`, 'App');
+    }
+  };
+
+  const setPlotMode = async (mode: BackendPlotMode) => {
+    try {
+      const result = await invoke<ApplyPlotActionResult>('set_plot_mode', { mode });
+      updateBackendFromResult(result);
+    } catch (e) {
+      logger.error(`Failed to set plot mode: ${e}`, 'App');
+    }
+  };
+
+  const setPlotViewpoint = async (vp: { x: number; y: number; z: number }) => {
+    try {
+      const result = await invoke<ApplyPlotActionResult>('set_plot_viewpoint', { vp });
+      updateBackendFromResult(result);
+    } catch (e) {
+      logger.error(`Failed to set plot viewpoint: ${e}`, 'App');
+    }
+  };
+
+  const setPlotContourLevel = async (level: number) => {
+    try {
+      const result = await invoke<ApplyPlotActionResult>('set_plot_contour_level', { level });
+      updateBackendFromResult(result);
+    } catch (e) {
+      logger.error(`Failed to set contour level: ${e}`, 'App');
     }
   };
 
   const commitPlot = async () => {
-    await dispatchPlotAction({ kind: 'commit_plot' });
+    try {
+      const result = await invoke<ApplyPlotActionResult>('commit_plot');
+      updateBackendFromResult(result);
+    } catch (e) {
+      logger.error(`Failed to commit plot: ${e}`, 'App');
+    }
   };
 
 
@@ -276,21 +301,13 @@ const App = () => {
     if (value < 0 || value > 1) {
       const clamped = Math.max(0, Math.min(1, value));
       setContourLevel(clamped);
-      await dispatchPlotAction({
-        kind: 'set_contour_spec',
-        mode: 'manual',
-        entries: [{ value: clamped, color: null }],
-      });
+      await setPlotContourLevel(clamped);
       await commitPlot();
       setContourLevelWarning(`Level clamped to valid range [0, 1]`);
       setTimeout(() => setContourLevelWarning(""), 3000);
     } else {
       setContourLevel(value);
-      await dispatchPlotAction({
-        kind: 'set_contour_spec',
-        mode: 'manual',
-        entries: [{ value, color: null }],
-      });
+      await setPlotContourLevel(value);
       await commitPlot();
       setContourLevelWarning("");
     }
@@ -469,12 +486,12 @@ const App = () => {
   const handleScalarFieldChange = async (field: ScalarField) => {
     // Rust will emit loading events
     setCurrentScalarField(field);
-    await dispatchPlotAction({ kind: 'set_scalar_field', field: field as BackendScalarField });
+    await setPlotScalarField(field as BackendScalarField);
     await commitPlot();
   };
 
   const handleCameraCommit = async (vp: { x: number; y: number; z: number }) => {
-    await dispatchPlotAction({ kind: 'set_viewpoint', vp });
+    await setPlotViewpoint(vp);
     await commitPlot();
   };
 
@@ -829,7 +846,7 @@ const App = () => {
                               ? (contourDisplayMode === 'lines' ? 'lines' : 'contours')
                               : 'surface3d';
                             void (async () => {
-                              await dispatchPlotAction({ kind: 'set_plot_mode', mode });
+                              await setPlotMode(mode);
                               await commitPlot();
                             })();
                           }}
@@ -851,7 +868,7 @@ const App = () => {
                                 if (contoursEnabled) {
                                   const mode: BackendPlotMode = nextMode === 'lines' ? 'lines' : 'contours';
                                   void (async () => {
-                                    await dispatchPlotAction({ kind: 'set_plot_mode', mode });
+                                    await setPlotMode(mode);
                                     await commitPlot();
                                   })();
                                 }
