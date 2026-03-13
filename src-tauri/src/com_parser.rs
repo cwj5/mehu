@@ -590,15 +590,8 @@ fn parse_text(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {
     }));
 }
 
-fn parse_show(file: &Path, line: u32, out: &mut ParsedScript) {
-    out.diagnostics.push(diagnostic(
-        cap::SHOW,
-        DiagnosticSeverity::Info,
-        Some(file.to_string_lossy().to_string()),
-        Some(line),
-        Some(1),
-        "SHOW parsed; execution behavior is handled by command executor (TKT-005)",
-    ));
+fn parse_show(_file: &Path, _line: u32, out: &mut ParsedScript) {
+    out.actions.push(PlotAction::ShowStatus);
 }
 
 fn parse_fsurface(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {

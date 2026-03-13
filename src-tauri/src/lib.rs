@@ -17,6 +17,7 @@ mod function_mapping;
 mod logger;
 mod plot3d;
 mod plot_state;
+mod script_executor;
 mod solution;
 
 #[cfg(test)]
@@ -30,10 +31,11 @@ use plot3d::{
     GridDimensions, MeshGeometry, Plot3DFunction, Plot3DGrid, Plot3DSolution, SolutionFileMetadata,
 };
 use plot_state::{apply_action, ApplyActionResult, PlotAction, PlotState};
+use script_executor::{execute_actions, ScriptExecutionResult};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tauri::webview::WebviewWindow;
 use tauri::Emitter;
@@ -2633,6 +2635,24 @@ fn apply_plot_action(action: PlotAction) -> Result<ApplyActionResult, String> {
     })
 }
 
+/// Parse and execute a legacy `.com` file against shared `PlotState`.
+///
+/// This command applies all parsed actions in order, emits render intents on
+/// `PLOT`, captures `SHOW` output, and persists final state into `PLOT_STATE`.
+#[tauri::command]
+fn execute_com_script(path: String) -> Result<ScriptExecutionResult, String> {
+    let parsed = com_parser::parse_com_file(PathBuf::from(&path).as_path())?;
+
+    let mut guard = PLOT_STATE
+        .lock()
+        .map_err(|e| format!("Failed to lock plot state: {e}"))?;
+    let current = guard.clone();
+    let mut result = execute_actions(current, &parsed.actions);
+    result.diagnostics.splice(0..0, parsed.diagnostics);
+    *guard = result.final_state.clone();
+    Ok(result)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Initialize logging
@@ -2682,6 +2702,7 @@ pub fn run() {
             open_about_window,
             get_plot_state,
             apply_plot_action,
+            execute_com_script,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -400,6 +400,9 @@ pub enum PlotAction {
     // TEXT: clear all text annotations.
     ClearTextAnnotations,
 
+    // SHOW: emit a status snapshot in executor output.
+    ShowStatus,
+
     // PLOT: set rendering mode (surface, contour, line).
     SetPlotMode(PlotMode),
 
@@ -583,6 +586,11 @@ pub fn apply_action(mut state: PlotState, action: PlotAction) -> (PlotState, Vec
 
         PlotAction::ClearTextAnnotations => {
             state.text_annotations.clear();
+        }
+
+        PlotAction::ShowStatus => {
+            // SHOW does not mutate PlotState; executor owns output formatting.
+            diags.push(Diagnostic::info(cap::SHOW, "Show status requested"));
         }
 
         PlotAction::SetPlotMode(mode) => {

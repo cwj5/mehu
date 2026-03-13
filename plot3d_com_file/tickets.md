@@ -158,7 +158,7 @@ Relevant decisions:
 1. Soft-fail unsupported commands.
 2. Include-file paths are expected to be relative to the parsed file until proven otherwise.
 
-### TKT-005: Implement command executor and RenderIntent
+### TKT-005: Implement command executor and RenderIntent 🚧 IN PROGRESS
 
 Goal:
 Apply parsed actions to `PlotState` and emit `RenderIntent` values on `PLOT`.

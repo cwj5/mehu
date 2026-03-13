@@ -1,0 +1,129 @@
+use crate::plot_state::{apply_action, Diagnostic, PlotAction, PlotState};
+use serde::{Deserialize, Serialize};
+
+/// Deterministic render payload emitted at each PLOT commit boundary.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RenderIntent {
+    pub state: PlotState,
+}
+
+impl RenderIntent {
+    fn from_state(state: &PlotState) -> Self {
+        Self {
+            state: state.clone(),
+        }
+    }
+}
+
+/// Result of executing a parsed script against PlotState.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScriptExecutionResult {
+    pub final_state: PlotState,
+    pub intents: Vec<RenderIntent>,
+    pub show_output: Vec<String>,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+/// Execute parsed actions in order, mutating state and emitting render intents.
+///
+/// Render intents are emitted only when `CommitPlot` is encountered.
+pub fn execute_actions(initial_state: PlotState, actions: &[PlotAction]) -> ScriptExecutionResult {
+    let mut state = initial_state;
+    let mut intents: Vec<RenderIntent> = Vec::new();
+    let mut show_output: Vec<String> = Vec::new();
+    let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+    for action in actions {
+        if matches!(action, PlotAction::ShowStatus) {
+            show_output.push(format_show_output(&state));
+        }
+
+        let (new_state, mut action_diags) = apply_action(state, action.clone());
+        state = new_state;
+
+        if matches!(action, PlotAction::CommitPlot) {
+            intents.push(RenderIntent::from_state(&state));
+        }
+
+        diagnostics.append(&mut action_diags);
+    }
+
+    ScriptExecutionResult {
+        final_state: state,
+        intents,
+        show_output,
+        diagnostics,
+    }
+}
+
+fn format_show_output(state: &PlotState) -> String {
+    format!(
+        "SHOW: field={:?}, mode={:?}, axis_view={:?}, text_annotations={}, walls={}, subsets={}",
+        state.scalar_field,
+        state.plot_mode,
+        state.axis_view,
+        state.text_annotations.len(),
+        state.walls.len(),
+        state.subsets.len()
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plot_state::{AxisView, PlotMode, PlotText, ScalarField};
+
+    #[test]
+    fn plot_is_only_render_intent_boundary() {
+        let initial = PlotState::default();
+        let actions = vec![
+            PlotAction::SetScalarField(ScalarField::Density),
+            PlotAction::SetPlotMode(PlotMode::Contours),
+            PlotAction::CommitPlot,
+            PlotAction::SetAxisView(AxisView::MinusZ),
+        ];
+
+        let result = execute_actions(initial, &actions);
+        assert_eq!(result.intents.len(), 1);
+        assert_eq!(result.intents[0].state.scalar_field, ScalarField::Density);
+        assert_eq!(result.intents[0].state.plot_mode, PlotMode::Contours);
+    }
+
+    #[test]
+    fn equal_plot_state_yields_equal_render_intent() {
+        let mut state_a = PlotState::default();
+        state_a.scalar_field = ScalarField::Pressure;
+        state_a.plot_mode = PlotMode::Surface3d;
+
+        let mut state_b = PlotState::default();
+        state_b.scalar_field = ScalarField::Pressure;
+        state_b.plot_mode = PlotMode::Surface3d;
+
+        let intent_a = RenderIntent::from_state(&state_a);
+        let intent_b = RenderIntent::from_state(&state_b);
+
+        assert_eq!(intent_a, intent_b);
+    }
+
+    #[test]
+    fn show_and_text_are_preserved_in_execution_result() {
+        let initial = PlotState::default();
+        let actions = vec![
+            PlotAction::AddTextAnnotation(PlotText {
+                content: "demo".to_string(),
+                x: 0.1,
+                y: 0.9,
+            }),
+            PlotAction::ShowStatus,
+            PlotAction::CommitPlot,
+        ];
+
+        let result = execute_actions(initial, &actions);
+
+        assert_eq!(result.final_state.text_annotations.len(), 1);
+        assert_eq!(result.show_output.len(), 1);
+        assert!(result.show_output[0].contains("SHOW:"));
+        assert_eq!(result.intents.len(), 1);
+        assert!(!result.diagnostics.is_empty());
+    }
+}
