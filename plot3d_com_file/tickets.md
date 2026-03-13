@@ -92,7 +92,9 @@ Relevant decisions:
 2. GUI writes to it only on apply/release.
 3. `ScalarField` stays canonical.
 
-### TKT-003: Define and implement FUNCTION-number mapping
+### ~~TKT-003: Define and implement FUNCTION-number mapping~~ ✅ COMPLETE
+
+Completed: 2026-03-12. Added deterministic legacy FUNCTION mapping in `src-tauri/src/function_mapping.rs`, with tests for supported values, known-unimplemented soft-fail behavior, and unknown/out-of-scope warnings. Canonical `ScalarField` now includes placeholder variants for known legacy scalar functions and explicit `TODO_EQUATION` markers where formulas are not yet implemented.
 
 Goal:
 Create the mapping from legacy `FUNCTION` integers to the existing frontend/backend scalar-field model.

@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+mod function_mapping;
 mod logger;
 mod plot3d;
 mod plot_state;
@@ -1040,6 +1041,31 @@ fn compute_scalar_field_value(solution: &Plot3DSolution, field: plot_state::Scal
         ScalarField::MomentumY => solution.rhov[0],
         ScalarField::MomentumZ => solution.rhow[0],
 
+        ScalarField::UVelocity => {
+            let rho = solution.rho[0];
+            if rho > 0.0 {
+                solution.rhou[0] / rho
+            } else {
+                0.0
+            }
+        }
+        ScalarField::VVelocity => {
+            let rho = solution.rho[0];
+            if rho > 0.0 {
+                solution.rhov[0] / rho
+            } else {
+                0.0
+            }
+        }
+        ScalarField::WVelocity => {
+            let rho = solution.rho[0];
+            if rho > 0.0 {
+                solution.rhow[0] / rho
+            } else {
+                0.0
+            }
+        }
+
         ScalarField::Pressure => {
             const DEFAULT_GAMMA: f32 = 1.4;
             let rho = solution.rho[0];
@@ -1061,7 +1087,10 @@ fn compute_scalar_field_value(solution: &Plot3DSolution, field: plot_state::Scal
         }
 
         ScalarField::Energy => solution.rhoe[0],
-        ScalarField::None => 0.0,
+
+        // Known placeholder scalar fields exist for legacy FUNCTION mapping but
+        // are intentionally not computed until equations are explicitly added.
+        _ => 0.0,
     }
 }
 
@@ -1079,6 +1108,27 @@ fn compute_scalar_field_from_components(
 
     match field {
         ScalarField::Density => rho,
+        ScalarField::UVelocity => {
+            if rho > 0.0 {
+                rhou / rho
+            } else {
+                0.0
+            }
+        }
+        ScalarField::VVelocity => {
+            if rho > 0.0 {
+                rhov / rho
+            } else {
+                0.0
+            }
+        }
+        ScalarField::WVelocity => {
+            if rho > 0.0 {
+                rhow / rho
+            } else {
+                0.0
+            }
+        }
         ScalarField::VelocityMagnitude => {
             if rho > 0.0 {
                 let u = rhou / rho;
@@ -1107,7 +1157,10 @@ fn compute_scalar_field_from_components(
             }
         }
         ScalarField::Energy => rhoe,
-        ScalarField::None => 0.0,
+
+        // Known placeholder scalar fields exist for legacy FUNCTION mapping but
+        // are intentionally not computed until equations are explicitly added.
+        _ => 0.0,
     }
 }
 

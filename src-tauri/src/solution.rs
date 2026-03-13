@@ -37,6 +37,39 @@ pub fn compute_scalar_field(solution: &Plot3DSolution, field: ScalarField) -> Ve
             result = solution.rho.clone();
         }
 
+        ScalarField::UVelocity => {
+            for i in 0..total_points {
+                let rho = solution.rho[i];
+                if rho > 0.0 {
+                    result.push(solution.rhou[i] / rho);
+                } else {
+                    result.push(0.0);
+                }
+            }
+        }
+
+        ScalarField::VVelocity => {
+            for i in 0..total_points {
+                let rho = solution.rho[i];
+                if rho > 0.0 {
+                    result.push(solution.rhov[i] / rho);
+                } else {
+                    result.push(0.0);
+                }
+            }
+        }
+
+        ScalarField::WVelocity => {
+            for i in 0..total_points {
+                let rho = solution.rho[i];
+                if rho > 0.0 {
+                    result.push(solution.rhow[i] / rho);
+                } else {
+                    result.push(0.0);
+                }
+            }
+        }
+
         ScalarField::VelocityMagnitude => {
             // |V| = sqrt(u² + v² + w²)
             // where u = rhou/rho, v = rhov/rho, w = rhow/rho
@@ -93,9 +126,9 @@ pub fn compute_scalar_field(solution: &Plot3DSolution, field: ScalarField) -> Ve
             result = solution.rhoe.clone();
         }
 
-        // None means "no scalar field selected"; return an empty vec so callers
-        // can detect the unset case without panicking.
-        ScalarField::None => {}
+        // Placeholder fields are recognized for legacy FUNCTION mapping, but
+        // equations are intentionally not guessed here.
+        _ => {}
     }
 
     result
@@ -125,6 +158,30 @@ pub fn compute_scalar_field_surface(
 
             let value = match field {
                 ScalarField::Density => solution.rho[idx],
+                ScalarField::UVelocity => {
+                    let rho = solution.rho[idx];
+                    if rho > 0.0 {
+                        solution.rhou[idx] / rho
+                    } else {
+                        0.0
+                    }
+                }
+                ScalarField::VVelocity => {
+                    let rho = solution.rho[idx];
+                    if rho > 0.0 {
+                        solution.rhov[idx] / rho
+                    } else {
+                        0.0
+                    }
+                }
+                ScalarField::WVelocity => {
+                    let rho = solution.rho[idx];
+                    if rho > 0.0 {
+                        solution.rhow[idx] / rho
+                    } else {
+                        0.0
+                    }
+                }
                 ScalarField::MomentumX => solution.rhou[idx],
                 ScalarField::MomentumY => solution.rhov[idx],
                 ScalarField::MomentumZ => solution.rhow[idx],
@@ -160,8 +217,9 @@ pub fn compute_scalar_field_surface(
                     }
                 }
 
-                // None means no field selected; treat as zero.
-                ScalarField::None => 0.0,
+                // Placeholder fields are recognized for legacy FUNCTION mapping,
+                // but equations are intentionally not guessed here.
+                _ => 0.0,
             };
 
             values.push(value);
