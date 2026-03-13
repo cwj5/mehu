@@ -49,9 +49,28 @@ interface Viewer3DProps {
     contoursEnabled?: boolean;
     contourLevel?: number;
     contourDisplayMode?: 'surfaces' | 'lines' | 'both';
+    cameraViewpoint?: { x: number; y: number; z: number } | null;
     onCameraCommit?: (vp: { x: number; y: number; z: number }) => void;
     onSlicesChange?: (slices: Record<string, GridSlice[]>) => void;
     onLoadingChange?: (isLoading: boolean) => void;
+}
+
+function CameraViewpointSync({
+    cameraViewpoint,
+}: {
+    cameraViewpoint?: { x: number; y: number; z: number } | null;
+}) {
+    const { camera } = useThree();
+
+    useEffect(() => {
+        if (!cameraViewpoint) {
+            return;
+        }
+        camera.position.set(cameraViewpoint.x, cameraViewpoint.y, cameraViewpoint.z);
+        camera.updateProjectionMatrix();
+    }, [camera, cameraViewpoint]);
+
+    return null;
 }
 
 function CameraCommitControls({
@@ -442,6 +461,7 @@ export default function Viewer3D({
     contoursEnabled = false,
     contourLevel = 0.5,
     contourDisplayMode = 'both',
+    cameraViewpoint,
     onCameraCommit,
     onSlicesChange,
     onLoadingChange
@@ -1227,6 +1247,7 @@ export default function Viewer3D({
             <Canvas camera={{ position: [5, 5, 5], fov: 50 }}>
                 <ambientLight intensity={0.5} />
                 <directionalLight position={[10, 10, 5]} intensity={1} />
+                <CameraViewpointSync cameraViewpoint={cameraViewpoint} />
 
                 {/* Render mesh based on selected mode */}
                 {visibleGrids.map((gridItem) => {

@@ -1508,6 +1508,7 @@ const App = () => {
               contoursEnabled={contoursEnabled}
               contourLevel={contourLevel}
               contourDisplayMode={contourDisplayMode}
+              cameraViewpoint={backendPlotState?.viewpoint ?? null}
               onCameraCommit={handleCameraCommit}
               onSlicesChange={setGridSlices}
               onLoadingChange={handleViewer3DLoadingChange}
