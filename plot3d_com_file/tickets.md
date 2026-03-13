@@ -1,12 +1,14 @@
 # PLOT3D .com File Support: Tickets
 
-Last updated: 2026-03-11
+Last updated: 2026-03-12
 
 This ticket set breaks the work into milestones and implementation-sized tasks. It is written so another agent can pick up the work with minimal additional context.
 
 ## Milestone A: Foundation
 
-### TKT-001: Define capability catalog and parity matrix
+### ~~TKT-001: Define capability catalog and parity matrix~~ ✅ COMPLETE
+
+Completed: 2026-03-12. Artifacts: `plot3d_com_file/capability_catalog.md`, `plot3d_com_file/parity_matrix.json`, `scripts/validate-parity-matrix.mjs`, `.github/workflows/parity-matrix.yml`.
 
 Goal:
 Create the canonical list of supported visualization-critical capabilities and establish the parity-matrix artifact that every release must publish.
@@ -53,7 +55,7 @@ Relevant decisions:
 1. Incremental delivery is allowed.
 2. Supported scope may not contain undeclared script-only features.
 
-### TKT-002: Introduce shared PlotState, PlotAction, and diagnostics model
+### TKT-002: Introduce shared PlotState, PlotAction, and diagnostics model 🚧 IN PROGRESS
 
 Goal:
 Create the backend-owned canonical state and transition model used by both script execution and GUI interaction.

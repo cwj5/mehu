@@ -14,6 +14,7 @@
 
 mod logger;
 mod plot3d;
+mod plot_state;
 mod solution;
 
 #[cfg(test)]
@@ -26,6 +27,7 @@ use plot3d::{
     read_plot3d_grid_with_metadata, read_plot3d_solution, read_plot3d_solution_ascii,
     GridDimensions, MeshGeometry, Plot3DFunction, Plot3DGrid, Plot3DSolution, SolutionFileMetadata,
 };
+use plot_state::{apply_action, PlotAction, PlotState};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -43,6 +45,10 @@ thread_local! {
 
 // Deprecated: Legacy solution cache - keeping for backward compatibility during migration
 static SOLUTION_CACHE: Lazy<Mutex<Vec<Arc<Plot3DSolution>>>> = Lazy::new(|| Mutex::new(Vec::new()));
+
+/// The canonical shared plot state.  Both script execution and GUI interactions
+/// must commit through `apply_plot_action` rather than maintaining separate state.
+static PLOT_STATE: Lazy<Mutex<PlotState>> = Lazy::new(|| Mutex::new(PlotState::default()));
 
 fn cache_solutions(solutions: &[Plot3DSolution]) {
     let cached: Vec<Arc<Plot3DSolution>> = solutions
@@ -2538,6 +2544,35 @@ async fn open_about_window(app: tauri::AppHandle) -> Result<(), String> {
     }
 }
 
+/// Return the current `PlotState` for dev inspection and parity verification.
+/// This command is intentionally read-only; mutations go through
+/// `apply_plot_action`.
+#[tauri::command]
+fn get_plot_state() -> Result<PlotState, String> {
+    PLOT_STATE
+        .lock()
+        .map(|s| s.clone())
+        .map_err(|e| format!("Failed to lock plot state: {e}"))
+}
+
+/// Apply a `PlotAction` to the shared `PlotState` and return the resulting
+/// state together with any diagnostics produced by the transition.
+///
+/// The frontend should call this instead of mutating state directly so that
+/// script execution and GUI interactions always share the same state path.
+#[tauri::command]
+fn apply_plot_action(
+    action: PlotAction,
+) -> Result<(PlotState, Vec<plot_state::Diagnostic>), String> {
+    let mut guard = PLOT_STATE
+        .lock()
+        .map_err(|e| format!("Failed to lock plot state: {e}"))?;
+    let current = guard.clone();
+    let (new_state, diags) = apply_action(current, action);
+    *guard = new_state.clone();
+    Ok((new_state, diags))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Initialize logging
@@ -2585,6 +2620,8 @@ pub fn run() {
             write_text_file,
             frontend_log,
             open_about_window,
+            get_plot_state,
+            apply_plot_action,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

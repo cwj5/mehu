@@ -1,0 +1,838 @@
+/// Shared plot state, actions, and diagnostics model.
+///
+/// `PlotState` is the single source of truth for all visualization-critical
+/// configuration, regardless of whether that configuration arrived via a parsed
+/// `.com` script or a GUI interaction.  GUI interactions MUST commit to this
+/// state (via `apply_action`) on apply/release — not on every drag frame.
+///
+/// The state transition function `apply_action` is pure: it takes the current
+/// `PlotState` and a `PlotAction`, returns a new `PlotState` and a (possibly
+/// empty) `Vec<Diagnostic>`.  This makes it easy to test without Tauri
+/// plumbing.
+use serde::{Deserialize, Serialize};
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Capability IDs (kept in sync with capability_catalog.md)
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Canonical capability identifiers.  These strings are the same ones used in
+/// `parity_matrix.json`; keep them in sync.
+pub mod cap {
+    pub const READ: &str = "READ";
+    pub const FUNCTION: &str = "FUNCTION";
+    pub const VIEW: &str = "VIEW";
+    pub const VPOINT: &str = "VPOINT";
+    pub const MINMAX: &str = "MINMAX";
+    pub const CONTOURS: &str = "CONTOURS";
+    pub const PLOT: &str = "PLOT";
+    pub const WALLS: &str = "WALLS";
+    pub const SUBSETS: &str = "SUBSETS";
+    pub const FSURFACE: &str = "FSURFACE";
+    pub const TEXT: &str = "TEXT";
+    pub const SHOW: &str = "SHOW";
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Scalar field
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// The canonical scalar-field enum.  The frontend `ScalarField` type in
+/// `src/utils/solutionData.ts` mirrors these variants exactly.  Legacy
+/// `FUNCTION` numbers are a translation-layer concern and must not leak into
+/// this type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScalarField {
+    None,
+    Density,
+    VelocityMagnitude,
+    MomentumX,
+    MomentumY,
+    MomentumZ,
+    Pressure,
+    Energy,
+}
+
+impl Default for ScalarField {
+    fn default() -> Self {
+        ScalarField::None
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Contour model  (absolute physical values, multi-level)
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// A single contour surface/line entry at a specific absolute field value.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContourEntry {
+    /// Absolute physical value of the contour (NOT normalized 0..1).
+    pub value: f64,
+    /// Optional RGBA color override for this level (r,g,b,a each in 0..=1).
+    pub color: Option<[f32; 4]>,
+}
+
+/// How contour levels are specified.  Automatic and increment-based specs are
+/// resolved to explicit entries before rendering, but the original intent is
+/// preserved so the GUI can display a compact form.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum ContourSpec {
+    /// No contours displayed.
+    None,
+    /// Renderer picks N evenly spaced absolute levels across the global field
+    /// range.  `count` must be ≥ 1.
+    Automatic { count: u32 },
+    /// Contours at every `increment` physical units starting from `start`.
+    Increment { start: f64, increment: f64 },
+    /// Explicit list of contour entries (absolute values, optional colors).
+    Manual { entries: Vec<ContourEntry> },
+}
+
+impl Default for ContourSpec {
+    fn default() -> Self {
+        ContourSpec::None
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// View / camera
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Which standard axis view is active (maps to a camera preset).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AxisView {
+    /// +X looking toward –X (right-hand side view).
+    PlusX,
+    MinusX,
+    PlusY,
+    MinusY,
+    PlusZ,
+    MinusZ,
+    /// No axis-aligned preset; an explicit viewpoint is used instead.
+    Custom,
+}
+
+impl Default for AxisView {
+    fn default() -> Self {
+        AxisView::Custom
+    }
+}
+
+/// Camera viewpoint specified by a 3D point.  This is the position the camera
+/// looks *from* (legacy `VPOINT` semantics).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ViewPoint {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// MINMAX overrides
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// User-specified scalar range overrides.  When `None` the global data range is
+/// used for color scaling.
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MinMaxOverride {
+    pub min: Option<f64>,
+    pub max: Option<f64>,
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// WALLS / SUBSETS
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// A named selection of grid index ranges used by `WALLS` and `SUBSETS`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IndexRange {
+    /// 1-based inclusive start index.
+    pub start: u32,
+    /// 1-based inclusive end index; `None` means "to the end".
+    pub end: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GridSubset {
+    /// 1-based grid number this subset applies to.
+    pub grid: u32,
+    pub i_range: Option<IndexRange>,
+    pub j_range: Option<IndexRange>,
+    pub k_range: Option<IndexRange>,
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// FSURFACE
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FsurfaceSpec {
+    /// Absolute scalar value at which the iso-surface is drawn.
+    pub value: f64,
+    pub scalar_field: ScalarField,
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// TEXT
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Annotation text to overlay on the plot.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PlotText {
+    pub content: String,
+    /// Normalized [0,1] viewport X position.
+    pub x: f64,
+    /// Normalized [0,1] viewport Y position.
+    pub y: f64,
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Dataset references
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// References to the currently active grid and solution files.  Cache IDs are
+/// the string keys assigned by the Tauri caching layer (`load_plot3d_*_cached`).
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DatasetRef {
+    /// The cache ID of the active grid, if one has been loaded.
+    pub grid_id: Option<String>,
+    /// The cache ID of the active solution, if one has been loaded.
+    pub solution_id: Option<String>,
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// PlotState — the single source of truth
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// All visualization-critical configuration.  This struct is serialized and
+/// sent to the frontend in response to `get_plot_state` for dev inspection.
+///
+/// Fields correspond 1:1 to in-scope capabilities in `capability_catalog.md`.
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PlotState {
+    // READ
+    pub dataset: DatasetRef,
+
+    // FUNCTION
+    pub scalar_field: ScalarField,
+
+    // VIEW
+    pub axis_view: AxisView,
+
+    // VPOINT
+    pub viewpoint: Option<ViewPoint>,
+
+    // MINMAX
+    pub minmax: MinMaxOverride,
+
+    // CONTOURS
+    pub contour_spec: ContourSpec,
+
+    // WALLS
+    pub walls: Vec<GridSubset>,
+
+    // SUBSETS
+    pub subsets: Vec<GridSubset>,
+
+    // FSURFACE
+    pub fsurface: Option<FsurfaceSpec>,
+
+    // TEXT
+    pub text_annotations: Vec<PlotText>,
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// PlotAction — one variant per supported capability
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// A typed, capability-scoped state mutation.  Both the parser executor and
+/// GUI widgets produce `PlotAction` values and submit them through
+/// `apply_action`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PlotAction {
+    // READ: set (or clear) the active dataset references.
+    SetDataset(DatasetRef),
+
+    // FUNCTION: choose which scalar field to visualise.
+    SetScalarField(ScalarField),
+
+    // VIEW: select a named axis-aligned camera preset.
+    SetAxisView(AxisView),
+
+    // VPOINT: set an explicit camera look-from point.
+    SetViewpoint(ViewPoint),
+
+    // MINMAX: override the color-map scalar range.
+    SetMinMax(MinMaxOverride),
+
+    // CONTOURS: replace the contour specification.
+    SetContourSpec(ContourSpec),
+
+    // WALLS: replace the complete walls list.
+    SetWalls(Vec<GridSubset>),
+
+    // SUBSETS: replace the complete subsets list.
+    SetSubsets(Vec<GridSubset>),
+
+    // FSURFACE: set or clear the iso-surface spec.
+    SetFsurface(Option<FsurfaceSpec>),
+
+    // TEXT: append a text annotation.
+    AddTextAnnotation(PlotText),
+
+    // TEXT: clear all text annotations.
+    ClearTextAnnotations,
+
+    // PLOT: commit current state as a render intent (handled by the executor
+    // layer; `apply_action` records the intent but does not render).
+    CommitPlot,
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Diagnostics
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiagnosticSeverity {
+    Info,
+    Warning,
+    Error,
+}
+
+/// A diagnostic emitted during state transition or script execution.  Design
+/// matches the source-location fields needed by a future parser integration.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Diagnostic {
+    /// Capability ID (`cap::*`) that produced this diagnostic.
+    pub capability: String,
+    pub severity: DiagnosticSeverity,
+    /// Source file that generated this diagnostic, if applicable.
+    pub file: Option<String>,
+    /// 1-based line number in the source file, if applicable.
+    pub line: Option<u32>,
+    /// 1-based column in the source file, if applicable.
+    pub column: Option<u32>,
+    pub message: String,
+}
+
+impl Diagnostic {
+    pub fn warning(capability: &str, message: impl Into<String>) -> Self {
+        Diagnostic {
+            capability: capability.to_owned(),
+            severity: DiagnosticSeverity::Warning,
+            file: None,
+            line: None,
+            column: None,
+            message: message.into(),
+        }
+    }
+
+    pub fn error(capability: &str, message: impl Into<String>) -> Self {
+        Diagnostic {
+            capability: capability.to_owned(),
+            severity: DiagnosticSeverity::Error,
+            file: None,
+            line: None,
+            column: None,
+            message: message.into(),
+        }
+    }
+
+    pub fn info(capability: &str, message: impl Into<String>) -> Self {
+        Diagnostic {
+            capability: capability.to_owned(),
+            severity: DiagnosticSeverity::Info,
+            file: None,
+            line: None,
+            column: None,
+            message: message.into(),
+        }
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// State transition
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Apply a single `PlotAction` to `state`, returning the updated state and any
+/// diagnostics.  This function is pure: it does not touch any global cache,
+/// Tauri state, or I/O.
+pub fn apply_action(mut state: PlotState, action: PlotAction) -> (PlotState, Vec<Diagnostic>) {
+    let mut diags: Vec<Diagnostic> = Vec::new();
+
+    match action {
+        PlotAction::SetDataset(dataset) => {
+            state.dataset = dataset;
+        }
+
+        PlotAction::SetScalarField(field) => {
+            state.scalar_field = field;
+        }
+
+        PlotAction::SetAxisView(view) => {
+            state.axis_view = view;
+            // Setting a named axis view clears any explicit viewpoint so the
+            // two representations don't conflict.
+            state.viewpoint = None;
+        }
+
+        PlotAction::SetViewpoint(vp) => {
+            state.viewpoint = Some(vp);
+            // Explicit viewpoint supersedes a named axis preset.
+            state.axis_view = AxisView::Custom;
+        }
+
+        PlotAction::SetMinMax(mm) => {
+            if let (Some(min), Some(max)) = (mm.min, mm.max) {
+                if min >= max {
+                    diags.push(Diagnostic::warning(
+                        cap::MINMAX,
+                        format!("MINMAX min ({min}) must be less than max ({max}); ignored"),
+                    ));
+                    // Leave state unchanged.
+                } else {
+                    state.minmax = mm;
+                }
+            } else {
+                state.minmax = mm;
+            }
+        }
+
+        PlotAction::SetContourSpec(spec) => {
+            if let ContourSpec::Automatic { count } = &spec {
+                if *count == 0 {
+                    diags.push(Diagnostic::warning(
+                        cap::CONTOURS,
+                        "Automatic contour count must be ≥ 1; defaulting to 10",
+                    ));
+                    state.contour_spec = ContourSpec::Automatic { count: 10 };
+                } else {
+                    state.contour_spec = spec;
+                }
+            } else if let ContourSpec::Increment { increment, .. } = &spec {
+                if *increment <= 0.0 {
+                    diags.push(Diagnostic::warning(
+                        cap::CONTOURS,
+                        "Contour increment must be > 0; ignored",
+                    ));
+                    // Leave state unchanged.
+                } else {
+                    state.contour_spec = spec;
+                }
+            } else {
+                state.contour_spec = spec;
+            }
+        }
+
+        PlotAction::SetWalls(walls) => {
+            state.walls = walls;
+        }
+
+        PlotAction::SetSubsets(subsets) => {
+            state.subsets = subsets;
+        }
+
+        PlotAction::SetFsurface(fs) => {
+            state.fsurface = fs;
+        }
+
+        PlotAction::AddTextAnnotation(text) => {
+            state.text_annotations.push(text);
+        }
+
+        PlotAction::ClearTextAnnotations => {
+            state.text_annotations.clear();
+        }
+
+        PlotAction::CommitPlot => {
+            // CommitPlot itself does not mutate state; the executor layer is
+            // responsible for deriving a RenderIntent from the current state
+            // when it handles this action.  We emit an info diagnostic so
+            // callers can observe the boundary in a diagnostic stream.
+            diags.push(Diagnostic::info(cap::PLOT, "Plot committed"));
+        }
+    }
+
+    (state, diags)
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Tests
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn default_state() -> PlotState {
+        PlotState::default()
+    }
+
+    // ── SetDataset ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn set_dataset_stores_ids() {
+        let state = default_state();
+        let action = PlotAction::SetDataset(DatasetRef {
+            grid_id: Some("grid-1".to_owned()),
+            solution_id: Some("sol-1".to_owned()),
+        });
+        let (new_state, diags) = apply_action(state, action);
+        assert_eq!(new_state.dataset.grid_id.as_deref(), Some("grid-1"));
+        assert_eq!(new_state.dataset.solution_id.as_deref(), Some("sol-1"));
+        assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn set_dataset_clears_solution_when_none() {
+        let mut state = default_state();
+        state.dataset.solution_id = Some("old-sol".to_owned());
+        let action = PlotAction::SetDataset(DatasetRef {
+            grid_id: Some("grid-1".to_owned()),
+            solution_id: None,
+        });
+        let (new_state, diags) = apply_action(state, action);
+        assert!(new_state.dataset.solution_id.is_none());
+        assert!(diags.is_empty());
+    }
+
+    // ── SetScalarField ────────────────────────────────────────────────────────
+
+    #[test]
+    fn set_scalar_field_updates_field() {
+        let state = default_state();
+        let (new_state, diags) =
+            apply_action(state, PlotAction::SetScalarField(ScalarField::Pressure));
+        assert_eq!(new_state.scalar_field, ScalarField::Pressure);
+        assert!(diags.is_empty());
+    }
+
+    // ── SetAxisView / SetViewpoint interaction ────────────────────────────────
+
+    #[test]
+    fn set_axis_view_clears_viewpoint() {
+        let mut state = default_state();
+        state.viewpoint = Some(ViewPoint {
+            x: 1.0,
+            y: 2.0,
+            z: 3.0,
+        });
+        let (new_state, diags) = apply_action(state, PlotAction::SetAxisView(AxisView::PlusZ));
+        assert_eq!(new_state.axis_view, AxisView::PlusZ);
+        assert!(new_state.viewpoint.is_none());
+        assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn set_viewpoint_sets_custom_axis_view() {
+        let state = default_state();
+        let vp = ViewPoint {
+            x: 1.0,
+            y: 2.0,
+            z: 3.0,
+        };
+        let (new_state, diags) = apply_action(state, PlotAction::SetViewpoint(vp.clone()));
+        assert_eq!(new_state.axis_view, AxisView::Custom);
+        assert_eq!(new_state.viewpoint, Some(vp));
+        assert!(diags.is_empty());
+    }
+
+    // ── SetMinMax ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn set_minmax_accepts_valid_range() {
+        let state = default_state();
+        let mm = MinMaxOverride {
+            min: Some(0.5),
+            max: Some(2.5),
+        };
+        let (new_state, diags) = apply_action(state, PlotAction::SetMinMax(mm.clone()));
+        assert_eq!(new_state.minmax, mm);
+        assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn set_minmax_rejects_inverted_range() {
+        let state = default_state();
+        let mm = MinMaxOverride {
+            min: Some(5.0),
+            max: Some(1.0),
+        };
+        let (new_state, diags) = apply_action(state, PlotAction::SetMinMax(mm));
+        // State must be unchanged.
+        assert_eq!(new_state.minmax, MinMaxOverride::default());
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, DiagnosticSeverity::Warning);
+        assert_eq!(diags[0].capability, cap::MINMAX);
+    }
+
+    #[test]
+    fn set_minmax_rejects_equal_min_max() {
+        let state = default_state();
+        let mm = MinMaxOverride {
+            min: Some(3.0),
+            max: Some(3.0),
+        };
+        let (_, diags) = apply_action(state, PlotAction::SetMinMax(mm));
+        assert!(!diags.is_empty());
+    }
+
+    #[test]
+    fn set_minmax_accepts_partial_override() {
+        let state = default_state();
+        let mm = MinMaxOverride {
+            min: Some(0.0),
+            max: None,
+        };
+        let (new_state, diags) = apply_action(state, PlotAction::SetMinMax(mm.clone()));
+        assert_eq!(new_state.minmax, mm);
+        assert!(diags.is_empty());
+    }
+
+    // ── SetContourSpec ────────────────────────────────────────────────────────
+
+    #[test]
+    fn set_contour_spec_none_clears_contours() {
+        let mut state = default_state();
+        state.contour_spec = ContourSpec::Automatic { count: 5 };
+        let (new_state, diags) = apply_action(state, PlotAction::SetContourSpec(ContourSpec::None));
+        assert_eq!(new_state.contour_spec, ContourSpec::None);
+        assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn set_contour_spec_automatic_valid_count() {
+        let state = default_state();
+        let (new_state, diags) = apply_action(
+            state,
+            PlotAction::SetContourSpec(ContourSpec::Automatic { count: 20 }),
+        );
+        assert_eq!(new_state.contour_spec, ContourSpec::Automatic { count: 20 });
+        assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn set_contour_spec_automatic_zero_count_warns_and_defaults_to_10() {
+        let state = default_state();
+        let (new_state, diags) = apply_action(
+            state,
+            PlotAction::SetContourSpec(ContourSpec::Automatic { count: 0 }),
+        );
+        assert_eq!(new_state.contour_spec, ContourSpec::Automatic { count: 10 });
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, DiagnosticSeverity::Warning);
+        assert_eq!(diags[0].capability, cap::CONTOURS);
+    }
+
+    #[test]
+    fn set_contour_spec_increment_valid() {
+        let state = default_state();
+        let spec = ContourSpec::Increment {
+            start: 0.0,
+            increment: 0.1,
+        };
+        let (new_state, diags) = apply_action(state, PlotAction::SetContourSpec(spec.clone()));
+        assert_eq!(new_state.contour_spec, spec);
+        assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn set_contour_spec_increment_zero_warns_and_ignores() {
+        let state = default_state();
+        let (new_state, diags) = apply_action(
+            state,
+            PlotAction::SetContourSpec(ContourSpec::Increment {
+                start: 0.0,
+                increment: 0.0,
+            }),
+        );
+        assert_eq!(new_state.contour_spec, ContourSpec::None);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, DiagnosticSeverity::Warning);
+    }
+
+    #[test]
+    fn set_contour_spec_manual_stores_entries() {
+        let state = default_state();
+        let entries = vec![
+            ContourEntry {
+                value: 1.5,
+                color: None,
+            },
+            ContourEntry {
+                value: 3.0,
+                color: Some([1.0, 0.0, 0.0, 1.0]),
+            },
+        ];
+        let spec = ContourSpec::Manual {
+            entries: entries.clone(),
+        };
+        let (new_state, diags) = apply_action(state, PlotAction::SetContourSpec(spec));
+        assert_eq!(new_state.contour_spec, ContourSpec::Manual { entries });
+        assert!(diags.is_empty());
+    }
+
+    // ── SetWalls / SetSubsets ─────────────────────────────────────────────────
+
+    #[test]
+    fn set_walls_replaces_list() {
+        let state = default_state();
+        let walls = vec![GridSubset {
+            grid: 1,
+            i_range: Some(IndexRange {
+                start: 1,
+                end: Some(10),
+            }),
+            j_range: None,
+            k_range: None,
+        }];
+        let (new_state, diags) = apply_action(state, PlotAction::SetWalls(walls.clone()));
+        assert_eq!(new_state.walls, walls);
+        assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn set_subsets_replaces_list() {
+        let state = default_state();
+        let subsets = vec![GridSubset {
+            grid: 2,
+            i_range: None,
+            j_range: Some(IndexRange {
+                start: 5,
+                end: None,
+            }),
+            k_range: None,
+        }];
+        let (new_state, diags) = apply_action(state, PlotAction::SetSubsets(subsets.clone()));
+        assert_eq!(new_state.subsets, subsets);
+        assert!(diags.is_empty());
+    }
+
+    // ── SetFsurface ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn set_fsurface_stores_spec() {
+        let state = default_state();
+        let fs = FsurfaceSpec {
+            value: 1.225,
+            scalar_field: ScalarField::Density,
+        };
+        let (new_state, diags) = apply_action(state, PlotAction::SetFsurface(Some(fs.clone())));
+        assert_eq!(new_state.fsurface, Some(fs));
+        assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn set_fsurface_none_clears_spec() {
+        let mut state = default_state();
+        state.fsurface = Some(FsurfaceSpec {
+            value: 1.0,
+            scalar_field: ScalarField::Pressure,
+        });
+        let (new_state, diags) = apply_action(state, PlotAction::SetFsurface(None));
+        assert!(new_state.fsurface.is_none());
+        assert!(diags.is_empty());
+    }
+
+    // ── Text annotations ──────────────────────────────────────────────────────
+
+    #[test]
+    fn add_text_annotation_appends() {
+        let state = default_state();
+        let text = PlotText {
+            content: "hello".to_owned(),
+            x: 0.1,
+            y: 0.9,
+        };
+        let (new_state, diags) = apply_action(state, PlotAction::AddTextAnnotation(text.clone()));
+        assert_eq!(new_state.text_annotations.len(), 1);
+        assert_eq!(new_state.text_annotations[0], text);
+        assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn add_multiple_text_annotations_accumulate() {
+        let state = default_state();
+        let t1 = PlotText {
+            content: "a".to_owned(),
+            x: 0.0,
+            y: 0.0,
+        };
+        let t2 = PlotText {
+            content: "b".to_owned(),
+            x: 0.5,
+            y: 0.5,
+        };
+        let (s1, _) = apply_action(state, PlotAction::AddTextAnnotation(t1));
+        let (s2, diags) = apply_action(s1, PlotAction::AddTextAnnotation(t2));
+        assert_eq!(s2.text_annotations.len(), 2);
+        assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn clear_text_annotations_removes_all() {
+        let mut state = default_state();
+        state.text_annotations.push(PlotText {
+            content: "x".to_owned(),
+            x: 0.0,
+            y: 0.0,
+        });
+        let (new_state, diags) = apply_action(state, PlotAction::ClearTextAnnotations);
+        assert!(new_state.text_annotations.is_empty());
+        assert!(diags.is_empty());
+    }
+
+    // ── CommitPlot ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn commit_plot_does_not_mutate_state() {
+        let state = default_state();
+        let expected = state.clone();
+        let (new_state, diags) = apply_action(state, PlotAction::CommitPlot);
+        assert_eq!(new_state, expected);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, DiagnosticSeverity::Info);
+        assert_eq!(diags[0].capability, cap::PLOT);
+    }
+
+    // ── Multiple sequential actions ───────────────────────────────────────────
+
+    #[test]
+    fn sequential_actions_compose_correctly() {
+        let state = default_state();
+        let (s1, _) = apply_action(state, PlotAction::SetScalarField(ScalarField::Density));
+        let (s2, _) = apply_action(
+            s1,
+            PlotAction::SetContourSpec(ContourSpec::Automatic { count: 5 }),
+        );
+        let (s3, _) = apply_action(
+            s2,
+            PlotAction::SetMinMax(MinMaxOverride {
+                min: Some(0.1),
+                max: Some(1.2),
+            }),
+        );
+        assert_eq!(s3.scalar_field, ScalarField::Density);
+        assert_eq!(s3.contour_spec, ContourSpec::Automatic { count: 5 });
+        assert_eq!(s3.minmax.min, Some(0.1));
+        assert_eq!(s3.minmax.max, Some(1.2));
+    }
+
+    // ── apply_action is pure (original not mutated) ───────────────────────────
+
+    #[test]
+    fn apply_action_does_not_mutate_original_state() {
+        let state = default_state();
+        let original = state.clone();
+        let _ = apply_action(
+            state.clone(),
+            PlotAction::SetScalarField(ScalarField::Energy),
+        );
+        // `state` is moved into apply_action but we verify via `original`.
+        assert_eq!(original.scalar_field, ScalarField::None);
+    }
+}
