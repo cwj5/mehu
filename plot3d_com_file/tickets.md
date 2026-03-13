@@ -55,7 +55,9 @@ Relevant decisions:
 1. Incremental delivery is allowed.
 2. Supported scope may not contain undeclared script-only features.
 
-### TKT-002: Introduce shared PlotState, PlotAction, and diagnostics model 🚧 IN PROGRESS
+### ~~TKT-002: Introduce shared PlotState, PlotAction, and diagnostics model~~ ✅ COMPLETE
+
+Completed: 2026-03-12. Includes `PlotState`, `PlotAction`, diagnostics model, `apply_action`, `get_plot_state` / `apply_plot_action`, absolute multi-level contours, canonical `plot_state::ScalarField`, and `PlotMode` state/action coverage with unit tests.
 
 Goal:
 Create the backend-owned canonical state and transition model used by both script execution and GUI interaction.

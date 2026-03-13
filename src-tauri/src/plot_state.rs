@@ -207,6 +207,25 @@ pub struct PlotText {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// Plot mode (PLOT)
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Modern plot mode representation for legacy `PLOT` behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlotMode {
+    Surface3d,
+    Contours,
+    Lines,
+}
+
+impl Default for PlotMode {
+    fn default() -> Self {
+        PlotMode::Surface3d
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Dataset references
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -259,6 +278,9 @@ pub struct PlotState {
 
     // TEXT
     pub text_annotations: Vec<PlotText>,
+
+    // PLOT
+    pub plot_mode: PlotMode,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -303,6 +325,9 @@ pub enum PlotAction {
 
     // TEXT: clear all text annotations.
     ClearTextAnnotations,
+
+    // PLOT: set rendering mode (surface, contour, line).
+    SetPlotMode(PlotMode),
 
     // PLOT: commit current state as a render intent (handled by the executor
     // layer; `apply_action` records the intent but does not render).
@@ -478,6 +503,10 @@ pub fn apply_action(mut state: PlotState, action: PlotAction) -> (PlotState, Vec
 
         PlotAction::ClearTextAnnotations => {
             state.text_annotations.clear();
+        }
+
+        PlotAction::SetPlotMode(mode) => {
+            state.plot_mode = mode;
         }
 
         PlotAction::CommitPlot => {
@@ -818,6 +847,22 @@ mod tests {
         assert!(diags.is_empty());
     }
 
+    // ── Plot mode ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn plot_mode_defaults_to_surface3d() {
+        let state = default_state();
+        assert_eq!(state.plot_mode, PlotMode::Surface3d);
+    }
+
+    #[test]
+    fn set_plot_mode_updates_mode() {
+        let state = default_state();
+        let (new_state, diags) = apply_action(state, PlotAction::SetPlotMode(PlotMode::Contours));
+        assert_eq!(new_state.plot_mode, PlotMode::Contours);
+        assert!(diags.is_empty());
+    }
+
     // ── CommitPlot ────────────────────────────────────────────────────────────
 
     #[test]
@@ -848,10 +893,12 @@ mod tests {
                 max: Some(1.2),
             }),
         );
-        assert_eq!(s3.scalar_field, ScalarField::Density);
-        assert_eq!(s3.contour_spec, ContourSpec::Automatic { count: 5 });
-        assert_eq!(s3.minmax.min, Some(0.1));
-        assert_eq!(s3.minmax.max, Some(1.2));
+        let (s4, _) = apply_action(s3, PlotAction::SetPlotMode(PlotMode::Lines));
+        assert_eq!(s4.scalar_field, ScalarField::Density);
+        assert_eq!(s4.contour_spec, ContourSpec::Automatic { count: 5 });
+        assert_eq!(s4.minmax.min, Some(0.1));
+        assert_eq!(s4.minmax.max, Some(1.2));
+        assert_eq!(s4.plot_mode, PlotMode::Lines);
     }
 
     // ── apply_action is pure (original not mutated) ───────────────────────────
