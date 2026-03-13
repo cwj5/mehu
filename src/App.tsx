@@ -48,6 +48,7 @@ interface BackendPlotState {
   scalar_field: BackendScalarField;
   plot_mode: BackendPlotMode;
   contour_spec: unknown;
+  viewpoint?: { x: number; y: number; z: number } | null;
 }
 
 interface BackendDiagnostic {
@@ -59,6 +60,7 @@ interface BackendDiagnostic {
 type PlotActionPayload =
   | { kind: 'set_scalar_field'; field: BackendScalarField }
   | { kind: 'set_plot_mode'; mode: BackendPlotMode }
+  | { kind: 'set_viewpoint'; vp: { x: number; y: number; z: number } }
   | {
     kind: 'set_contour_spec';
     mode: 'manual';
@@ -449,6 +451,10 @@ const App = () => {
     // Rust will emit loading events
     setCurrentScalarField(field);
     await dispatchPlotAction({ kind: 'set_scalar_field', field: field as BackendScalarField });
+  };
+
+  const handleCameraCommit = async (vp: { x: number; y: number; z: number }) => {
+    await dispatchPlotAction({ kind: 'set_viewpoint', vp });
   };
 
   useEffect(() => {
@@ -1448,6 +1454,7 @@ const App = () => {
               contoursEnabled={contoursEnabled}
               contourLevel={contourLevel}
               contourDisplayMode={contourDisplayMode}
+              onCameraCommit={handleCameraCommit}
               onSlicesChange={setGridSlices}
               onLoadingChange={handleViewer3DLoadingChange}
             />

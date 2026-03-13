@@ -1,4 +1,4 @@
-import { Canvas } from '@react-three/fiber';
+import { Canvas, useThree } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import { useState, useEffect, useMemo, useRef } from 'react';
 import * as THREE from 'three';
@@ -49,8 +49,30 @@ interface Viewer3DProps {
     contoursEnabled?: boolean;
     contourLevel?: number;
     contourDisplayMode?: 'surfaces' | 'lines' | 'both';
+    onCameraCommit?: (vp: { x: number; y: number; z: number }) => void;
     onSlicesChange?: (slices: Record<string, GridSlice[]>) => void;
     onLoadingChange?: (isLoading: boolean) => void;
+}
+
+function CameraCommitControls({
+    onCameraCommit,
+}: {
+    onCameraCommit?: (vp: { x: number; y: number; z: number }) => void;
+}) {
+    const { camera } = useThree();
+
+    const handleEnd = () => {
+        if (!onCameraCommit) {
+            return;
+        }
+        onCameraCommit({
+            x: camera.position.x,
+            y: camera.position.y,
+            z: camera.position.z,
+        });
+    };
+
+    return <OrbitControls enableDamping dampingFactor={0.05} onEnd={handleEnd} />;
 }
 
 function SolidMeshRenderer({
@@ -420,6 +442,7 @@ export default function Viewer3D({
     contoursEnabled = false,
     contourLevel = 0.5,
     contourDisplayMode = 'both',
+    onCameraCommit,
     onSlicesChange,
     onLoadingChange
 }: Viewer3DProps) {
@@ -1287,7 +1310,7 @@ export default function Viewer3D({
                 }
 
                 {/* Camera controls */}
-                <OrbitControls enableDamping dampingFactor={0.05} />
+                <CameraCommitControls onCameraCommit={onCameraCommit} />
             </Canvas>
 
             {/* UI Controls */}
