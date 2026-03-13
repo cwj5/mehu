@@ -1,6 +1,6 @@
 import { Canvas, useThree } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
-import { useState, useEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef, type MutableRefObject } from 'react';
 import * as THREE from 'three';
 import { BufferGeometry, BufferAttribute, ShaderMaterial } from 'three';
 import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js';
@@ -57,8 +57,10 @@ interface Viewer3DProps {
 
 function CameraViewpointSync({
     cameraViewpoint,
+    isUserNavigatingRef,
 }: {
     cameraViewpoint?: { x: number; y: number; z: number } | null;
+    isUserNavigatingRef: MutableRefObject<boolean>;
 }) {
     const { camera } = useThree();
 
@@ -66,32 +68,130 @@ function CameraViewpointSync({
         if (!cameraViewpoint) {
             return;
         }
+        // Never fight active user interaction; only sync from backend when idle.
+        if (isUserNavigatingRef.current) {
+            return;
+        }
+
+        const dx = camera.position.x - cameraViewpoint.x;
+        const dy = camera.position.y - cameraViewpoint.y;
+        const dz = camera.position.z - cameraViewpoint.z;
+        const dist2 = dx * dx + dy * dy + dz * dz;
+        // Avoid tiny corrective snaps that feel like jitter.
+        if (dist2 < 1e-8) {
+            return;
+        }
+
         camera.position.set(cameraViewpoint.x, cameraViewpoint.y, cameraViewpoint.z);
-        camera.updateProjectionMatrix();
-    }, [camera, cameraViewpoint]);
+    }, [camera, cameraViewpoint, isUserNavigatingRef]);
 
     return null;
 }
 
 function CameraCommitControls({
     onCameraCommit,
+    isUserNavigatingRef,
 }: {
     onCameraCommit?: (vp: { x: number; y: number; z: number }) => void;
+    isUserNavigatingRef: MutableRefObject<boolean>;
 }) {
     const { camera } = useThree();
+    const settleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const lastPosRef = useRef<{ x: number; y: number; z: number } | null>(null);
+    const stableSamplesRef = useRef(0);
 
-    const handleEnd = () => {
-        if (!onCameraCommit) {
-            return;
+    // Damping continues briefly after pointer release; wait for motion to settle
+    // before committing and before allowing backend viewpoint re-sync.
+    const settleThreshold2 = 1e-6;
+    const requiredStableSamples = 4;
+
+    const clearSettleTimer = () => {
+        if (settleTimerRef.current) {
+            clearTimeout(settleTimerRef.current);
+            settleTimerRef.current = null;
         }
-        onCameraCommit({
+    };
+
+    const scheduleSettleCheck = () => {
+        clearSettleTimer();
+        settleTimerRef.current = setTimeout(() => {
+            const current = {
+                x: camera.position.x,
+                y: camera.position.y,
+                z: camera.position.z,
+            };
+
+            const last = lastPosRef.current;
+            if (!last) {
+                lastPosRef.current = current;
+                stableSamplesRef.current = 0;
+                scheduleSettleCheck();
+                return;
+            }
+
+            const dx = current.x - last.x;
+            const dy = current.y - last.y;
+            const dz = current.z - last.z;
+            const dist2 = dx * dx + dy * dy + dz * dz;
+
+            if (dist2 < settleThreshold2) {
+                stableSamplesRef.current += 1;
+            } else {
+                stableSamplesRef.current = 0;
+            }
+
+            lastPosRef.current = current;
+
+            if (stableSamplesRef.current >= requiredStableSamples) {
+                isUserNavigatingRef.current = false;
+                if (onCameraCommit) {
+                    onCameraCommit(current);
+                }
+                clearSettleTimer();
+                return;
+            }
+
+            scheduleSettleCheck();
+        }, 25);
+    };
+
+    const handleStart = () => {
+        isUserNavigatingRef.current = true;
+        stableSamplesRef.current = 0;
+        lastPosRef.current = {
             x: camera.position.x,
             y: camera.position.y,
             z: camera.position.z,
-        });
+        };
+        clearSettleTimer();
     };
 
-    return <OrbitControls enableDamping dampingFactor={0.05} onEnd={handleEnd} />;
+    const handleEnd = () => {
+        // Keep navigation lock active until damping settles.
+        isUserNavigatingRef.current = true;
+        stableSamplesRef.current = 0;
+        lastPosRef.current = {
+            x: camera.position.x,
+            y: camera.position.y,
+            z: camera.position.z,
+        };
+        scheduleSettleCheck();
+    };
+
+    useEffect(() => {
+        return () => {
+            clearSettleTimer();
+        };
+    }, []);
+
+    return (
+        <OrbitControls
+            enableDamping
+            dampingFactor={0.05}
+            onStart={handleStart}
+            onEnd={handleEnd}
+        />
+    );
 }
 
 function SolidMeshRenderer({
@@ -498,6 +598,7 @@ export default function Viewer3D({
     const lastColorKeyRef = useRef<string>('');
     const lastSliceKeyRef = useRef<string>('');
     const requestIdRef = useRef(0);
+    const isUserNavigatingRef = useRef(false);
 
     // Memoize a key based on applied slices (updates only on Apply)
     const appliedSlicesKey = useMemo(
@@ -1247,7 +1348,10 @@ export default function Viewer3D({
             <Canvas camera={{ position: [5, 5, 5], fov: 50 }}>
                 <ambientLight intensity={0.5} />
                 <directionalLight position={[10, 10, 5]} intensity={1} />
-                <CameraViewpointSync cameraViewpoint={cameraViewpoint} />
+                <CameraViewpointSync
+                    cameraViewpoint={cameraViewpoint}
+                    isUserNavigatingRef={isUserNavigatingRef}
+                />
 
                 {/* Render mesh based on selected mode */}
                 {visibleGrids.map((gridItem) => {
@@ -1331,7 +1435,10 @@ export default function Viewer3D({
                 }
 
                 {/* Camera controls */}
-                <CameraCommitControls onCameraCommit={onCameraCommit} />
+                <CameraCommitControls
+                    onCameraCommit={onCameraCommit}
+                    isUserNavigatingRef={isUserNavigatingRef}
+                />
             </Canvas>
 
             {/* UI Controls */}
