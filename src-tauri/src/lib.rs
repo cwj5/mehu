@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+mod com_parser;
 mod function_mapping;
 mod logger;
 mod plot3d;

@@ -124,7 +124,7 @@ Relevant decisions:
 1. The enum remains canonical.
 2. Legacy number parsing is a translation layer concern.
 
-### TKT-004: Implement strict parser and validator for `.com` files
+### TKT-004: Implement strict parser and validator for `.com` files 🚧 IN PROGRESS
 
 Goal:
 Parse supported legacy command syntax into typed actions.
