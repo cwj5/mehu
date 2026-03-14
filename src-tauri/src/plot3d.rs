@@ -1266,14 +1266,46 @@ impl Plot3DGrid {
         show_fringe_points: bool,
         decimation_factor: usize,
     ) -> MeshGeometry {
+        #[derive(Clone, Copy)]
+        enum SurfaceOrientation {
+            KPlane,
+            IPlane,
+            JPlane,
+        }
+
         let decimation = decimation_factor.max(1);
 
-        let i = self.dimensions.i as usize;
-        let j = self.dimensions.j as usize;
-        let k_idx = 0;
+        let ni = self.dimensions.i as usize;
+        let nj = self.dimensions.j as usize;
+        let nk = self.dimensions.k as usize;
 
-        let i_decimated = ((i - 1) / decimation) + 1;
-        let j_decimated = ((j - 1) / decimation) + 1;
+        let orientation = if nk == 1 {
+            SurfaceOrientation::KPlane
+        } else if ni == 1 {
+            SurfaceOrientation::IPlane
+        } else if nj == 1 {
+            SurfaceOrientation::JPlane
+        } else {
+            // Default full-volume rendering remains the K-min boundary surface.
+            SurfaceOrientation::KPlane
+        };
+
+        let (u_dim, v_dim) = match orientation {
+            SurfaceOrientation::KPlane => (ni, nj),
+            SurfaceOrientation::IPlane => (nj, nk),
+            SurfaceOrientation::JPlane => (ni, nk),
+        };
+
+        let grid_idx_at = |u_idx: usize, v_idx: usize| -> usize {
+            match orientation {
+                SurfaceOrientation::KPlane => Self::linear_index(u_idx, v_idx, 0, ni, nj),
+                SurfaceOrientation::IPlane => Self::linear_index(0, u_idx, v_idx, ni, nj),
+                SurfaceOrientation::JPlane => Self::linear_index(u_idx, 0, v_idx, ni, nj),
+            }
+        };
+
+        let u_decimated = ((u_dim - 1) / decimation) + 1;
+        let v_decimated = ((v_dim - 1) / decimation) + 1;
 
         let is_blanked = |idx: usize| -> bool {
             if let Some(ref iblank) = self.iblank {
@@ -1288,16 +1320,16 @@ impl Plot3DGrid {
         };
 
         // Build mapping from grid indices to output mesh indices, skipping blanked vertices
-        let mut vertex_index_map: Vec<Option<u32>> = vec![None; i_decimated * j_decimated];
+        let mut vertex_index_map: Vec<Option<u32>> = vec![None; u_decimated * v_decimated];
         let mut vertices = Vec::new();
         let mut output_vertex_count = 0u32;
 
-        for j_step in 0..j_decimated {
-            let j_idx = (j_step * decimation).min(j - 1);
-            for i_step in 0..i_decimated {
-                let i_idx = (i_step * decimation).min(i - 1);
-                let grid_idx = Self::linear_index(i_idx, j_idx, k_idx, i, j);
-                let grid_vertex_idx = j_step * i_decimated + i_step;
+        for v_step in 0..v_decimated {
+            let v_idx = (v_step * decimation).min(v_dim - 1);
+            for u_step in 0..u_decimated {
+                let u_idx = (u_step * decimation).min(u_dim - 1);
+                let grid_idx = grid_idx_at(u_idx, v_idx);
+                let grid_vertex_idx = v_step * u_decimated + u_step;
 
                 if is_blanked(grid_idx) {
                     // Skip blanked vertices
@@ -1313,17 +1345,17 @@ impl Plot3DGrid {
             }
         }
 
-        let max_quads = (i_decimated - 1) * (j_decimated - 1);
+        let max_quads = (u_decimated - 1) * (v_decimated - 1);
         let mut line_indices = Vec::with_capacity(max_quads * 8);
         let mut triangle_indices = Vec::with_capacity(max_quads * 6);
 
-        for j_step in 0..j_decimated - 1 {
-            for i_step in 0..i_decimated - 1 {
+        for v_step in 0..v_decimated - 1 {
+            for u_step in 0..u_decimated - 1 {
                 // Get mapped indices for quad corners
-                let grid_v00 = j_step * i_decimated + i_step;
-                let grid_v10 = j_step * i_decimated + (i_step + 1);
-                let grid_v01 = (j_step + 1) * i_decimated + i_step;
-                let grid_v11 = (j_step + 1) * i_decimated + (i_step + 1);
+                let grid_v00 = v_step * u_decimated + u_step;
+                let grid_v10 = v_step * u_decimated + (u_step + 1);
+                let grid_v01 = (v_step + 1) * u_decimated + u_step;
+                let grid_v11 = (v_step + 1) * u_decimated + (u_step + 1);
 
                 // Skip quad if any corner is blanked
                 let v00 = match vertex_index_map[grid_v00] {
@@ -1409,14 +1441,46 @@ impl Plot3DGrid {
         show_fringe_points: bool,
         decimation_factor: usize,
     ) -> MeshGeometry {
+        #[derive(Clone, Copy)]
+        enum SurfaceOrientation {
+            KPlane,
+            IPlane,
+            JPlane,
+        }
+
         let decimation = decimation_factor.max(1);
 
-        let i = self.dimensions.i as usize;
-        let j = self.dimensions.j as usize;
-        let k_idx = 0;
+        let ni = self.dimensions.i as usize;
+        let nj = self.dimensions.j as usize;
+        let nk = self.dimensions.k as usize;
 
-        let i_decimated = ((i - 1) / decimation) + 1;
-        let j_decimated = ((j - 1) / decimation) + 1;
+        let orientation = if nk == 1 {
+            SurfaceOrientation::KPlane
+        } else if ni == 1 {
+            SurfaceOrientation::IPlane
+        } else if nj == 1 {
+            SurfaceOrientation::JPlane
+        } else {
+            // Default full-volume rendering remains the K-min boundary surface.
+            SurfaceOrientation::KPlane
+        };
+
+        let (u_dim, v_dim) = match orientation {
+            SurfaceOrientation::KPlane => (ni, nj),
+            SurfaceOrientation::IPlane => (nj, nk),
+            SurfaceOrientation::JPlane => (ni, nk),
+        };
+
+        let grid_idx_at = |u_idx: usize, v_idx: usize| -> usize {
+            match orientation {
+                SurfaceOrientation::KPlane => Self::linear_index(u_idx, v_idx, 0, ni, nj),
+                SurfaceOrientation::IPlane => Self::linear_index(0, u_idx, v_idx, ni, nj),
+                SurfaceOrientation::JPlane => Self::linear_index(u_idx, 0, v_idx, ni, nj),
+            }
+        };
+
+        let u_decimated = ((u_dim - 1) / decimation) + 1;
+        let v_decimated = ((v_dim - 1) / decimation) + 1;
 
         let is_hidden = |idx: usize| -> bool {
             if let Some(ref iblank) = self.iblank {
@@ -1430,45 +1494,45 @@ impl Plot3DGrid {
             false
         };
 
-        let total_vertices = i_decimated * j_decimated;
+        let total_vertices = u_decimated * v_decimated;
         let mut vertices = Vec::with_capacity(total_vertices * 3);
 
-        for j_step in 0..j_decimated {
-            let j_idx = (j_step * decimation).min(j - 1);
-            for i_step in 0..i_decimated {
-                let i_idx = (i_step * decimation).min(i - 1);
-                let grid_idx = Self::linear_index(i_idx, j_idx, k_idx, i, j);
+        for v_step in 0..v_decimated {
+            let v_idx = (v_step * decimation).min(v_dim - 1);
+            for u_step in 0..u_decimated {
+                let u_idx = (u_step * decimation).min(u_dim - 1);
+                let grid_idx = grid_idx_at(u_idx, v_idx);
                 vertices.push(self.x_coords[grid_idx]);
                 vertices.push(self.y_coords[grid_idx]);
                 vertices.push(self.z_coords[grid_idx]);
             }
         }
 
-        let max_quads = (i_decimated - 1) * (j_decimated - 1);
+        let max_quads = (u_decimated - 1) * (v_decimated - 1);
         let mut line_indices = Vec::with_capacity(max_quads * 8);
         let mut triangle_indices = Vec::with_capacity(max_quads * 6);
 
-        for j_step in 0..j_decimated - 1 {
-            let j_idx = (j_step * decimation).min(j - 1);
-            let j_next = ((j_step + 1) * decimation).min(j - 1);
+        for v_step in 0..v_decimated - 1 {
+            let v_idx = (v_step * decimation).min(v_dim - 1);
+            let v_next = ((v_step + 1) * decimation).min(v_dim - 1);
 
-            for i_step in 0..i_decimated - 1 {
-                let i_idx = (i_step * decimation).min(i - 1);
-                let i_next = ((i_step + 1) * decimation).min(i - 1);
+            for u_step in 0..u_decimated - 1 {
+                let u_idx = (u_step * decimation).min(u_dim - 1);
+                let u_next = ((u_step + 1) * decimation).min(u_dim - 1);
 
-                let idx00 = Self::linear_index(i_idx, j_idx, k_idx, i, j);
-                let idx10 = Self::linear_index(i_next, j_idx, k_idx, i, j);
-                let idx01 = Self::linear_index(i_idx, j_next, k_idx, i, j);
-                let idx11 = Self::linear_index(i_next, j_next, k_idx, i, j);
+                let idx00 = grid_idx_at(u_idx, v_idx);
+                let idx10 = grid_idx_at(u_next, v_idx);
+                let idx01 = grid_idx_at(u_idx, v_next);
+                let idx11 = grid_idx_at(u_next, v_next);
 
                 if is_hidden(idx00) || is_hidden(idx10) || is_hidden(idx01) || is_hidden(idx11) {
                     continue;
                 }
 
-                let v00 = (j_step * i_decimated + i_step) as u32;
-                let v10 = (j_step * i_decimated + (i_step + 1)) as u32;
-                let v01 = ((j_step + 1) * i_decimated + i_step) as u32;
-                let v11 = ((j_step + 1) * i_decimated + (i_step + 1)) as u32;
+                let v00 = (v_step * u_decimated + u_step) as u32;
+                let v10 = (v_step * u_decimated + (u_step + 1)) as u32;
+                let v01 = ((v_step + 1) * u_decimated + u_step) as u32;
+                let v11 = ((v_step + 1) * u_decimated + (u_step + 1)) as u32;
 
                 line_indices.extend_from_slice(&[v00, v10, v10, v11, v11, v01, v01, v00]);
                 triangle_indices.extend_from_slice(&[v00, v10, v11, v00, v11, v01]);
@@ -4094,6 +4158,78 @@ mod tests {
         assert_eq!(mesh_filtered.vertex_count, 9);
         assert_eq!(mesh_filtered.vertices.len(), 9 * 3);
         assert_eq!(mesh_filtered.face_count, 0);
+    }
+
+    #[test]
+    fn test_surface_mesh_decimated_handles_all_collapsed_axes() {
+        let build_grid = |dims: GridDimensions| {
+            let mut x_coords = Vec::new();
+            let mut y_coords = Vec::new();
+            let mut z_coords = Vec::new();
+
+            for k in 0..dims.k {
+                for j in 0..dims.j {
+                    for i in 0..dims.i {
+                        x_coords.push(i as f32);
+                        y_coords.push(j as f32);
+                        z_coords.push(k as f32);
+                    }
+                }
+            }
+
+            Plot3DGrid {
+                dimensions: dims,
+                x_coords,
+                y_coords,
+                z_coords,
+                iblank: None,
+            }
+        };
+
+        // These are exactly the shapes produced by subset slicing for I/J/K planes.
+        let cases = [
+            GridDimensions { i: 1, j: 3, k: 3 },
+            GridDimensions { i: 3, j: 1, k: 3 },
+            GridDimensions { i: 3, j: 3, k: 1 },
+        ];
+
+        for dims in cases {
+            let grid = build_grid(dims.clone());
+
+            let mesh_vertex = grid.to_mesh_surface_geometry_decimated(
+                false,
+                true,
+                crate::IblankFilterMode::Vertex,
+                1,
+            );
+            assert_eq!(
+                mesh_vertex.vertex_count, 9,
+                "vertex mode should keep all 9 points for dims {}x{}x{}",
+                dims.i, dims.j, dims.k
+            );
+            assert_eq!(
+                mesh_vertex.face_count, 8,
+                "vertex mode should generate 4 quads (8 tris) for dims {}x{}x{}",
+                dims.i, dims.j, dims.k
+            );
+
+            let mesh_cell = grid.to_mesh_surface_geometry_decimated(
+                false,
+                true,
+                crate::IblankFilterMode::Cell,
+                1,
+            );
+            assert_eq!(
+                mesh_cell.vertex_count, 9,
+                "cell mode should keep all 9 points for dims {}x{}x{}",
+                dims.i, dims.j, dims.k
+            );
+            assert_eq!(
+                mesh_cell.face_count, 8,
+                "cell mode should generate 4 quads (8 tris) for dims {}x{}x{}",
+                dims.i, dims.j, dims.k
+            );
+        }
     }
 
     #[test]
