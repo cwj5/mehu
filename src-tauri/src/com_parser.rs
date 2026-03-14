@@ -19,6 +19,78 @@ pub fn parse_com_file(path: &Path) -> Result<ParsedScript, String> {
     parse_file_internal(path, &mut visited)
 }
 
+/// Parse commands entered directly in the GUI command window.
+///
+/// INCLUDE/@ directives are intentionally ignored in this mode; users should
+/// run `.com` files through `parse_com_file` when includes are needed.
+pub fn parse_com_text(script_text: &str, source_name: &str) -> ParsedScript {
+    let source_path = PathBuf::from(source_name);
+    let mut out = ParsedScript::default();
+
+    for (idx, raw_line) in script_text.lines().enumerate() {
+        let line_number = (idx + 1) as u32;
+        let stripped = strip_comments(raw_line);
+        let trimmed = stripped.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        if trimmed.starts_with('@') {
+            out.diagnostics.push(diagnostic(
+                cap::READ,
+                DiagnosticSeverity::Warning,
+                Some(source_name.to_string()),
+                Some(line_number),
+                Some(1),
+                "@include shorthand is not supported in command-window mode",
+            ));
+            continue;
+        }
+
+        let tokens = tokenize_line(trimmed);
+        if tokens.is_empty() {
+            continue;
+        }
+
+        let mut first = tokens[0].clone();
+        let mut args_with_inline = tokens[1..].to_vec();
+        if tokens[0].contains('/') {
+            let mut iter = tokens[0].split('/');
+            first = iter.next().unwrap_or("").to_string();
+            let qualifiers = iter
+                .filter(|q| !q.is_empty())
+                .map(|q| format!("/{}", q))
+                .collect::<Vec<_>>();
+            let mut combined = qualifiers;
+            combined.extend(args_with_inline);
+            args_with_inline = combined;
+        }
+
+        let command = resolve_command_alias(&first);
+        if command == "INCLUDE" {
+            out.diagnostics.push(diagnostic(
+                cap::READ,
+                DiagnosticSeverity::Warning,
+                Some(source_name.to_string()),
+                Some(line_number),
+                Some(1),
+                "INCLUDE is not supported in command-window mode; use Execute .com File",
+            ));
+            continue;
+        }
+
+        parse_command(
+            &command,
+            &args_with_inline,
+            &source_path,
+            line_number,
+            &mut out,
+        );
+    }
+
+    out
+}
+
 fn parse_file_internal(
     path: &Path,
     visited: &mut HashSet<PathBuf>,
@@ -665,6 +737,7 @@ fn parse_walls_or_subsets(
     }
 
     let mut grid_from_qualifier: Option<u32> = None;
+    let mut add_mode = false;
     let mut positional: Vec<String> = Vec::new();
 
     for arg in args {
@@ -684,8 +757,11 @@ fn parse_walls_or_subsets(
                         ));
                     }
                 }
+                "ADD" => {
+                    add_mode = true;
+                }
                 // Known legacy qualifiers currently accepted but not modeled in PlotState.
-                "ADD" | "ATTRIBUTES" | "NOATTRIBUTES" => {}
+                "ATTRIBUTES" | "NOATTRIBUTES" => {}
                 _ => out.diagnostics.push(diagnostic(
                     capability,
                     DiagnosticSeverity::Warning,
@@ -724,35 +800,63 @@ fn parse_walls_or_subsets(
 
     let mut subset = GridSubset {
         grid,
+        gui_managed: false,
         i_range: None,
         j_range: None,
         k_range: None,
     };
 
     // Range arguments are positional only and follow the optional positional grid.
+    // Preferred form: i_start i_end j_start j_end k_start k_end
+    // Legacy fallback: i_range j_range k_range (e.g. 1:10 2:20 3:30 or (1,10) ...)
     let range_start = if grid_from_qualifier.is_some() { 0 } else { 1 };
+    let range_args = positional.get(range_start..).unwrap_or(&[]);
 
-    if let Some(range) = positional
-        .get(range_start)
-        .and_then(|s| parse_index_range(s))
-    {
-        subset.i_range = Some(range);
-    }
-    if let Some(range) = positional
-        .get(range_start + 1)
-        .and_then(|s| parse_index_range(s))
-    {
-        subset.j_range = Some(range);
-    }
-    if let Some(range) = positional
-        .get(range_start + 2)
-        .and_then(|s| parse_index_range(s))
-    {
-        subset.k_range = Some(range);
+    let parse_i32_token = |idx: usize| -> Option<i32> {
+        range_args
+            .get(idx)
+            .and_then(|s| s.trim().parse::<i32>().ok())
+    };
+
+    if range_args.len() >= 6 {
+        if let (Some(i_start), Some(i_end)) = (parse_i32_token(0), parse_i32_token(1)) {
+            subset.i_range = Some(IndexRange {
+                start: i_start,
+                end: Some(i_end),
+            });
+        }
+        if let (Some(j_start), Some(j_end)) = (parse_i32_token(2), parse_i32_token(3)) {
+            subset.j_range = Some(IndexRange {
+                start: j_start,
+                end: Some(j_end),
+            });
+        }
+        if let (Some(k_start), Some(k_end)) = (parse_i32_token(4), parse_i32_token(5)) {
+            subset.k_range = Some(IndexRange {
+                start: k_start,
+                end: Some(k_end),
+            });
+        }
+    } else {
+        if let Some(range) = range_args.first().and_then(|s| parse_index_range(s)) {
+            subset.i_range = Some(range);
+        }
+        if let Some(range) = range_args.get(1).and_then(|s| parse_index_range(s)) {
+            subset.j_range = Some(range);
+        }
+        if let Some(range) = range_args.get(2).and_then(|s| parse_index_range(s)) {
+            subset.k_range = Some(range);
+        }
     }
 
     if walls {
-        out.actions.push(PlotAction::SetWalls(vec![subset]));
+        if add_mode {
+            out.actions.push(PlotAction::AddWalls(vec![subset]));
+        } else {
+            out.actions.push(PlotAction::SetWalls(vec![subset]));
+        }
+    } else if add_mode {
+        out.actions.push(PlotAction::AddSubsets(vec![subset]));
     } else {
         out.actions.push(PlotAction::SetSubsets(vec![subset]));
     }
@@ -855,8 +959,8 @@ fn parse_index_range(token: &str) -> Option<IndexRange> {
 
     if let Some(values) = parse_tuple_numbers(t) {
         if values.len() >= 2 {
-            let start = values[0] as u32;
-            let end = values[1] as u32;
+            let start = values[0] as i32;
+            let end = values[1] as i32;
             return Some(IndexRange {
                 start,
                 end: Some(end),
@@ -865,16 +969,16 @@ fn parse_index_range(token: &str) -> Option<IndexRange> {
     }
 
     if let Some((a, b)) = t.split_once(':') {
-        let start = a.trim().parse::<u32>().ok()?;
+        let start = a.trim().parse::<i32>().ok()?;
         let end = if b.trim().is_empty() {
             None
         } else {
-            Some(b.trim().parse::<u32>().ok()?)
+            Some(b.trim().parse::<i32>().ok()?)
         };
         return Some(IndexRange { start, end });
     }
 
-    if let Ok(single) = t.parse::<u32>() {
+    if let Ok(single) = t.parse::<i32>() {
         return Some(IndexRange {
             start: single,
             end: Some(single),
@@ -1521,5 +1625,67 @@ fn subsets_grid_qualifier_sets_grid_id() {
         assert_eq!(subsets[0].k_range.as_ref().map(|r| r.start), Some(7));
     } else {
         panic!("expected SetSubsets, got {:?}", parsed.actions[0]);
+    }
+}
+
+#[test]
+fn subsets_negative_index_parsed() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("subsets_neg.com");
+    fs::write(&file, "SUBSETS/GRID=1 -1 -1 -2 -2 -3 -3\n").expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+    assert_eq!(parsed.actions.len(), 1);
+    if let PlotAction::SetSubsets(subsets) = &parsed.actions[0] {
+        assert_eq!(subsets.len(), 1);
+        assert_eq!(subsets[0].grid, 1);
+        assert_eq!(subsets[0].i_range.as_ref().map(|r| r.start), Some(-1));
+        assert_eq!(subsets[0].i_range.as_ref().and_then(|r| r.end), Some(-1));
+        assert_eq!(subsets[0].j_range.as_ref().map(|r| r.start), Some(-2));
+        assert_eq!(subsets[0].j_range.as_ref().and_then(|r| r.end), Some(-2));
+        assert_eq!(subsets[0].k_range.as_ref().map(|r| r.start), Some(-3));
+        assert_eq!(subsets[0].k_range.as_ref().and_then(|r| r.end), Some(-3));
+    } else {
+        panic!("expected SetSubsets, got {:?}", parsed.actions[0]);
+    }
+}
+
+#[test]
+fn subsets_positional_start_end_pairs_parsed() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("subsets_pairs.com");
+    fs::write(&file, "SUBSETS 2 5 15 6 16 7 17\n").expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+    assert_eq!(parsed.actions.len(), 1);
+    if let PlotAction::SetSubsets(subsets) = &parsed.actions[0] {
+        assert_eq!(subsets.len(), 1);
+        assert_eq!(subsets[0].grid, 2);
+        assert_eq!(subsets[0].i_range.as_ref().map(|r| r.start), Some(5));
+        assert_eq!(subsets[0].i_range.as_ref().and_then(|r| r.end), Some(15));
+        assert_eq!(subsets[0].j_range.as_ref().map(|r| r.start), Some(6));
+        assert_eq!(subsets[0].j_range.as_ref().and_then(|r| r.end), Some(16));
+        assert_eq!(subsets[0].k_range.as_ref().map(|r| r.start), Some(7));
+        assert_eq!(subsets[0].k_range.as_ref().and_then(|r| r.end), Some(17));
+    } else {
+        panic!("expected SetSubsets, got {:?}", parsed.actions[0]);
+    }
+}
+
+#[test]
+fn subsets_add_qualifier_uses_append_action() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("subsets_add.com");
+    fs::write(&file, "SUBSETS/ADD/GRID=2 5 15 6 16 7 17\n").expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+    assert_eq!(parsed.actions.len(), 1);
+    if let PlotAction::AddSubsets(subsets) = &parsed.actions[0] {
+        assert_eq!(subsets.len(), 1);
+        assert_eq!(subsets[0].grid, 2);
+        assert_eq!(subsets[0].i_range.as_ref().map(|r| r.start), Some(5));
+        assert_eq!(subsets[0].i_range.as_ref().and_then(|r| r.end), Some(15));
+    } else {
+        panic!("expected AddSubsets, got {:?}", parsed.actions[0]);
     }
 }

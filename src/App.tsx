@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { useMemo, useState, useEffect } from "react";
+import { useMemo, useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Menu, MenuItem, Submenu, CheckMenuItem, PredefinedMenuItem } from "@tauri-apps/api/menu";
 import Viewer3D from "./components/Viewer3D";
@@ -44,11 +44,41 @@ type BackendScalarField =
 
 type BackendPlotMode = 'surface3d' | 'contours' | 'lines';
 
+type BackendAxisView =
+  | 'plus_x'
+  | 'minus_x'
+  | 'plus_y'
+  | 'minus_y'
+  | 'plus_z'
+  | 'minus_z'
+  | 'plane_xy'
+  | 'plane_xz'
+  | 'plane_yz'
+  | 'plane_yx'
+  | 'plane_zx'
+  | 'plane_zy'
+  | 'custom';
+
 interface BackendPlotState {
   scalar_field: BackendScalarField;
   plot_mode: BackendPlotMode;
+  axis_view: BackendAxisView;
   contour_spec: unknown;
+  subsets: BackendGridSubset[];
   viewpoint?: { x: number; y: number; z: number } | null;
+}
+
+interface BackendIndexRange {
+  start: number;
+  end?: number | null;
+}
+
+interface BackendGridSubset {
+  grid: number;
+  gui_managed?: boolean;
+  i_range?: BackendIndexRange | null;
+  j_range?: BackendIndexRange | null;
+  k_range?: BackendIndexRange | null;
 }
 
 interface BackendDiagnostic {
@@ -62,6 +92,13 @@ interface ApplyPlotActionResult {
   diagnostics: BackendDiagnostic[];
 }
 
+interface ScriptExecutionResult {
+  final_state: BackendPlotState;
+  intents: unknown[];
+  show_output: string[];
+  diagnostics: BackendDiagnostic[];
+}
+
 const extractFirstManualContourValue = (spec: unknown): number | null => {
   if (!spec || typeof spec !== 'object') {
     return null;
@@ -72,6 +109,126 @@ const extractFirstManualContourValue = (spec: unknown): number | null => {
   }
   const value = raw.entries[0]?.value;
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
+};
+
+const subsetRangeSig = (range?: BackendIndexRange | null) =>
+  range ? `${range.start}:${range.end ?? ''}` : '-';
+
+const subsetsSignature = (subsets: BackendGridSubset[]): string =>
+  subsets
+    .map(
+      (s) =>
+        `${s.grid}|${s.gui_managed ? 'gui' : 'manual'}|${subsetRangeSig(s.i_range)}|${subsetRangeSig(s.j_range)}|${subsetRangeSig(s.k_range)}`
+    )
+    .sort()
+    .join(';');
+
+const gridSlicesSignature = (gridSlices: Record<string, GridSlice[]>): string =>
+  Object.entries(gridSlices)
+    .flatMap(([gridId, slices]) => slices.map((slice) => `${gridId}|${slice.plane}|${slice.index}`))
+    .sort()
+    .join(';');
+
+const gridSlicesToBackendSubsets = (
+  gridSlices: Record<string, GridSlice[]>,
+  grids: GridItem[],
+  sliceEnabled: boolean
+): BackendGridSubset[] => {
+  if (!sliceEnabled) {
+    return [];
+  }
+
+  const subsets: BackendGridSubset[] = [];
+  grids.forEach((grid) => {
+    const slices = gridSlices[grid.id] || [];
+    slices.forEach((slice) => {
+      const fullI: BackendIndexRange = { start: 1, end: Math.max(1, grid.dimensions.i) };
+      const fullJ: BackendIndexRange = { start: 1, end: Math.max(1, grid.dimensions.j) };
+      const fullK: BackendIndexRange = { start: 1, end: Math.max(1, grid.dimensions.k) };
+
+      const iPoint = Math.max(1, Math.min(Math.max(1, grid.dimensions.i), Math.floor(slice.index) + 1));
+      const jPoint = Math.max(1, Math.min(Math.max(1, grid.dimensions.j), Math.floor(slice.index) + 1));
+      const kPoint = Math.max(1, Math.min(Math.max(1, grid.dimensions.k), Math.floor(slice.index) + 1));
+
+      subsets.push({
+        grid: grid.gridIndex + 1,
+        gui_managed: true,
+        i_range: slice.plane === 'I' ? { start: iPoint, end: iPoint } : fullI,
+        j_range: slice.plane === 'J' ? { start: jPoint, end: jPoint } : fullJ,
+        k_range: slice.plane === 'K' ? { start: kPoint, end: kPoint } : fullK,
+      });
+    });
+  });
+
+  return subsets;
+};
+
+const backendSubsetsToGridSlices = (
+  subsets: BackendGridSubset[],
+  grids: GridItem[]
+): Record<string, GridSlice[]> => {
+  const gridByNumber = new Map<number, GridItem>();
+  grids.forEach((grid) => {
+    gridByNumber.set(grid.gridIndex + 1, grid);
+  });
+
+  const byGrid: Record<string, GridSlice[]> = {};
+  let counter = 0;
+
+  subsets.forEach((subset) => {
+    if (!subset.gui_managed) {
+      return;
+    }
+    const grid = gridByNumber.get(subset.grid);
+    if (!grid) {
+      return;
+    }
+
+    const axisRanges: Array<{ plane: 'I' | 'J' | 'K'; range?: BackendIndexRange | null; dim: number }> = [
+      { plane: 'I', range: subset.i_range, dim: Math.max(1, grid.dimensions.i) },
+      { plane: 'J', range: subset.j_range, dim: Math.max(1, grid.dimensions.j) },
+      { plane: 'K', range: subset.k_range, dim: Math.max(1, grid.dimensions.k) },
+    ];
+
+    const resolveRange = (range: BackendIndexRange | null | undefined, dim: number) => {
+      if (!range) {
+        return { start: 1, end: dim };
+      }
+      const resolveOneBased = (n: number) => (n < 0 ? dim + n + 1 : n);
+      const start = Math.max(1, Math.min(dim, resolveOneBased(range.start)));
+      const endRaw = range.end != null ? resolveOneBased(range.end) : dim;
+      const end = Math.max(1, Math.min(dim, endRaw));
+      return start <= end ? { start, end } : { start: end, end: start };
+    };
+
+    const classified = axisRanges.map((a) => {
+      const r = resolveRange(a.range, a.dim);
+      const kind: 'point' | 'full' | 'other' =
+        r.start === r.end ? 'point' : r.start === 1 && r.end === a.dim ? 'full' : 'other';
+      return { ...a, resolved: r, kind };
+    });
+
+    const points = classified.filter((a) => a.kind === 'point');
+    const othersAreFull = classified
+      .filter((a) => a.kind !== 'point')
+      .every((a) => a.kind === 'full');
+
+    // GUI-managed slice subset must have one point axis and others full-range.
+    if (points.length !== 1 || !othersAreFull) {
+      return;
+    }
+
+    const selected = points[0];
+    const zeroBased = Math.max(0, Math.min(selected.dim - 1, selected.resolved.start - 1));
+
+    const id = `subset-sync-${subset.grid}-${selected.plane}-${selected.resolved.start}-${counter++}`;
+    if (!byGrid[grid.id]) {
+      byGrid[grid.id] = [];
+    }
+    byGrid[grid.id].push({ id, plane: selected.plane, index: zeroBased });
+  });
+
+  return byGrid;
 };
 
 const GRID_COLORS = [
@@ -146,6 +303,7 @@ const App = () => {
   const [loadingMessage, setLoadingMessage] = useState("Processing...");
 
   const [gridSlices, setGridSlices] = useState<Record<string, GridSlice[]>>({});
+  const [sliceIndexDrafts, setSliceIndexDrafts] = useState<Record<string, string>>({});
   const [arbitrarySlices, setArbitrarySlices] = useState<ArbitrarySlice[]>([]);
 
   // Contour state
@@ -155,6 +313,12 @@ const App = () => {
   const [contourDisplayMode, setContourDisplayMode] = useState<'surfaces' | 'lines' | 'both'>('both');
   const [backendPlotState, setBackendPlotState] = useState<BackendPlotState | null>(null);
   const [backendDiagnostics, setBackendDiagnostics] = useState<BackendDiagnostic[]>([]);
+  const [showCommandWindow, setShowCommandWindow] = useState(false);
+  const [commandText, setCommandText] = useState("SHOW\nPLOT/CONTOUR");
+  const [comFilePath, setComFilePath] = useState("");
+  const [commandWindowOutput, setCommandWindowOutput] = useState("");
+  const suppressNextGuiSubsetSyncRef = useRef(false);
+  const backendMappedSlicesSigRef = useRef<string | null>(null);
 
   const syncPlotStateFromBackend = async () => {
     try {
@@ -206,12 +370,77 @@ const App = () => {
     }
   };
 
+  const setPlotSubsets = async (subsets: BackendGridSubset[]) => {
+    try {
+      const result = await invoke<ApplyPlotActionResult>('set_plot_subsets', { subsets });
+      updateBackendFromResult(result);
+    } catch (e) {
+      logger.error(`Failed to set plot subsets: ${e}`, 'App');
+    }
+  };
+
   const commitPlot = async () => {
     try {
       const result = await invoke<ApplyPlotActionResult>('commit_plot');
       updateBackendFromResult(result);
     } catch (e) {
       logger.error(`Failed to commit plot: ${e}`, 'App');
+    }
+  };
+
+  const formatExecutionResult = (result: ScriptExecutionResult) => {
+    const diagnostics = result.diagnostics ?? [];
+    const shows = result.show_output ?? [];
+    const intents = result.intents ?? [];
+    const diagSummary = diagnostics.map((d) => `[${d.severity}] ${d.capability}: ${d.message}`).join('\n');
+
+    const sections = [
+      `Final plot mode: ${result.final_state?.plot_mode ?? 'unknown'}`,
+      `Final scalar field: ${result.final_state?.scalar_field ?? 'unknown'}`,
+      `Render intents: ${intents.length}`,
+      `SHOW lines: ${shows.length}`,
+      '',
+      'SHOW output:',
+      shows.length ? shows.join('\n') : '(none)',
+      '',
+      'Diagnostics:',
+      diagSummary || '(none)',
+    ];
+
+    return sections.join('\n');
+  };
+
+  const runCommandText = async () => {
+    const commands = commandText.trim();
+    if (!commands) {
+      setCommandWindowOutput('Enter one or more commands first.');
+      return;
+    }
+    try {
+      const result = await invoke<ScriptExecutionResult>('execute_plot3d_commands', { commands });
+      setBackendPlotState(result.final_state);
+      setBackendDiagnostics(result.diagnostics ?? []);
+      setCommandWindowOutput(formatExecutionResult(result));
+    } catch (e) {
+      setCommandWindowOutput(`Failed to execute commands:\n${e}`);
+      logger.error(`Command window execute error: ${e}`, 'App');
+    }
+  };
+
+  const runComFile = async () => {
+    const path = comFilePath.trim();
+    if (!path) {
+      setCommandWindowOutput('Enter an absolute .com path first.');
+      return;
+    }
+    try {
+      const result = await invoke<ScriptExecutionResult>('execute_com_script', { path });
+      setBackendPlotState(result.final_state);
+      setBackendDiagnostics(result.diagnostics ?? []);
+      setCommandWindowOutput(formatExecutionResult(result));
+    } catch (e) {
+      setCommandWindowOutput(`Failed to execute .com file:\n${e}`);
+      logger.error(`.com execute error: ${e}`, 'App');
     }
   };
 
@@ -294,6 +523,32 @@ const App = () => {
         s.id === sliceId ? { ...s, ...updates } : s
       )
     }));
+  };
+
+  const commitSliceIndexDraft = (gridId: string, slice: GridSlice, maxIdx: number) => {
+    const rawDraft = sliceIndexDrafts[slice.id];
+    const parsed = Number.parseInt((rawDraft ?? '').trim(), 10);
+    if (!Number.isFinite(parsed)) {
+      setSliceIndexDrafts((prev) => {
+        if (!(slice.id in prev)) return prev;
+        const next = { ...prev };
+        delete next[slice.id];
+        return next;
+      });
+      return;
+    }
+
+    const oneBased = Math.max(1, Math.min(Math.max(1, maxIdx), parsed));
+    const zeroBased = oneBased - 1;
+    if (zeroBased !== slice.index) {
+      updateGridSlice(gridId, slice.id, { index: zeroBased });
+    }
+    setSliceIndexDrafts((prev) => {
+      if (!(slice.id in prev)) return prev;
+      const next = { ...prev };
+      delete next[slice.id];
+      return next;
+    });
   };
 
   // Contour level validation and clamping
@@ -522,7 +777,60 @@ const App = () => {
     if (contourValue !== null) {
       setContourLevel(contourValue);
     }
-  }, [backendPlotState]);
+
+    const backendSubsets = backendPlotState.subsets ?? [];
+    const mappedSlices = backendSubsetsToGridSlices(backendSubsets, grids);
+    const mappedSig = gridSlicesSignature(mappedSlices);
+    backendMappedSlicesSigRef.current = mappedSig;
+    if (mappedSig !== gridSlicesSignature(gridSlices)) {
+      suppressNextGuiSubsetSyncRef.current = true;
+      setGridSlices(mappedSlices);
+    }
+    if (backendSubsets.length > 0 && !sliceEnabled) {
+      setSliceEnabled(true);
+    }
+  }, [backendPlotState, grids, sliceEnabled]);
+
+  // Keep backend SUBSETS aligned with GUI index slice controls.
+  useEffect(() => {
+    if (suppressNextGuiSubsetSyncRef.current) {
+      suppressNextGuiSubsetSyncRef.current = false;
+      return;
+    }
+
+    if (!sliceEnabled) {
+      return;
+    }
+
+    const currentSlicesSig = gridSlicesSignature(gridSlices);
+    // If current GUI slices are exactly what was mapped from backend subsets,
+    // treat backend as authoritative and avoid writing them back.
+    if (sliceEnabled && backendMappedSlicesSigRef.current === currentSlicesSig) {
+      return;
+    }
+
+    const nextSubsets = gridSlicesToBackendSubsets(gridSlices, grids, sliceEnabled);
+    const currentSubsets = backendPlotState?.subsets ?? [];
+
+    const nonGuiManaged = currentSubsets.filter((s) => !s.gui_managed);
+
+    const dedupe = (items: BackendGridSubset[]) => {
+      const map = new Map<string, BackendGridSubset>();
+      items.forEach((s) => {
+        map.set(
+          `${s.grid}|${s.gui_managed ? 'gui' : 'manual'}|${subsetRangeSig(s.i_range)}|${subsetRangeSig(s.j_range)}|${subsetRangeSig(s.k_range)}`,
+          s
+        );
+      });
+      return Array.from(map.values());
+    };
+
+    const reconciledSubsets = dedupe([...nonGuiManaged, ...nextSubsets]);
+    if (subsetsSignature(reconciledSubsets) === subsetsSignature(currentSubsets)) {
+      return;
+    }
+    void setPlotSubsets(reconciledSubsets);
+  }, [gridSlices, grids, sliceEnabled, backendPlotState]);
 
   // Callback from Viewer3D when it's done loading meshes
   const handleViewer3DLoadingChange = () => {
@@ -735,6 +1043,19 @@ const App = () => {
             }}
           >
             {loading ? 'Loading...' : 'Load Files'}
+          </button>
+          <button
+            onClick={() => setShowCommandWindow((prev) => !prev)}
+            style={{
+              padding: '8px 16px',
+              cursor: 'pointer',
+              background: showCommandWindow ? '#1d4ed8' : '#334155',
+              border: 'none',
+              borderRadius: '4px',
+              color: 'white',
+            }}
+          >
+            {showCommandWindow ? 'Hide Command Sidebar' : 'Show Command Sidebar'}
           </button>
           {hasSolution && (
             <span style={{
@@ -1344,14 +1665,53 @@ const App = () => {
                                               <option value="K">K</option>
                                             </select>
                                             <input
-                                              type="range"
-                                              min={0}
-                                              max={Math.max(0, maxIdx - 1)}
-                                              value={slice.index}
-                                              onChange={(e) => updateGridSlice(grid.id, slice.id, { index: parseInt(e.target.value) })}
-                                              style={{ flex: 1, height: '12px', minWidth: '80px' }}
+                                              type="number"
+                                              min={1}
+                                              max={Math.max(1, maxIdx)}
+                                              value={sliceIndexDrafts[slice.id] ?? String(slice.index + 1)}
+                                              onChange={(e) => {
+                                                const next = e.target.value;
+                                                setSliceIndexDrafts((prev) => ({
+                                                  ...prev,
+                                                  [slice.id]: next,
+                                                }));
+                                              }}
+                                              onKeyDown={(e) => {
+                                                if (e.key === 'Enter') {
+                                                  e.preventDefault();
+                                                  commitSliceIndexDraft(grid.id, slice, maxIdx);
+                                                }
+                                                if (e.key === 'Escape') {
+                                                  e.preventDefault();
+                                                  setSliceIndexDrafts((prev) => {
+                                                    if (!(slice.id in prev)) return prev;
+                                                    const next = { ...prev };
+                                                    delete next[slice.id];
+                                                    return next;
+                                                  });
+                                                }
+                                              }}
+                                              onBlur={() => {
+                                                // Per UX request, only commit on Enter; blur discards draft edits.
+                                                setSliceIndexDrafts((prev) => {
+                                                  if (!(slice.id in prev)) return prev;
+                                                  const next = { ...prev };
+                                                  delete next[slice.id];
+                                                  return next;
+                                                });
+                                              }}
+                                              style={{
+                                                flex: 1,
+                                                minWidth: '80px',
+                                                padding: '2px 4px',
+                                                background: '#1a2640',
+                                                color: '#e2e8f0',
+                                                border: '1px solid #334155',
+                                                borderRadius: '3px',
+                                                fontSize: '10px'
+                                              }}
                                             />
-                                            <span style={{ minWidth: '18px', textAlign: 'right' }}>{slice.index + 1}</span>
+                                            <span style={{ minWidth: '34px', textAlign: 'right', fontSize: '10px', color: '#94a3b8' }}>/ {Math.max(1, maxIdx)}</span>
                                             <button
                                               type="button"
                                               onClick={(e) => {
@@ -1520,20 +1880,144 @@ const App = () => {
               showWireframe={showWireframe}
               shadingMode={shadingMode}
               sliceEnabled={sliceEnabled}
-              gridSlices={gridSlices}
+              subsets={backendPlotState?.subsets ?? []}
               arbitrarySlices={arbitrarySlices}
               contoursEnabled={contoursEnabled}
               contourLevel={contourLevel}
               contourDisplayMode={contourDisplayMode}
+              contourSpec={backendPlotState?.contour_spec}
+              cameraAxisView={backendPlotState?.axis_view ?? 'custom'}
               cameraViewpoint={backendPlotState?.viewpoint ?? null}
               onCameraCommit={handleCameraCommit}
-              onSlicesChange={setGridSlices}
               onLoadingChange={handleViewer3DLoadingChange}
             />
           </div>
+
+          {showCommandWindow && (
+            <aside
+              style={{
+                width: 'min(420px, 42vw)',
+                minWidth: '300px',
+                maxWidth: '520px',
+                background: '#0b1220',
+                borderLeft: '1px solid #1f2937',
+                color: '#e2e8f0',
+                display: 'flex',
+                flexDirection: 'column',
+                padding: '12px',
+                gap: '10px',
+                overflow: 'auto',
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <h2 style={{ margin: 0, fontSize: '16px' }}>PLOT3D Command Sidebar</h2>
+                <button
+                  onClick={() => setShowCommandWindow(false)}
+                  style={{
+                    padding: '6px 10px',
+                    background: '#1f2937',
+                    color: '#e2e8f0',
+                    border: '1px solid #334155',
+                    borderRadius: '4px',
+                    cursor: 'pointer',
+                  }}
+                >
+                  Close
+                </button>
+              </div>
+
+              <div>
+                <div style={{ fontSize: '12px', marginBottom: '6px', color: '#93c5fd' }}>Type commands:</div>
+                <textarea
+                  value={commandText}
+                  onChange={(e) => setCommandText(e.target.value)}
+                  spellCheck={false}
+                  style={{
+                    width: '100%',
+                    minHeight: '170px',
+                    boxSizing: 'border-box',
+                    padding: '10px',
+                    background: '#020617',
+                    color: '#e2e8f0',
+                    border: '1px solid #334155',
+                    borderRadius: '6px',
+                    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                    fontSize: '12px',
+                  }}
+                />
+                <button
+                  onClick={() => void runCommandText()}
+                  style={{
+                    marginTop: '8px',
+                    padding: '7px 12px',
+                    background: '#2563eb',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '4px',
+                    cursor: 'pointer',
+                  }}
+                >
+                  Execute Commands
+                </button>
+              </div>
+
+              <div style={{ borderTop: '1px solid #334155', paddingTop: '10px' }}>
+                <div style={{ fontSize: '12px', marginBottom: '6px', color: '#93c5fd' }}>Or run .com file:</div>
+                <input
+                  type="text"
+                  value={comFilePath}
+                  onChange={(e) => setComFilePath(e.target.value)}
+                  placeholder="/absolute/path/to/script.com"
+                  style={{
+                    width: '100%',
+                    boxSizing: 'border-box',
+                    padding: '8px',
+                    background: '#020617',
+                    color: '#e2e8f0',
+                    border: '1px solid #334155',
+                    borderRadius: '4px',
+                    fontSize: '12px',
+                  }}
+                />
+                <button
+                  onClick={() => void runComFile()}
+                  style={{
+                    marginTop: '8px',
+                    padding: '7px 12px',
+                    background: '#0f766e',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '4px',
+                    cursor: 'pointer',
+                  }}
+                >
+                  Execute .com File
+                </button>
+              </div>
+
+              <div style={{ borderTop: '1px solid #334155', paddingTop: '10px' }}>
+                <div style={{ fontSize: '12px', marginBottom: '6px', color: '#93c5fd' }}>Output:</div>
+                <pre style={{
+                  margin: 0,
+                  minHeight: '90px',
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                  background: '#020617',
+                  border: '1px solid #334155',
+                  borderRadius: '6px',
+                  padding: '10px',
+                  color: '#cbd5e1',
+                  fontSize: '12px',
+                }}>
+                  {commandWindowOutput || 'No output yet.'}
+                </pre>
+              </div>
+            </aside>
+          )}
         </div>
         <LogViewer isOpen={showLogs} onToggle={setShowLogs} />
       </main>
+
       <LoadingIndicator isLoading={loading} message={loadingMessage} />
     </div>
   );

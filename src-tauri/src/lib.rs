@@ -23,7 +23,9 @@ mod solution;
 #[cfg(test)]
 mod logger_tests;
 
-use logger::{clear_logs, export_logs, get_logs, log_debug, log_error, log_info, LogEntry};
+use logger::{
+    clear_logs, export_logs, get_logs, log_debug, log_error, log_info, log_warn, LogEntry,
+};
 use once_cell::sync::Lazy;
 use plot3d::{
     get_last_solution_metadata, read_plot3d_function, read_plot3d_grid_ascii,
@@ -1268,6 +1270,108 @@ fn slice_grid_by_id(gridId: String, plane: String, index: u32) -> Result<Plot3DG
     })
 }
 
+fn normalize_subset_bounds(start: Option<u32>, end: Option<u32>, dim: u32) -> (usize, usize) {
+    let max = dim.max(1);
+    let mut s = start.unwrap_or(1).clamp(1, max);
+    let mut e = end.unwrap_or(max).clamp(1, max);
+    if s > e {
+        std::mem::swap(&mut s, &mut e);
+    }
+    ((s - 1) as usize, (e - 1) as usize)
+}
+
+fn build_subset_grid(
+    grid: &Plot3DGrid,
+    i_start: Option<u32>,
+    i_end: Option<u32>,
+    j_start: Option<u32>,
+    j_end: Option<u32>,
+    k_start: Option<u32>,
+    k_end: Option<u32>,
+) -> Result<(Plot3DGrid, Vec<usize>), String> {
+    let ni = grid.dimensions.i;
+    let nj = grid.dimensions.j;
+    let nk = grid.dimensions.k;
+
+    if ni == 0 || nj == 0 || nk == 0 {
+        return Err("Grid dimensions must be non-zero".to_string());
+    }
+
+    let (i0, i1) = normalize_subset_bounds(i_start, i_end, ni);
+    let (j0, j1) = normalize_subset_bounds(j_start, j_end, nj);
+    let (k0, k1) = normalize_subset_bounds(k_start, k_end, nk);
+
+    let out_i = i1 - i0 + 1;
+    let out_j = j1 - j0 + 1;
+    let out_k = k1 - k0 + 1;
+    let out_points = out_i * out_j * out_k;
+
+    let mut x_coords = Vec::with_capacity(out_points);
+    let mut y_coords = Vec::with_capacity(out_points);
+    let mut z_coords = Vec::with_capacity(out_points);
+    let mut original_indices = Vec::with_capacity(out_points);
+    let mut iblank_vec = grid.iblank.as_ref().map(|_| Vec::with_capacity(out_points));
+
+    let ni_usize = ni as usize;
+    let nj_usize = nj as usize;
+
+    for k_idx in k0..=k1 {
+        for j_idx in j0..=j1 {
+            for i_idx in i0..=i1 {
+                let orig = i_idx + j_idx * ni_usize + k_idx * ni_usize * nj_usize;
+                x_coords.push(grid.x_coords[orig]);
+                y_coords.push(grid.y_coords[orig]);
+                z_coords.push(grid.z_coords[orig]);
+                original_indices.push(orig);
+                if let Some(ref mut ib) = iblank_vec {
+                    ib.push(grid.iblank.as_ref().map(|src| src[orig]).unwrap_or(1));
+                }
+            }
+        }
+    }
+
+    Ok((
+        Plot3DGrid {
+            dimensions: GridDimensions {
+                i: out_i as u32,
+                j: out_j as u32,
+                k: out_k as u32,
+            },
+            x_coords,
+            y_coords,
+            z_coords,
+            iblank: iblank_vec,
+        },
+        original_indices,
+    ))
+}
+
+/// Extract a subset volume from a cached grid using 1-based inclusive ranges.
+#[allow(non_snake_case)]
+#[tauri::command]
+fn subset_grid_by_id(
+    gridId: String,
+    iStart: Option<u32>,
+    iEnd: Option<u32>,
+    jStart: Option<u32>,
+    jEnd: Option<u32>,
+    kStart: Option<u32>,
+    kEnd: Option<u32>,
+) -> Result<Plot3DGrid, String> {
+    let grid = {
+        let cache = GRID_CACHE
+            .lock()
+            .map_err(|_| "Grid cache lock poisoned".to_string())?;
+        let cached = cache
+            .get(&gridId)
+            .ok_or_else(|| format!("Grid not found in cache: {}", gridId))?;
+        Arc::clone(&cached.grid)
+    };
+
+    let (subset, _) = build_subset_grid(&grid, iStart, iEnd, jStart, jEnd, kStart, kEnd)?;
+    Ok(subset)
+}
+
 /// Slice a cached grid with arbitrary plane (ID-based)
 #[allow(non_snake_case)]
 #[tauri::command]
@@ -1701,6 +1805,142 @@ fn compute_solution_colors_sliced(
 
     let _ = window.emit("loading-end", ());
 
+    Ok(mesh)
+}
+
+/// Compute solution colors on a subset volume from cached grid/solution data.
+#[allow(non_snake_case)]
+#[tauri::command]
+fn compute_solution_colors_subset_by_id(
+    gridId: String,
+    solutionId: String,
+    iStart: Option<u32>,
+    iEnd: Option<u32>,
+    jStart: Option<u32>,
+    jEnd: Option<u32>,
+    kStart: Option<u32>,
+    kEnd: Option<u32>,
+    field: String,
+    colorScheme: String,
+    respect_iblank: Option<bool>,
+    show_fringe_points: Option<bool>,
+    iblank_filter_mode: Option<String>,
+    global_min: Option<f32>,
+    global_max: Option<f32>,
+    window: WebviewWindow,
+) -> Result<MeshGeometry, String> {
+    use plot_state::ScalarField;
+    use solution::{compute_colors_with_range, ColorScheme};
+
+    let _ = window.emit(
+        "loading-start",
+        format!("Computing {} field on subset...", field),
+    );
+
+    let (effective_respect_iblank, effective_show_fringe_points, effective_filter_mode) =
+        normalize_iblank_flags(respect_iblank, show_fringe_points, iblank_filter_mode);
+
+    let (grid, grid_file_path, grid_index) = {
+        let cache = GRID_CACHE
+            .lock()
+            .map_err(|_| "Grid cache lock poisoned".to_string())?;
+        let cached = cache
+            .get(&gridId)
+            .ok_or_else(|| format!("Grid not found in cache: {}", gridId))?;
+        (
+            Arc::clone(&cached.grid),
+            cached.file_path.clone(),
+            cached.grid_index,
+        )
+    };
+
+    let (solution, solution_file_path, solution_grid_index) = {
+        let cache = SOLUTION_CACHE_V2
+            .lock()
+            .map_err(|_| "Solution cache lock poisoned".to_string())?;
+        let cached = cache
+            .get(&solutionId)
+            .ok_or_else(|| format!("Solution not found in cache: {}", solutionId))?;
+        (
+            Arc::clone(&cached.solution),
+            cached.file_path.clone(),
+            cached.grid_index,
+        )
+    };
+
+    if grid_index != solution_grid_index {
+        return Err(format!(
+            "Grid/solution mismatch: grid(id={}, index={}) vs solution(id={}, index={})",
+            gridId, grid_index, solutionId, solution_grid_index
+        ));
+    }
+
+    if grid.dimensions.i != solution.dimensions.i
+        || grid.dimensions.j != solution.dimensions.j
+        || grid.dimensions.k != solution.dimensions.k
+    {
+        return Err(format!(
+            "Grid/solution mismatch: dimensions differ: grid(id={}, dims={}x{}x{}) vs solution(id={}, dims={}x{}x{})",
+            gridId,
+            grid.dimensions.i,
+            grid.dimensions.j,
+            grid.dimensions.k,
+            solutionId,
+            solution.dimensions.i,
+            solution.dimensions.j,
+            solution.dimensions.k
+        ));
+    }
+
+    if grid_file_path != solution_file_path {
+        log_debug(&format!(
+            "Grid/solution file paths differ but pair accepted by index+dimensions: grid(id={}, file={}) solution(id={}, file={})",
+            gridId, grid_file_path, solutionId, solution_file_path
+        ));
+    }
+
+    let field_enum =
+        ScalarField::from_str(&field).ok_or_else(|| format!("Unknown scalar field: {}", field))?;
+    let scheme = ColorScheme::from_str(&colorScheme)
+        .ok_or_else(|| format!("Unknown color scheme: {}", colorScheme))?;
+
+    if solution.rho.len() != grid.total_points() {
+        return Err(format!(
+            "Solution points {} != grid points {}",
+            solution.rho.len(),
+            grid.total_points()
+        ));
+    }
+
+    let (subset_grid, original_indices) =
+        build_subset_grid(&grid, iStart, iEnd, jStart, jEnd, kStart, kEnd)?;
+
+    let mut values = Vec::with_capacity(original_indices.len());
+    for &orig in &original_indices {
+        let point_solution = create_point_solution(&solution, orig);
+        values.push(compute_scalar_field_value(&point_solution, field_enum));
+    }
+
+    let colors = compute_colors_with_range(&values, &scheme, global_min, global_max);
+    let mut mesh = subset_grid.to_mesh_surface_geometry_decimated(
+        effective_respect_iblank,
+        effective_show_fringe_points,
+        effective_filter_mode,
+        1,
+    );
+
+    if colors.len() == mesh.vertices.len() {
+        mesh.colors = Some(colors);
+    } else {
+        log_warn(&format!(
+            "Subset color/vertex length mismatch: colors={} vertices={} (discarding colors)",
+            colors.len(),
+            mesh.vertices.len()
+        ));
+        mesh.colors = None;
+    }
+
+    let _ = window.emit("loading-end", ());
     Ok(mesh)
 }
 
@@ -2653,6 +2893,63 @@ fn set_plot_viewpoint(vp: plot_state::ViewPoint) -> Result<ApplyActionResult, St
     apply_plot_action(PlotAction::SetViewpoint(vp))
 }
 
+/// Resolve a single `IndexRange` field, converting negative 1-based-from-end
+/// indices to explicit positive 1-based indices using `dim` (the axis size).
+fn resolve_index_range(range: &plot_state::IndexRange, dim: u32) -> plot_state::IndexRange {
+    let dim = dim as i32;
+    let resolve = |n: i32| -> i32 {
+        if n < 0 {
+            (dim + n + 1).max(1)
+        } else {
+            n
+        }
+    };
+    plot_state::IndexRange {
+        start: resolve(range.start),
+        end: range.end.map(resolve),
+    }
+}
+
+/// Replace any negative indices in a `GridSubset` with explicit positive
+/// 1-based values derived from the cached grid's dimensions.
+fn resolve_subset_negatives(
+    subset: plot_state::GridSubset,
+    cache: &HashMap<String, CachedGrid>,
+) -> plot_state::GridSubset {
+    let grid_num = subset.grid as usize;
+    let dims = cache
+        .values()
+        .find(|cg| cg.grid_index + 1 == grid_num)
+        .map(|cg| cg.grid.dimensions.clone());
+
+    if let Some(dims) = dims {
+        plot_state::GridSubset {
+            grid: subset.grid,
+            gui_managed: subset.gui_managed,
+            i_range: subset.i_range.map(|r| resolve_index_range(&r, dims.i)),
+            j_range: subset.j_range.map(|r| resolve_index_range(&r, dims.j)),
+            k_range: subset.k_range.map(|r| resolve_index_range(&r, dims.k)),
+        }
+    } else {
+        subset
+    }
+}
+
+/// Convenience command: replace plot subsets via a stable argument shape.
+#[tauri::command]
+fn set_plot_subsets(subsets: Vec<plot_state::GridSubset>) -> Result<ApplyActionResult, String> {
+    let resolved = {
+        let cache = GRID_CACHE
+            .lock()
+            .map_err(|e| format!("Failed to lock grid cache: {e}"))?;
+        subsets
+            .into_iter()
+            .map(|s| resolve_subset_negatives(s, &cache))
+            .collect()
+    };
+    apply_plot_action(PlotAction::SetSubsets(resolved))
+}
+
 /// Convenience command: set a single manual contour level.
 #[tauri::command]
 fn set_plot_contour_level(level: f64) -> Result<ApplyActionResult, String> {
@@ -2689,6 +2986,42 @@ fn execute_com_script(path: String) -> Result<ScriptExecutionResult, String> {
     Ok(result)
 }
 
+/// Execute command text entered from the in-app PLOT3D command window.
+#[tauri::command]
+fn execute_plot3d_commands(commands: String) -> Result<ScriptExecutionResult, String> {
+    let mut parsed = com_parser::parse_com_text(&commands, "<command-window>");
+
+    // Resolve negative indices in SetSubsets/SetWalls before applying actions.
+    {
+        let cache = GRID_CACHE
+            .lock()
+            .map_err(|e| format!("Failed to lock grid cache: {e}"))?;
+        for action in &mut parsed.actions {
+            match action {
+                PlotAction::SetSubsets(subsets)
+                | PlotAction::SetWalls(subsets)
+                | PlotAction::AddSubsets(subsets)
+                | PlotAction::AddWalls(subsets) => {
+                    let resolved: Vec<_> = subsets
+                        .drain(..)
+                        .map(|s| resolve_subset_negatives(s, &cache))
+                        .collect();
+                    *subsets = resolved;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let mut guard = PLOT_STATE
+        .lock()
+        .map_err(|e| format!("Failed to lock plot state: {e}"))?;
+    let current = guard.clone();
+    let result = execute_parsed_script(current, &parsed);
+    *guard = result.final_state.clone();
+    Ok(result)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Initialize logging
@@ -2711,9 +3044,11 @@ pub fn run() {
             convert_grid_to_mesh,
             convert_grid_to_mesh_by_id,
             slice_grid_by_id,
+            subset_grid_by_id,
             slice_arbitrary_plane_by_id,
             compute_solution_colors,
             compute_solution_colors_sliced,
+            compute_solution_colors_subset_by_id,
             compute_solution_colors_arbitrary_plane,
             get_solution_field_range,
             extract_iso_surface_by_id,
@@ -2741,9 +3076,11 @@ pub fn run() {
             set_plot_scalar_field,
             set_plot_mode,
             set_plot_viewpoint,
+            set_plot_subsets,
             set_plot_contour_level,
             commit_plot,
             execute_com_script,
+            execute_plot3d_commands,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

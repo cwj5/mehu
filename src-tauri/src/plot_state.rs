@@ -240,16 +240,18 @@ pub struct MinMaxOverride {
 /// A named selection of grid index ranges used by `WALLS` and `SUBSETS`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IndexRange {
-    /// 1-based inclusive start index.
-    pub start: u32,
-    /// 1-based inclusive end index; `None` means "to the end".
-    pub end: Option<u32>,
+    /// 1-based inclusive start index. Negative values count from the end: -1 = last index.
+    pub start: i32,
+    /// 1-based inclusive end index; `None` means "to the end". Negative values count from the end.
+    pub end: Option<i32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GridSubset {
     /// 1-based grid number this subset applies to.
     pub grid: u32,
+    #[serde(default)]
+    pub gui_managed: bool,
     pub i_range: Option<IndexRange>,
     pub j_range: Option<IndexRange>,
     pub k_range: Option<IndexRange>,
@@ -388,8 +390,14 @@ pub enum PlotAction {
     // WALLS: replace the complete walls list.
     SetWalls(Vec<GridSubset>),
 
+    // WALLS/ADD: append entries to the existing walls list.
+    AddWalls(Vec<GridSubset>),
+
     // SUBSETS: replace the complete subsets list.
     SetSubsets(Vec<GridSubset>),
+
+    // SUBSETS/ADD: append entries to the existing subsets list.
+    AddSubsets(Vec<GridSubset>),
 
     // FSURFACE: set or clear the iso-surface spec.
     SetFsurface(Option<FsurfaceSpec>),
@@ -498,6 +506,66 @@ pub struct ApplyActionResult {
 pub fn apply_action(mut state: PlotState, action: PlotAction) -> (PlotState, Vec<Diagnostic>) {
     let mut diags: Vec<Diagnostic> = Vec::new();
 
+    const DEFAULT_VIEW_DISTANCE: f64 = 8.660_254_037_844_387;
+
+    let view_distance_from = |vp: Option<&ViewPoint>| {
+        vp.map(|v| (v.x * v.x + v.y * v.y + v.z * v.z).sqrt())
+            .filter(|d| d.is_finite() && *d > 1e-6)
+            .unwrap_or(DEFAULT_VIEW_DISTANCE)
+    };
+
+    let axis_viewpoint = |view: AxisView, distance: f64| -> Option<ViewPoint> {
+        match view {
+            AxisView::PlusX => Some(ViewPoint {
+                x: distance,
+                y: 0.0,
+                z: 0.0,
+            }),
+            AxisView::MinusX => Some(ViewPoint {
+                x: -distance,
+                y: 0.0,
+                z: 0.0,
+            }),
+            AxisView::PlusY => Some(ViewPoint {
+                x: 0.0,
+                y: distance,
+                z: 0.0,
+            }),
+            AxisView::MinusY => Some(ViewPoint {
+                x: 0.0,
+                y: -distance,
+                z: 0.0,
+            }),
+            AxisView::PlusZ => Some(ViewPoint {
+                x: 0.0,
+                y: 0.0,
+                z: distance,
+            }),
+            AxisView::MinusZ => Some(ViewPoint {
+                x: 0.0,
+                y: 0.0,
+                z: -distance,
+            }),
+            // Plane aliases map to orthogonal axis views.
+            AxisView::PlaneXY | AxisView::PlaneYX => Some(ViewPoint {
+                x: 0.0,
+                y: 0.0,
+                z: distance,
+            }),
+            AxisView::PlaneXZ | AxisView::PlaneZX => Some(ViewPoint {
+                x: 0.0,
+                y: distance,
+                z: 0.0,
+            }),
+            AxisView::PlaneYZ | AxisView::PlaneZY => Some(ViewPoint {
+                x: distance,
+                y: 0.0,
+                z: 0.0,
+            }),
+            AxisView::Custom => None,
+        }
+    };
+
     match action {
         PlotAction::SetDataset(dataset) => {
             state.dataset = dataset;
@@ -508,10 +576,11 @@ pub fn apply_action(mut state: PlotState, action: PlotAction) -> (PlotState, Vec
         }
 
         PlotAction::SetAxisView(view) => {
+            let distance = view_distance_from(state.viewpoint.as_ref());
             state.axis_view = view;
-            // Setting a named axis view clears any explicit viewpoint so the
-            // two representations don't conflict.
-            state.viewpoint = None;
+            if let Some(vp) = axis_viewpoint(view, distance) {
+                state.viewpoint = Some(vp);
+            }
         }
 
         PlotAction::SetViewpoint(vp) => {
@@ -572,8 +641,16 @@ pub fn apply_action(mut state: PlotState, action: PlotAction) -> (PlotState, Vec
             state.walls = walls;
         }
 
+        PlotAction::AddWalls(mut walls) => {
+            state.walls.append(&mut walls);
+        }
+
         PlotAction::SetSubsets(subsets) => {
             state.subsets = subsets;
+        }
+
+        PlotAction::AddSubsets(mut subsets) => {
+            state.subsets.append(&mut subsets);
         }
 
         PlotAction::SetFsurface(fs) => {
@@ -663,7 +740,7 @@ mod tests {
     // ── SetAxisView / SetViewpoint interaction ────────────────────────────────
 
     #[test]
-    fn set_axis_view_clears_viewpoint() {
+    fn set_axis_view_sets_axis_aligned_viewpoint() {
         let mut state = default_state();
         state.viewpoint = Some(ViewPoint {
             x: 1.0,
@@ -672,7 +749,26 @@ mod tests {
         });
         let (new_state, diags) = apply_action(state, PlotAction::SetAxisView(AxisView::PlusZ));
         assert_eq!(new_state.axis_view, AxisView::PlusZ);
-        assert!(new_state.viewpoint.is_none());
+        let vp = new_state.viewpoint.expect("viewpoint should be set");
+        assert_eq!(vp.x, 0.0);
+        assert_eq!(vp.y, 0.0);
+        assert!(vp.z > 0.0);
+        assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn set_axis_view_sets_default_viewpoint_when_none() {
+        let state = default_state();
+        let (new_state, diags) = apply_action(state, PlotAction::SetAxisView(AxisView::PlaneXY));
+        assert_eq!(new_state.axis_view, AxisView::PlaneXY);
+        assert_eq!(
+            new_state.viewpoint,
+            Some(ViewPoint {
+                x: 0.0,
+                y: 0.0,
+                z: 8.660_254_037_844_387,
+            })
+        );
         assert!(diags.is_empty());
     }
 
@@ -836,6 +932,7 @@ mod tests {
         let state = default_state();
         let walls = vec![GridSubset {
             grid: 1,
+            gui_managed: false,
             i_range: Some(IndexRange {
                 start: 1,
                 end: Some(10),
@@ -853,6 +950,7 @@ mod tests {
         let state = default_state();
         let subsets = vec![GridSubset {
             grid: 2,
+            gui_managed: false,
             i_range: None,
             j_range: Some(IndexRange {
                 start: 5,
@@ -862,6 +960,37 @@ mod tests {
         }];
         let (new_state, diags) = apply_action(state, PlotAction::SetSubsets(subsets.clone()));
         assert_eq!(new_state.subsets, subsets);
+        assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn add_subsets_appends_list() {
+        let mut state = default_state();
+        state.subsets = vec![GridSubset {
+            grid: 1,
+            gui_managed: false,
+            i_range: Some(IndexRange {
+                start: 1,
+                end: Some(1),
+            }),
+            j_range: None,
+            k_range: None,
+        }];
+
+        let additions = vec![GridSubset {
+            grid: 2,
+            gui_managed: false,
+            i_range: None,
+            j_range: Some(IndexRange {
+                start: 5,
+                end: Some(5),
+            }),
+            k_range: None,
+        }];
+
+        let (new_state, diags) = apply_action(state, PlotAction::AddSubsets(additions.clone()));
+        assert_eq!(new_state.subsets.len(), 2);
+        assert_eq!(new_state.subsets[1], additions[0]);
         assert!(diags.is_empty());
     }
 
