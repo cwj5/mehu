@@ -59,6 +59,22 @@ type BackendAxisView =
   | 'plane_zy'
   | 'custom';
 
+const AXIS_VIEW_OPTIONS: Array<{ value: BackendAxisView; label: string }> = [
+  { value: 'custom', label: 'Custom' },
+  { value: 'plus_x', label: '+X (Right)' },
+  { value: 'minus_x', label: '-X (Left)' },
+  { value: 'plus_y', label: '+Y (Top)' },
+  { value: 'minus_y', label: '-Y (Bottom)' },
+  { value: 'plus_z', label: '+Z (Front)' },
+  { value: 'minus_z', label: '-Z (Back)' },
+  { value: 'plane_xy', label: 'Plane XY (Top)' },
+  { value: 'plane_xz', label: 'Plane XZ (Side)' },
+  { value: 'plane_yz', label: 'Plane YZ (Front)' },
+  { value: 'plane_yx', label: 'Plane YX' },
+  { value: 'plane_zx', label: 'Plane ZX' },
+  { value: 'plane_zy', label: 'Plane ZY' },
+];
+
 interface BackendPlotState {
   scalar_field: BackendScalarField;
   plot_mode: BackendPlotMode;
@@ -358,6 +374,15 @@ const App = () => {
       updateBackendFromResult(result);
     } catch (e) {
       logger.error(`Failed to set plot viewpoint: ${e}`, 'App');
+    }
+  };
+
+  const setPlotAxisView = async (view: BackendAxisView) => {
+    try {
+      const result = await invoke<ApplyPlotActionResult>('set_plot_axis_view', { view });
+      updateBackendFromResult(result);
+    } catch (e) {
+      logger.error(`Failed to set plot axis view: ${e}`, 'App');
     }
   };
 
@@ -1249,6 +1274,51 @@ const App = () => {
                     </div>
                   </div>
                 )}
+
+                {/* Camera Controls Section */}
+                <div style={{ marginBottom: '12px', paddingBottom: '12px', borderBottom: '2px solid #334155' }}>
+                  <div
+                    style={{
+                      fontSize: '10px',
+                      fontWeight: '600',
+                      color: '#cbd5e1',
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.05em',
+                      marginBottom: '6px',
+                      paddingBottom: '4px',
+                      borderBottom: '1px solid #334155',
+                    }}
+                  >
+                    Camera
+                  </div>
+                  <label style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    <span style={{ fontSize: '10px', color: '#94a3b8' }}>View Preset:</span>
+                    <select
+                      value={backendPlotState?.axis_view ?? 'custom'}
+                      onChange={(e) => {
+                        const next = e.target.value as BackendAxisView;
+                        void (async () => {
+                          await setPlotAxisView(next);
+                          await commitPlot();
+                        })();
+                      }}
+                      style={{
+                        padding: '4px 6px',
+                        background: '#1a2640',
+                        color: '#e2e8f0',
+                        border: '1px solid #334155',
+                        borderRadius: '3px',
+                        fontSize: '11px',
+                      }}
+                    >
+                      {AXIS_VIEW_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
 
                 {/* Arbitrary Planes Section */}
                 <div style={{ marginBottom: '12px', paddingBottom: '12px', borderBottom: '2px solid #334155' }}>

@@ -247,8 +247,11 @@ function CameraCommitControls({
     };
 
     const handleChange = () => {
-        // Treat any camera change as active navigation and debounce until idle.
-        isUserNavigatingRef.current = true;
+        // Ignore programmatic camera changes (preset/viewpoint sync). We only
+        // want to commit when the user is actively interacting with controls.
+        if (!isUserNavigatingRef.current) {
+            return;
+        }
         scheduleCommitAfterIdle();
     };
 

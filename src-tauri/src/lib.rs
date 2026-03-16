@@ -2893,6 +2893,12 @@ fn set_plot_viewpoint(vp: plot_state::ViewPoint) -> Result<ApplyActionResult, St
     apply_plot_action(PlotAction::SetViewpoint(vp))
 }
 
+/// Convenience command: set named camera axis view via a stable argument shape.
+#[tauri::command]
+fn set_plot_axis_view(view: plot_state::AxisView) -> Result<ApplyActionResult, String> {
+    apply_plot_action(PlotAction::SetAxisView(view))
+}
+
 /// Resolve a single `IndexRange` field, converting negative 1-based-from-end
 /// indices to explicit positive 1-based indices using `dim` (the axis size).
 fn resolve_index_range(range: &plot_state::IndexRange, dim: u32) -> plot_state::IndexRange {
@@ -3076,6 +3082,7 @@ pub fn run() {
             set_plot_scalar_field,
             set_plot_mode,
             set_plot_viewpoint,
+            set_plot_axis_view,
             set_plot_subsets,
             set_plot_contour_level,
             commit_plot,

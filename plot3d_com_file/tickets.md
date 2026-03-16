@@ -197,6 +197,8 @@ Relevant decisions:
 
 Started: 2026-03-12. First migration slice complete: scalar-field and contour controls in `src/App.tsx` now dispatch backend `apply_plot_action` updates, `SolutionViewer` is controlled from app-level state, and a backend `PlotState` dev inspector panel was added to the sidebar.
 
+Update: 2026-03-15. Camera view presets now commit through shared plot-state actions (`SetAxisView` via `set_plot_axis_view`) and `PLOT` commit boundaries from the GUI, keeping `VIEW`/`VPOINT` camera interactions on the same backend state path used by script execution.
+
 Goal:
 Move GUI capability-bearing state changes onto the shared action/state path.
 

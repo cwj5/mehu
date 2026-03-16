@@ -174,6 +174,11 @@ impl Default for ContourSpec {
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// Which standard axis view is active (maps to a camera preset).
+///
+/// `rename_all = "snake_case"` handles simple cases like `PlusX → "plus_x"`.
+/// The multi-letter plane variants (`PlaneXY`, etc.) each need an explicit
+/// rename because serde would otherwise produce `"plane_x_y"` instead of the
+/// `"plane_xy"` string used by the frontend `AXIS_VIEW_OPTIONS` constants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AxisView {
@@ -186,11 +191,17 @@ pub enum AxisView {
     MinusZ,
     /// Two-axis plane views for 2D and function-surface (carpet) plots.
     /// XY = TOP, XZ = SIDE, YZ = FRONT in legacy PLOT3D terminology.
+    #[serde(rename = "plane_xy")]
     PlaneXY,
+    #[serde(rename = "plane_xz")]
     PlaneXZ,
+    #[serde(rename = "plane_yz")]
     PlaneYZ,
+    #[serde(rename = "plane_yx")]
     PlaneYX,
+    #[serde(rename = "plane_zx")]
     PlaneZX,
+    #[serde(rename = "plane_zy")]
     PlaneZY,
     /// No axis-aligned preset; an explicit viewpoint is used instead.
     Custom,
@@ -784,6 +795,40 @@ mod tests {
         assert_eq!(new_state.axis_view, AxisView::Custom);
         assert_eq!(new_state.viewpoint, Some(vp));
         assert!(diags.is_empty());
+    }
+
+    // ── AxisView serde round-trip ─────────────────────────────────────────────
+
+    #[test]
+    fn axis_view_serde_round_trip_plane_variants() {
+        // Confirm every plane alias serialises to the snake_case string the
+        // frontend `AXIS_VIEW_OPTIONS` values use and can be deserialised back.
+        let cases = [
+            (AxisView::PlaneXY, "\"plane_xy\""),
+            (AxisView::PlaneXZ, "\"plane_xz\""),
+            (AxisView::PlaneYZ, "\"plane_yz\""),
+            (AxisView::PlaneYX, "\"plane_yx\""),
+            (AxisView::PlaneZX, "\"plane_zx\""),
+            (AxisView::PlaneZY, "\"plane_zy\""),
+            (AxisView::PlusX, "\"plus_x\""),
+            (AxisView::Custom, "\"custom\""),
+        ];
+        for (variant, expected_json) in &cases {
+            let serialised = serde_json::to_string(variant)
+                .unwrap_or_else(|e| panic!("serialize {:?}: {}", variant, e));
+            assert_eq!(
+                serialised, *expected_json,
+                "Serialisation mismatch for {:?}",
+                variant
+            );
+            let round_tripped: AxisView = serde_json::from_str(*expected_json)
+                .unwrap_or_else(|e| panic!("deserialize {}: {}", expected_json, e));
+            assert_eq!(
+                round_tripped, *variant,
+                "Round-trip mismatch for {:?}",
+                variant
+            );
+        }
     }
 
     // ── SetMinMax ─────────────────────────────────────────────────────────────
