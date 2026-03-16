@@ -139,6 +139,17 @@ const subsetsSignature = (subsets: BackendGridSubset[]): string =>
     .sort()
     .join(';');
 
+const dedupeSubsets = (items: BackendGridSubset[]): BackendGridSubset[] => {
+  const map = new Map<string, BackendGridSubset>();
+  items.forEach((s) => {
+    map.set(
+      `${s.grid}|${s.gui_managed ? 'gui' : 'manual'}|${subsetRangeSig(s.i_range)}|${subsetRangeSig(s.j_range)}|${subsetRangeSig(s.k_range)}`,
+      s
+    );
+  });
+  return Array.from(map.values());
+};
+
 const gridSlicesSignature = (gridSlices: Record<string, GridSlice[]>): string =>
   Object.entries(gridSlices)
     .flatMap(([gridId, slices]) => slices.map((slice) => `${gridId}|${slice.plane}|${slice.index}`))
@@ -319,6 +330,7 @@ const App = () => {
   const [loadingMessage, setLoadingMessage] = useState("Processing...");
 
   const [gridSlices, setGridSlices] = useState<Record<string, GridSlice[]>>({});
+  const [subsetsDirty, setSubsetsDirty] = useState(false);
   const [sliceIndexDrafts, setSliceIndexDrafts] = useState<Record<string, string>>({});
   const [arbitrarySlices, setArbitrarySlices] = useState<ArbitrarySlice[]>([]);
 
@@ -333,7 +345,6 @@ const App = () => {
   const [commandText, setCommandText] = useState("SHOW\nPLOT/CONTOUR");
   const [comFilePath, setComFilePath] = useState("");
   const [commandWindowOutput, setCommandWindowOutput] = useState("");
-  const suppressNextGuiSubsetSyncRef = useRef(false);
   const backendMappedSlicesSigRef = useRef<string | null>(null);
 
   const syncPlotStateFromBackend = async () => {
@@ -528,6 +539,7 @@ const App = () => {
       plane: 'K',
       index: Math.floor(grid.dimensions.k / 2)
     };
+    setSubsetsDirty(true);
     setGridSlices(prev => ({
       ...prev,
       [gridId]: [...(prev[gridId] || []), newSlice]
@@ -535,6 +547,7 @@ const App = () => {
   };
 
   const removeSliceFromGrid = (gridId: string, sliceId: string) => {
+    setSubsetsDirty(true);
     setGridSlices(prev => ({
       ...prev,
       [gridId]: (prev[gridId] || []).filter(s => s.id !== sliceId)
@@ -542,6 +555,7 @@ const App = () => {
   };
 
   const updateGridSlice = (gridId: string, sliceId: string, updates: Partial<GridSlice>) => {
+    setSubsetsDirty(true);
     setGridSlices(prev => ({
       ...prev,
       [gridId]: (prev[gridId] || []).map(s =>
@@ -550,7 +564,12 @@ const App = () => {
     }));
   };
 
-  const commitSliceIndexDraft = (gridId: string, slice: GridSlice, maxIdx: number) => {
+  const commitSliceIndexDraft = (
+    gridId: string,
+    slice: GridSlice,
+    maxIdx: number,
+    options?: { applyAfterCommit?: boolean }
+  ) => {
     const rawDraft = sliceIndexDrafts[slice.id];
     const parsed = Number.parseInt((rawDraft ?? '').trim(), 10);
     if (!Number.isFinite(parsed)) {
@@ -565,8 +584,18 @@ const App = () => {
 
     const oneBased = Math.max(1, Math.min(Math.max(1, maxIdx), parsed));
     const zeroBased = oneBased - 1;
+    const nextGridSlices = zeroBased !== slice.index
+      ? {
+        ...gridSlices,
+        [gridId]: (gridSlices[gridId] || []).map((existingSlice) =>
+          existingSlice.id === slice.id ? { ...existingSlice, index: zeroBased } : existingSlice
+        )
+      }
+      : gridSlices;
+
     if (zeroBased !== slice.index) {
-      updateGridSlice(gridId, slice.id, { index: zeroBased });
+      setSubsetsDirty(true);
+      setGridSlices(nextGridSlices);
     }
     setSliceIndexDrafts((prev) => {
       if (!(slice.id in prev)) return prev;
@@ -574,6 +603,10 @@ const App = () => {
       delete next[slice.id];
       return next;
     });
+
+    if (options?.applyAfterCommit) {
+      void applyGuiManagedSubsets({ nextGridSlices });
+    }
   };
 
   // Contour level validation and clamping
@@ -775,6 +808,32 @@ const App = () => {
     await commitPlot();
   };
 
+  const applyGuiManagedSubsets = async (options?: {
+    nextGridSlices?: Record<string, GridSlice[]>;
+    nextSliceEnabled?: boolean;
+  }) => {
+    const effectiveGridSlices = options?.nextGridSlices ?? gridSlices;
+    const effectiveSliceEnabled = options?.nextSliceEnabled ?? sliceEnabled;
+    const nextSubsets = gridSlicesToBackendSubsets(effectiveGridSlices, grids, effectiveSliceEnabled);
+    const currentSubsets = backendPlotState?.subsets ?? [];
+    const nonGuiManaged = currentSubsets.filter((s) => !s.gui_managed);
+    const reconciledSubsets = dedupeSubsets([...nonGuiManaged, ...nextSubsets]);
+
+    if (subsetsSignature(reconciledSubsets) === subsetsSignature(currentSubsets)) {
+      setSubsetsDirty(false);
+      return;
+    }
+
+    try {
+      await setPlotSubsets(reconciledSubsets);
+      await commitPlot();
+      backendMappedSlicesSigRef.current = gridSlicesSignature(effectiveGridSlices);
+      setSubsetsDirty(false);
+    } catch (e) {
+      logger.error(`Failed to apply GUI-managed subsets: ${e}`, 'App');
+    }
+  };
+
   useEffect(() => {
     void syncPlotStateFromBackend();
   }, []);
@@ -803,59 +862,19 @@ const App = () => {
       setContourLevel(contourValue);
     }
 
-    const backendSubsets = backendPlotState.subsets ?? [];
-    const mappedSlices = backendSubsetsToGridSlices(backendSubsets, grids);
-    const mappedSig = gridSlicesSignature(mappedSlices);
-    backendMappedSlicesSigRef.current = mappedSig;
-    if (mappedSig !== gridSlicesSignature(gridSlices)) {
-      suppressNextGuiSubsetSyncRef.current = true;
-      setGridSlices(mappedSlices);
+    if (!subsetsDirty) {
+      const backendSubsets = backendPlotState.subsets ?? [];
+      const mappedSlices = backendSubsetsToGridSlices(backendSubsets, grids);
+      const mappedSig = gridSlicesSignature(mappedSlices);
+      backendMappedSlicesSigRef.current = mappedSig;
+      if (mappedSig !== gridSlicesSignature(gridSlices)) {
+        setGridSlices(mappedSlices);
+      }
+      if (backendSubsets.length > 0 && !sliceEnabled) {
+        setSliceEnabled(true);
+      }
     }
-    if (backendSubsets.length > 0 && !sliceEnabled) {
-      setSliceEnabled(true);
-    }
-  }, [backendPlotState, grids, sliceEnabled]);
-
-  // Keep backend SUBSETS aligned with GUI index slice controls.
-  useEffect(() => {
-    if (suppressNextGuiSubsetSyncRef.current) {
-      suppressNextGuiSubsetSyncRef.current = false;
-      return;
-    }
-
-    if (!sliceEnabled) {
-      return;
-    }
-
-    const currentSlicesSig = gridSlicesSignature(gridSlices);
-    // If current GUI slices are exactly what was mapped from backend subsets,
-    // treat backend as authoritative and avoid writing them back.
-    if (sliceEnabled && backendMappedSlicesSigRef.current === currentSlicesSig) {
-      return;
-    }
-
-    const nextSubsets = gridSlicesToBackendSubsets(gridSlices, grids, sliceEnabled);
-    const currentSubsets = backendPlotState?.subsets ?? [];
-
-    const nonGuiManaged = currentSubsets.filter((s) => !s.gui_managed);
-
-    const dedupe = (items: BackendGridSubset[]) => {
-      const map = new Map<string, BackendGridSubset>();
-      items.forEach((s) => {
-        map.set(
-          `${s.grid}|${s.gui_managed ? 'gui' : 'manual'}|${subsetRangeSig(s.i_range)}|${subsetRangeSig(s.j_range)}|${subsetRangeSig(s.k_range)}`,
-          s
-        );
-      });
-      return Array.from(map.values());
-    };
-
-    const reconciledSubsets = dedupe([...nonGuiManaged, ...nextSubsets]);
-    if (subsetsSignature(reconciledSubsets) === subsetsSignature(currentSubsets)) {
-      return;
-    }
-    void setPlotSubsets(reconciledSubsets);
-  }, [gridSlices, grids, sliceEnabled, backendPlotState]);
+  }, [backendPlotState, grids, gridSlices, sliceEnabled, subsetsDirty]);
 
   // Callback from Viewer3D when it's done loading meshes
   const handleViewer3DLoadingChange = () => {
@@ -1575,10 +1594,32 @@ const App = () => {
                     <input
                       type="checkbox"
                       checked={sliceEnabled}
-                      onChange={(e) => setSliceEnabled(e.target.checked)}
+                      onChange={(e) => {
+                        const next = e.target.checked;
+                        setSliceEnabled(next);
+                        setSubsetsDirty(true);
+                      }}
                     />
                     Slicing {sliceEnabled ? '(enabled)' : '(disabled)'}
                   </label>
+                  <button
+                    onClick={() => {
+                      void applyGuiManagedSubsets();
+                    }}
+                    disabled={!subsetsDirty}
+                    style={{
+                      width: '100%',
+                      padding: '6px 10px',
+                      fontSize: '12px',
+                      background: subsetsDirty ? '#0284c7' : '#475569',
+                      border: 'none',
+                      color: 'white',
+                      borderRadius: '6px',
+                      cursor: subsetsDirty ? 'pointer' : 'not-allowed',
+                    }}
+                  >
+                    {subsetsDirty ? 'Apply Slicing to PlotState' : 'Slicing in sync'}
+                  </button>
                 </div>
 
                 {gridTree.length === 0 ? (
@@ -1749,7 +1790,7 @@ const App = () => {
                                               onKeyDown={(e) => {
                                                 if (e.key === 'Enter') {
                                                   e.preventDefault();
-                                                  commitSliceIndexDraft(grid.id, slice, maxIdx);
+                                                  commitSliceIndexDraft(grid.id, slice, maxIdx, { applyAfterCommit: true });
                                                 }
                                                 if (e.key === 'Escape') {
                                                   e.preventDefault();

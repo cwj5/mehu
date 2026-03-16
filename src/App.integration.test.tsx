@@ -62,6 +62,7 @@ describe('App frontend integration', () => {
 
         let currentPlotMode = 'surface3d';
         let currentAxisView = 'custom';
+        let currentSubsets: Array<Record<string, unknown>> = [];
 
         invokeMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
             if (cmd === 'get_plot_state') {
@@ -70,7 +71,7 @@ describe('App frontend integration', () => {
                     plot_mode: currentPlotMode,
                     axis_view: currentAxisView,
                     contour_spec: { mode: 'none' },
-                    subsets: [],
+                    subsets: currentSubsets,
                     viewpoint: null,
                 };
             }
@@ -119,7 +120,7 @@ describe('App frontend integration', () => {
                         plot_mode: currentPlotMode,
                         axis_view: currentAxisView,
                         contour_spec: { mode: 'none' },
-                        subsets: [],
+                        subsets: currentSubsets,
                         viewpoint: { x: 1, y: 0, z: 0 },
                     },
                     diagnostics: [],
@@ -134,7 +135,23 @@ describe('App frontend integration', () => {
                         plot_mode: currentPlotMode,
                         axis_view: currentAxisView,
                         contour_spec: { mode: 'none' },
-                        subsets: [],
+                        subsets: currentSubsets,
+                        viewpoint: { x: 1, y: 0, z: 0 },
+                    },
+                    diagnostics: [],
+                };
+            }
+
+            if (cmd === 'set_plot_subsets') {
+                const subsets = (args?.subsets as Array<Record<string, unknown>> | undefined) ?? [];
+                currentSubsets = subsets;
+                return {
+                    state: {
+                        scalar_field: 'none',
+                        plot_mode: currentPlotMode,
+                        axis_view: currentAxisView,
+                        contour_spec: { mode: 'none' },
+                        subsets: currentSubsets,
                         viewpoint: { x: 1, y: 0, z: 0 },
                     },
                     diagnostics: [],
@@ -148,7 +165,7 @@ describe('App frontend integration', () => {
                         plot_mode: currentPlotMode,
                         axis_view: currentAxisView,
                         contour_spec: { mode: 'none' },
-                        subsets: [],
+                        subsets: currentSubsets,
                         viewpoint: { x: 1, y: 0, z: 0 },
                     },
                     diagnostics: [{ capability: 'PLOT', severity: 'info', message: 'Plot committed' }],
@@ -225,5 +242,45 @@ describe('App frontend integration', () => {
 
         expect(setModeIdx).toBeGreaterThan(-1);
         expect(commitIdx).toBeGreaterThan(setModeIdx);
+    });
+
+    it('commits subset edits when Enter is pressed in a slice field', async () => {
+        render(<App />);
+
+        const loadButton = await screen.findByRole('button', { name: 'Load Files' });
+        fireEvent.click(loadButton);
+
+        const addSliceButton = await screen.findByRole('button', { name: '+ Add slice' });
+        fireEvent.click(addSliceButton);
+
+        // Adding a slice stays local draft state until the user applies.
+        expect(invokeMock).not.toHaveBeenCalledWith('set_plot_subsets', expect.anything());
+
+        const sliceInputs = await screen.findAllByDisplayValue('2');
+        const sliceIndexInput = sliceInputs.find(
+            (input) => input.tagName === 'INPUT' && input.getAttribute('max') === '3'
+        );
+
+        expect(sliceIndexInput).toBeDefined();
+
+        fireEvent.change(sliceIndexInput!, { target: { value: '3' } });
+
+        const updatedSliceInput = await screen.findByDisplayValue('3');
+        fireEvent.keyDown(updatedSliceInput, { key: 'Enter', code: 'Enter' });
+
+        await waitFor(() => {
+            expect(invokeMock).toHaveBeenCalledWith(
+                'set_plot_subsets',
+                expect.objectContaining({ subsets: expect.any(Array) })
+            );
+            expect(invokeMock).toHaveBeenCalledWith('commit_plot');
+        });
+
+        const calledCommands = invokeMock.mock.calls.map(([cmd]) => cmd);
+        const setSubsetsIdx = calledCommands.lastIndexOf('set_plot_subsets');
+        const commitIdx = calledCommands.lastIndexOf('commit_plot');
+
+        expect(setSubsetsIdx).toBeGreaterThan(-1);
+        expect(commitIdx).toBeGreaterThan(setSubsetsIdx);
     });
 });
