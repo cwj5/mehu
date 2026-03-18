@@ -1,6 +1,6 @@
 # PLOT3D .com File Support: Tickets
 
-Last updated: 2026-03-12
+Last updated: 2026-03-17
 
 This ticket set breaks the work into milestones and implementation-sized tasks. It is written so another agent can pick up the work with minimal additional context.
 
@@ -193,11 +193,13 @@ Relevant decisions:
 
 ## Milestone B: GUI parity
 
-### TKT-006: Refactor GUI state flow to use PlotAction commits 🚧 IN PROGRESS
+### ~~TKT-006: Refactor GUI state flow to use PlotAction commits~~ ✅ COMPLETE
 
 Started: 2026-03-12. First migration slice complete: scalar-field and contour controls in `src/App.tsx` now dispatch backend `apply_plot_action` updates, `SolutionViewer` is controlled from app-level state, and a backend `PlotState` dev inspector panel was added to the sidebar.
 
-Update: 2026-03-15. Camera view presets now commit through shared plot-state actions (`SetAxisView` via `set_plot_axis_view`) and `PLOT` commit boundaries from the GUI, keeping `VIEW`/`VPOINT` camera interactions on the same backend state path used by script execution.
+Update: 2026-03-15. Camera view presets now commit through shared plot-state actions (`SetAxisView` via `set_plot_axis_view`) and `PLOT` commit boundaries from the GUI, keeping `VIEW`/`VPOINT` camera interactions on the same backend state path used by script execution. Fixed serde mismatch where `rename_all = "snake_case"` produced `"plane_x_y"` instead of `"plane_xy"` for plane view variants; explicit `#[serde(rename)]` overrides added and covered by a Rust round-trip test.
+
+Update: 2026-03-17. Subset/slicing apply flow replaced: the old implicit `useEffect`-driven per-edit push was removed in favour of an explicit "Apply Slicing to PlotState" button (and Enter-key alias) that calls `set_plot_subsets` → `commit_plot` as a single atomic boundary. `CameraCommitControls` in `Viewer3D.tsx` now ignores programmatic camera moves so only user drag events schedule a commit. Frontend integration test suite added (`App.integration.test.tsx`, 4 tests) covering axis-view wiring, plane_xy serde regression, contour mode, and Enter-to-apply slices. Rendering-hint state (`ignoreIblank`, `showWireframe`, `shadingMode`) confirmed absent from the parity matrix and explicitly left as local React state — not in scope.
 
 Goal:
 Move GUI capability-bearing state changes onto the shared action/state path.
@@ -227,36 +229,256 @@ Relevant decisions:
 1. Apply/release commit model.
 2. Shared state must remain authoritative.
 
-### TKT-007: Replace normalized contour model with absolute multi-level contour model
+### TKT-007 (Epic): Absolute multi-level contours and plot-family semantic alignment
+
+Updated scope: 2026-03-17. This is now an umbrella ticket split into implementation-sized parts (TKT-007A through TKT-007E).
+
+Execution metadata:
+
+1. Estimated effort: XL
+2. Primary owner role: Feature lead coordinating backend + frontend
+3. Suggested contributors: parser/backend owner, frontend/viewer owner, test owner
+4. Exit condition: all TKT-007A through TKT-007E acceptance criteria satisfied
 
 Goal:
-Migrate the current contour implementation away from a single normalized level.
+Replace the normalized single-level contour path with an absolute-valued, multi-level contour system and align contour versus function-surface or carpet semantics with legacy behavior.
 
 Why this exists:
-Legacy command semantics require absolute values and multiple levels.
+The old path conflates parity concepts and local viewer toggles, still uses normalized contour assumptions in key places, and blurs contour-plot behavior with function-surface behavior.
 
-Scope:
+Implementation context:
 
-1. Remove `0..1` contour assumptions from frontend and backend integration.
-2. Update UI to handle multiple contour entries.
-3. Use global field range only for context, not as the stored contour value.
-4. Ensure contour extraction paths accept the new model.
+1. Contour plots represent scalar values by level location.
+2. Function-surface or carpet plots represent scalar magnitude on a plotted function axis against one or two spatial axes.
+3. `CONTOURS` sets contour levels and contour attributes; it does not choose the plot family.
+4. Plot-family selection must not be encoded through the retired `Enable Contours` checkbox and `surfaces / lines / both` display shortcut.
 
-Acceptance criteria:
+Epic-level acceptance criteria:
 
-1. Contours are defined in physical values.
-2. Multiple contour levels can be configured and displayed.
-3. Old single-level GUI becomes a subset of the new model.
+1. No normalized contour-value contract remains across shared state, GUI contracts, or extraction IPC.
+2. `AUTOMATIC`, `INCREMENT`, and `MANUAL` contour specs round-trip script and GUI flows without truncation.
+3. Contour plots and function-surface or carpet plots follow distinct deterministic render paths.
+4. First-pass contour attributes exist as shared parity state with explicit behavior and diagnostics for unsupported combinations.
 
 Dependencies:
 
 1. TKT-002
 2. TKT-005
+3. TKT-006
 
 Relevant decisions:
 
 1. No normalized contour values.
 2. Multi-level contour support is mandatory.
+3. Default contour attribute is `LINE`.
+4. `COLOR CONTOURS` first pass uses the existing field colormap on filled geometry.
+5. Function-surface or carpet rendering may ship as a bounded MVP if incomplete paths are explicit.
+6. Legacy contour attributes are shared parity state; wireframe and shading remain local viewer styling.
+
+### TKT-007A: Shared state and parser contracts for contour specs, attributes, and plot families
+
+Execution metadata:
+
+1. Estimated effort: M
+2. Primary owner role: Backend/parser engineer
+3. Secondary owner role: Integration reviewer for script compatibility
+
+Goal:
+Finalize backend state and parser contracts so contour levels, contour attributes, and plot-family choices are represented unambiguously in shared state.
+
+Scope:
+
+1. Refine shared `PlotState` and `PlotAction` representations for contour levels and first-pass contour attributes: `LINE`, `SURFACE`, `GRID`, `COLOR CONTOURS`, and `DOTS`.
+2. Ensure plot-family representation is explicit and does not rely on old UI shortcut semantics.
+3. Update parser handling for `CONTOURS`, `PLOT`, and related qualifiers to populate the refined shared model.
+4. Stop silently ignoring contour-attribute intent in parser/state transitions.
+
+Acceptance criteria:
+
+1. Shared state can express all three contour-spec modes and first-pass contour attributes.
+2. Parser emits deterministic actions for `CONTOURS` level modes and plot-family switches.
+3. Unknown or unsupported qualifiers generate diagnostics rather than silent behavior changes.
+
+Dependencies:
+
+1. TKT-002
+2. TKT-004
+3. TKT-006
+
+### TKT-007B: Absolute contour-level resolution and IPC contract migration
+
+Execution metadata:
+
+1. Estimated effort: M
+2. Primary owner role: Backend/IPC engineer
+3. Secondary owner role: Viewer integration engineer
+
+Goal:
+Remove normalized contour-value contracts and standardize one absolute contour-level resolution path.
+
+Scope:
+
+1. Replace normalized contour extraction arguments with absolute level inputs across Tauri commands.
+2. Add a backend helper that resolves `AUTOMATIC`, `INCREMENT`, and `MANUAL` specs into explicit absolute levels using field range context.
+3. Ensure degenerate range handling is deterministic and diagnostic-friendly.
+
+Acceptance criteria:
+
+1. No extraction command requires a normalized contour input.
+2. All contour-level resolution flows use one canonical absolute-level resolver.
+3. Uniform-field cases avoid divide-by-zero behavior and emit deterministic outcomes.
+
+Dependencies:
+
+1. TKT-007A
+
+### TKT-007C: GUI contour model and editor migration
+
+Execution metadata:
+
+1. Estimated effort: L
+2. Primary owner role: Frontend app engineer
+3. Secondary owner role: Backend reviewer for state/action shape alignment
+
+Goal:
+Replace the old single-level contour UI with a parity-aligned plot-family and contour editor flow.
+
+Scope:
+
+1. Retire `Enable Contours` and the `surfaces / lines / both` control.
+2. Add GUI controls for plot-family selection and contour-spec modes: `AUTOMATIC`, `INCREMENT`, `MANUAL`.
+3. Add first-pass GUI controls for contour attributes with default `LINE` behavior.
+4. Ensure backend-to-UI sync round-trips script-driven contour specs without collapsing to one manual level.
+
+Acceptance criteria:
+
+1. GUI can author and edit all three contour-spec modes.
+2. Script-loaded contour specs and attributes remain intact after GUI sync and apply.
+3. Old single-level behavior exists only as a subset of manual mode.
+
+Dependencies:
+
+1. TKT-007A
+2. TKT-007B
+
+### TKT-007D: Renderer semantic split and bounded function-surface MVP
+
+Execution metadata:
+
+1. Estimated effort: L
+2. Primary owner role: Frontend viewer/render engineer
+3. Secondary owner role: Backend reviewer for render-intent/contract consistency
+
+Goal:
+Implement deterministic renderer-path separation for contour plots versus function-surface or carpet plots.
+
+Scope:
+
+1. Split contour rendering from function-surface or carpet rendering in viewer integration paths.
+2. Remove old display-mode mapping assumptions from rendering code.
+3. Implement first-pass contour-attribute behavior with explicit diagnostics for unsupported combinations.
+4. Ship a bounded function-surface MVP where complete parity is not yet available.
+
+Acceptance criteria:
+
+1. Contour and function-surface or carpet paths are distinct and deterministic.
+2. First-pass `COLOR CONTOURS` uses field colormap on filled geometry.
+3. Unsupported combinations surface diagnostics or explicit UI messaging, not silent fallback.
+
+Dependencies:
+
+1. TKT-007A
+2. TKT-007B
+3. TKT-007C
+
+### TKT-007E: TKT-007 parity and regression test coverage
+
+Execution metadata:
+
+1. Estimated effort: M
+2. Primary owner role: Test/integration engineer
+3. Secondary owner role: backend + frontend code owners for review
+
+Goal:
+Lock in the TKT-007 behavior with targeted backend and frontend coverage.
+
+Scope:
+
+1. Add unit tests for contour spec parsing/state transitions and contour-level resolution edge cases.
+2. Add integration tests for GUI plot-family and contour-spec commits.
+3. Add contract tests that verify absolute-level arguments reach extraction commands.
+4. Add regression tests for unsupported-combination diagnostics.
+
+Acceptance criteria:
+
+1. New test suite fails on normalized contour regressions.
+2. GUI tests cover Automatic, Increment, Manual, and plot-family round-trips.
+3. Diagnostics behavior for unsupported combinations is test-covered.
+
+Dependencies:
+
+1. TKT-007A
+2. TKT-007B
+3. TKT-007C
+4. TKT-007D
+
+### TKT-007 Implementation Reference (future handoff)
+
+Purpose:
+Capture concrete implementation anchors and non-negotiable decisions so future agents can execute without rediscovery.
+
+Key non-negotiable decisions:
+
+1. Contour values are absolute physical values end-to-end; normalized contour-value contracts are forbidden.
+2. `CONTOURS` is a level-and-attribute command. It does not choose plot family.
+3. Plot-family semantics must not reuse the retired `Enable Contours` and `surfaces / lines / both` shortcut.
+4. Default contour attribute is `LINE`.
+5. First-pass `COLOR CONTOURS` uses field colormap on filled geometry (no per-level GUI color editor required in this ticket).
+6. Unsupported combinations must emit diagnostics or explicit UI messaging; no silent fallback.
+7. Wireframe/shading stay local viewer styling for TKT-007.
+
+Code touchpoints to expect for TKT-007 work:
+
+1. `src-tauri/src/plot_state.rs`: canonical contour spec/attribute/plot-family state and `apply_action` behavior.
+2. `src-tauri/src/com_parser.rs`: `CONTOURS`, `PLOT`, and related qualifier parsing.
+3. `src-tauri/src/lib.rs`: Tauri contour extraction commands and IPC argument contracts.
+4. `src-tauri/src/script_executor.rs`: render-intent boundary behavior at `PLOT` commits.
+5. `src/types/plot3d.ts`: frontend type contract mirrors for contour/plot-family state.
+6. `src/App.tsx`: contour editor controls, plot-family controls, and backend-state sync.
+7. `src/components/Viewer3D.tsx`: contour/function-surface rendering path split and extraction call arguments.
+8. `src/App.integration.test.tsx`: GUI commit flow and regression tests.
+
+Source references for legacy semantics:
+
+1. `plot3d.md`:
+   - `CONTOURS` modes and qualifier behavior.
+   - `FSURFACE` semantics and relationship to `VIEW`, `MINMAX`, and contour attributes.
+   - `PLOT` qualifiers (`/CONTOUR`, `/SURFACE`, `/CARPET`, `/LINE`) and expected behavior distinctions.
+2. `plot3d_com_file/capability_catalog.md`: canonical in-scope capability definitions.
+3. `plot3d_com_file/parity_matrix.json`: current parity status and ticket ownership.
+4. The scalar-function possibility chart (project discussion artifact): interpret as behavioral guidance for first-pass attribute semantics (`LINE`, `SURFACE`, `GRID`, `COLOR CONTOURS`, `DOTS`).
+
+Contract migration checklist:
+
+1. Remove any remaining `levelNormalized` contour arguments at frontend/backend boundaries.
+2. Ensure one canonical resolver computes explicit contour levels for `AUTOMATIC`, `INCREMENT`, and `MANUAL` specs.
+3. Verify manual absolute values never get silently reinterpreted as normalized fallback values.
+4. Verify degenerate-range behavior is deterministic and test-covered.
+
+Recommended completion evidence for TKT-007 sub-tickets:
+
+1. Backend tests: contour-state transitions, parser behavior, and level-resolution edge cases.
+2. Frontend tests: plot-family + Automatic/Increment/Manual editor round-trips and commit ordering.
+3. Contract tests: extraction commands receive absolute levels only.
+4. Manual scenario checks:
+   - `CONTOURS 5` + `PLOT/CONTOUR` reflects Automatic mode in GUI.
+   - Manual multi-level entries persist through apply/reload cycles.
+   - Function-surface path is distinct from contour path.
+
+Current verification baseline (as of 2026-03-17):
+
+1. `cargo test plot_state` passes in `src-tauri`.
+2. `npm run test -- src/App.integration.test.tsx` passes in repo root.
 
 ### TKT-008: Close GUI gaps for WALLS, SUBSETS, FSURFACE, TEXT, and SHOW
 
@@ -270,7 +492,7 @@ Scope:
 
 1. Design a richer range-based selection model for `SUBSETS` and `WALLS`.
 2. Update or replace current index-slice controls so they align with that model.
-3. Add `FSURFACE` controls.
+3. Add `FSURFACE` controls beyond the bounded MVP separation delivered in TKT-007, including scale factor, walls origin, and any needed mode controls.
 4. Add plot-text controls.
 5. Add a `SHOW` status view.
 
@@ -283,12 +505,13 @@ Acceptance criteria:
 Dependencies:
 
 1. TKT-006
-2. TKT-007
+2. TKT-007D
 
 Relevant decisions:
 
 1. Existing slice behavior should evolve toward subset/wall semantics.
 2. Script-only knobs can exist temporarily but must be tracked.
+3. TKT-007 is responsible for separating contour plots from function-surface or carpet plots; TKT-008 finishes the missing interactive `FSURFACE` controls.
 
 ### TKT-009: Implement deterministic legacy-to-Three.js translation layer
 
@@ -302,7 +525,7 @@ Scope:
 
 1. Map `VIEW` and `VPOINT` into camera behavior.
 2. Map `PLOT/UP` and related orientation options.
-3. Define how contour/surface/line plot modes use current geometry-generation paths.
+3. Define how contour, function-surface, carpet, and line plot families use current geometry-generation paths, building on the semantic split introduced in TKT-007.
 4. Document known differences from legacy output.
 
 Acceptance criteria:
@@ -314,12 +537,13 @@ Acceptance criteria:
 Dependencies:
 
 1. TKT-005
-2. TKT-007
+2. TKT-007D
 
 Relevant decisions:
 
 1. Exact visual legacy parity is not required.
 2. Documented deterministic behavior is required.
+3. TKT-007 may ship a bounded function-surface MVP, but TKT-009 is where the long-term translation rules and documented deviations must be finalized.
 
 ## Milestone C: Export
 
@@ -418,15 +642,18 @@ Relevant decisions:
 ## Recommended Milestone Ordering
 
 1. Milestone A: TKT-001 through TKT-005
-2. Milestone B: TKT-006 through TKT-009
+2. Milestone B: TKT-006, TKT-007A through TKT-007E, TKT-008, TKT-009
 3. Milestone C: TKT-010 through TKT-011
 4. Milestone D: TKT-012
 
 ## Parallelism Notes
 
 1. TKT-003 can overlap with TKT-002 once state types are stable enough.
-2. TKT-006 and TKT-007 can overlap after the core action/state system exists.
-3. TKT-010 and TKT-011 should share as much render/export logic as practical.
+2. TKT-007A should land before TKT-007B, TKT-007C, and TKT-007D begin full implementation.
+3. TKT-007B and TKT-007C can overlap once shared contracts from TKT-007A are stable.
+4. TKT-007D should start after TKT-007B contract migration is in place and TKT-007C has established new GUI control semantics.
+5. TKT-007E runs continuously but should not be considered complete until TKT-007D behavior is merged.
+6. TKT-010 and TKT-011 should share as much render/export logic as practical.
 
 ## Things Another Agent Should Not Re-Decide
 
@@ -436,3 +663,7 @@ Relevant decisions:
 4. Do not silently skip unsupported commands without diagnostics.
 5. Do not assume exact legacy visual parity is required.
 6. Do not design continuous GUI editing to write through IPC on every drag event.
+7. Do not treat the old `surfaces / lines / both` contour control as a parity concept.
+8. Do not collapse contour plots and function-surface or carpet plots back into one ambiguous rendering mode.
+9. Do not promote current wireframe or shading viewer toggles into shared parity state as part of TKT-007.
+10. Do not silently fall back from unsupported contour-attribute or plot-family combinations.
