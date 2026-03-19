@@ -233,8 +233,10 @@ describe('App frontend integration', () => {
         const loadButton = await screen.findByRole('button', { name: 'Load Files' });
         fireEvent.click(loadButton);
 
-        const contourCheckbox = await screen.findByLabelText('Enable Contours');
-        fireEvent.click(contourCheckbox);
+        // The Plot Family select replaces the old "Enable Contours" checkbox.
+        // Mock starts with plot_family='function_surface', so the select shows that value.
+        const plotFamilySelect = await screen.findByDisplayValue('Function Surface');
+        fireEvent.change(plotFamilySelect, { target: { value: 'contour' } });
 
         await waitFor(() => {
             expect(invokeMock).toHaveBeenCalledWith('set_plot_family', { family: 'contour' });

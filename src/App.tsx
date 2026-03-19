@@ -46,6 +46,8 @@ type BackendPlotFamily = 'contour' | 'function_surface';
 
 type BackendContourAttribute = 'line' | 'surface' | 'grid' | 'color_contours' | 'dots';
 
+type ContourSpecMode = 'none' | 'automatic' | 'increment' | 'manual';
+
 type BackendAxisView =
   | 'plus_x'
   | 'minus_x'
@@ -117,18 +119,6 @@ interface ScriptExecutionResult {
   show_output: string[];
   diagnostics: BackendDiagnostic[];
 }
-
-const extractFirstManualContourValue = (spec: unknown): number | null => {
-  if (!spec || typeof spec !== 'object') {
-    return null;
-  }
-  const raw = spec as { mode?: string; entries?: Array<{ value?: number }> };
-  if (raw.mode !== 'manual' || !Array.isArray(raw.entries) || raw.entries.length === 0) {
-    return null;
-  }
-  const value = raw.entries[0]?.value;
-  return typeof value === 'number' && Number.isFinite(value) ? value : null;
-};
 
 const subsetRangeSig = (range?: BackendIndexRange | null) =>
   range ? `${range.start}:${range.end ?? ''}` : '-';
@@ -338,9 +328,13 @@ const App = () => {
   const [arbitrarySlices, setArbitrarySlices] = useState<ArbitrarySlice[]>([]);
 
   // Contour state
-  const [contoursEnabled, setContoursEnabled] = useState(false);
+  const [plotFamilyState, setPlotFamilyState] = useState<BackendPlotFamily>('contour');
+  const [contourAttributeState, setContourAttributeState] = useState<BackendContourAttribute>('line');
+  const [contourSpecMode, setContourSpecMode] = useState<ContourSpecMode>('none');
+  const [contourAutoCount, setContourAutoCount] = useState(10);
+  const [contourIncrStart, setContourIncrStart] = useState(0);
+  const [contourIncrStep, setContourIncrStep] = useState(1);
   const [contourLevel, setContourLevel] = useState(0);
-  const [contourDisplayMode, setContourDisplayMode] = useState<'surfaces' | 'lines' | 'both'>('both');
   const [backendPlotState, setBackendPlotState] = useState<BackendPlotState | null>(null);
   const [backendDiagnostics, setBackendDiagnostics] = useState<BackendDiagnostic[]>([]);
   const [showCommandWindow, setShowCommandWindow] = useState(false);
@@ -399,12 +393,21 @@ const App = () => {
     }
   };
 
-  const setPlotContourLevel = async (level: number) => {
+  const setPlotContourSpec = async (spec: object) => {
     try {
-      const result = await invoke<ApplyPlotActionResult>('set_plot_contour_level', { level });
+      const result = await invoke<ApplyPlotActionResult>('set_plot_contour_spec', { spec });
       updateBackendFromResult(result);
     } catch (e) {
-      logger.error(`Failed to set contour level: ${e}`, 'App');
+      logger.error(`Failed to set contour spec: ${e}`, 'App');
+    }
+  };
+
+  const setPlotContourAttributeCmd = async (attribute: BackendContourAttribute) => {
+    try {
+      const result = await invoke<ApplyPlotActionResult>('set_plot_contour_attribute', { attribute });
+      updateBackendFromResult(result);
+    } catch (e) {
+      logger.error(`Failed to set contour attribute: ${e}`, 'App');
     }
   };
 
@@ -433,7 +436,7 @@ const App = () => {
     const diagSummary = diagnostics.map((d) => `[${d.severity}] ${d.capability}: ${d.message}`).join('\n');
 
     const sections = [
-      `Final plot mode: ${result.final_state?.plot_mode ?? 'unknown'}`,
+      `Final plot mode: ${result.final_state?.plot_family ?? 'unknown'}`,
       `Final scalar field: ${result.final_state?.scalar_field ?? 'unknown'}`,
       `Render intents: ${intents.length}`,
       `SHOW lines: ${shows.length}`,
@@ -611,11 +614,44 @@ const App = () => {
     }
   };
 
-  // Handle contour level change
+  // Handle contour level change (manual single-level)
   const handleContourLevelChange = async (value: number) => {
     setContourLevel(value);
-    await setPlotContourLevel(value);
+    await setPlotContourSpecForCurrentMode(buildContourSpecState({ level: value }));
+  };
+
+  // Build a ContourSpec-shaped object from current spec-mode state.
+  const buildContourSpecState = (overrides?: Partial<{
+    mode: ContourSpecMode; count: number; start: number; step: number; level: number;
+  }>) => {
+    const m = overrides?.mode ?? contourSpecMode;
+    if (m === 'none') return { mode: 'none' as const };
+    if (m === 'automatic') return { mode: 'automatic' as const, count: overrides?.count ?? contourAutoCount };
+    if (m === 'increment') return { mode: 'increment' as const, start: overrides?.start ?? contourIncrStart, increment: overrides?.step ?? contourIncrStep };
+    // manual
+    return { mode: 'manual' as const, entries: [{ value: overrides?.level ?? contourLevel, color: null }] };
+  };
+
+  const setPlotContourSpecForCurrentMode = async (spec: ReturnType<typeof buildContourSpecState>) => {
+    await setPlotContourSpec(spec);
     await commitPlot();
+  };
+
+  const handlePlotFamilyChange = async (family: BackendPlotFamily) => {
+    setPlotFamilyState(family);
+    await setPlotFamily(family);
+    await commitPlot();
+  };
+
+  const handleContourAttributeChange = async (attr: BackendContourAttribute) => {
+    setContourAttributeState(attr);
+    await setPlotContourAttributeCmd(attr);
+    await commitPlot();
+  };
+
+  const handleContourSpecModeChange = async (mode: ContourSpecMode) => {
+    setContourSpecMode(mode);
+    await setPlotContourSpecForCurrentMode(buildContourSpecState({ mode }));
   };
 
   // Debug: Log whenever loading state changes
@@ -838,16 +874,24 @@ const App = () => {
 
     setCurrentScalarField(backendPlotState.scalar_field as ScalarField);
 
-    if (backendPlotState.plot_family === 'contour') {
-      setContoursEnabled(true);
-      setContourDisplayMode('both');
-    } else {
-      setContoursEnabled(false);
-    }
+    setPlotFamilyState(backendPlotState.plot_family ?? 'contour');
+    setContourAttributeState(backendPlotState.contour_attribute ?? 'line');
 
-    const contourValue = extractFirstManualContourValue(backendPlotState.contour_spec);
-    if (contourValue !== null) {
-      setContourLevel(contourValue);
+    // Sync contour spec fields from backend state.
+    const spec = backendPlotState.contour_spec;
+    if (spec && typeof spec === 'object' && 'mode' in (spec as object)) {
+      const s = spec as { mode: string; count?: number; start?: number; increment?: number; entries?: Array<{ value?: number }> };
+      const mode = (s.mode as ContourSpecMode) ?? 'none';
+      setContourSpecMode(mode);
+      if (mode === 'automatic' && typeof s.count === 'number') {
+        setContourAutoCount(s.count);
+      } else if (mode === 'increment') {
+        if (typeof s.start === 'number') setContourIncrStart(s.start);
+        if (typeof s.increment === 'number') setContourIncrStep(s.increment);
+      } else if (mode === 'manual' && Array.isArray(s.entries) && s.entries.length > 0) {
+        const val = s.entries[0]?.value;
+        if (typeof val === 'number' && Number.isFinite(val)) setContourLevel(val);
+      }
     }
 
     if (!subsetsDirty) {
@@ -1188,80 +1232,130 @@ const App = () => {
                     </div>
 
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '11px' }}>
-                      <label style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                        <input
-                          type="checkbox"
-                          checked={contoursEnabled}
+
+                      {/* Plot Family */}
+                      <label style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                        <span style={{ fontSize: '10px', color: '#94a3b8' }}>Plot Family:</span>
+                        <select
+                          value={plotFamilyState}
                           onChange={(e) => {
-                            const enabled = e.target.checked;
-                            setContoursEnabled(enabled);
-                            const family: BackendPlotFamily = enabled ? 'contour' : 'function_surface';
-                            void (async () => {
-                              await setPlotFamily(family);
-                              await commitPlot();
-                            })();
+                            void handlePlotFamilyChange(e.target.value as BackendPlotFamily);
                           }}
-                        />
-                        Enable Contours
+                          style={{ padding: '4px 6px', background: '#1a2640', color: '#e2e8f0', border: '1px solid #334155', borderRadius: '3px', fontSize: '11px' }}
+                        >
+                          <option value="contour">Contour</option>
+                          <option value="function_surface">Function Surface</option>
+                        </select>
                       </label>
 
-                      {contoursEnabled && (
-                        <div style={{ paddingLeft: '8px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                      {plotFamilyState === 'contour' && (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+
+                          {/* Contour Attribute */}
                           <label style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                            <span style={{ fontSize: '10px', color: '#94a3b8' }}>
-                              Display:
-                            </span>
+                            <span style={{ fontSize: '10px', color: '#94a3b8' }}>Attribute:</span>
                             <select
-                              value={contourDisplayMode}
+                              value={contourAttributeState}
                               onChange={(e) => {
-                                const nextMode = e.target.value as 'surfaces' | 'lines' | 'both';
-                                setContourDisplayMode(nextMode);
-                                if (contoursEnabled) {
-                                  // Display mode is local styling; plot family stays 'contour'.
-                                  // (contourDisplayMode will be retired in TKT-007C)
-                                  void (async () => {
-                                    await setPlotFamily('contour');
-                                    await commitPlot();
-                                  })();
-                                }
+                                void handleContourAttributeChange(e.target.value as BackendContourAttribute);
                               }}
-                              style={{
-                                padding: '4px 6px',
-                                background: '#1a2640',
-                                color: '#e2e8f0',
-                                border: '1px solid #334155',
-                                borderRadius: '3px',
-                                fontSize: '11px',
-                              }}
+                              style={{ padding: '4px 6px', background: '#1a2640', color: '#e2e8f0', border: '1px solid #334155', borderRadius: '3px', fontSize: '11px' }}
                             >
-                              <option value="both">Surfaces & Lines</option>
-                              <option value="surfaces">Surfaces Only</option>
-                              <option value="lines">Lines Only</option>
+                              <option value="line">Line</option>
+                              <option value="surface">Surface</option>
+                              <option value="grid">Grid</option>
+                              <option value="color_contours">Color Contours</option>
+                              <option value="dots">Dots</option>
                             </select>
                           </label>
+
+                          {/* Contour Spec Mode */}
                           <label style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                            <span style={{ fontSize: '10px', color: '#94a3b8' }}>
-                              Contour Level (0-1):
-                            </span>
-                            <input
-                              type="number"
-                              min="0"
-                              max="1"
-                              step="0.01"
-                              value={contourLevel}
+                            <span style={{ fontSize: '10px', color: '#94a3b8' }}>Levels:</span>
+                            <select
+                              value={contourSpecMode}
                               onChange={(e) => {
-                                void handleContourLevelChange(parseFloat(e.target.value) || 0);
+                                void handleContourSpecModeChange(e.target.value as ContourSpecMode);
                               }}
-                              style={{
-                                padding: '4px 6px',
-                                background: '#1a2640',
-                                color: '#e2e8f0',
-                                border: '1px solid #334155',
-                                borderRadius: '3px',
-                                fontSize: '11px',
-                              }}
-                            />
+                              style={{ padding: '4px 6px', background: '#1a2640', color: '#e2e8f0', border: '1px solid #334155', borderRadius: '3px', fontSize: '11px' }}
+                            >
+                              <option value="none">None</option>
+                              <option value="automatic">Automatic</option>
+                              <option value="increment">Increment</option>
+                              <option value="manual">Manual</option>
+                            </select>
                           </label>
+
+                          {/* Automatic mode: count */}
+                          {contourSpecMode === 'automatic' && (
+                            <label style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                              <span style={{ fontSize: '10px', color: '#94a3b8' }}>Count:</span>
+                              <input
+                                type="number"
+                                min="1"
+                                step="1"
+                                value={contourAutoCount}
+                                onChange={(e) => {
+                                  const n = Math.max(1, Math.round(parseFloat(e.target.value) || 1));
+                                  setContourAutoCount(n);
+                                  void setPlotContourSpecForCurrentMode(buildContourSpecState({ mode: 'automatic', count: n }));
+                                }}
+                                style={{ padding: '4px 6px', background: '#1a2640', color: '#e2e8f0', border: '1px solid #334155', borderRadius: '3px', fontSize: '11px' }}
+                              />
+                            </label>
+                          )}
+
+                          {/* Increment mode: start + step */}
+                          {contourSpecMode === 'increment' && (
+                            <>
+                              <label style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                <span style={{ fontSize: '10px', color: '#94a3b8' }}>Start:</span>
+                                <input
+                                  type="number"
+                                  step="any"
+                                  value={contourIncrStart}
+                                  onChange={(e) => {
+                                    const v = parseFloat(e.target.value) || 0;
+                                    setContourIncrStart(v);
+                                    void setPlotContourSpecForCurrentMode(buildContourSpecState({ mode: 'increment', start: v }));
+                                  }}
+                                  style={{ padding: '4px 6px', background: '#1a2640', color: '#e2e8f0', border: '1px solid #334155', borderRadius: '3px', fontSize: '11px' }}
+                                />
+                              </label>
+                              <label style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                <span style={{ fontSize: '10px', color: '#94a3b8' }}>Step:</span>
+                                <input
+                                  type="number"
+                                  min="0.000001"
+                                  step="any"
+                                  value={contourIncrStep}
+                                  onChange={(e) => {
+                                    const v = parseFloat(e.target.value) || 1;
+                                    setContourIncrStep(v);
+                                    void setPlotContourSpecForCurrentMode(buildContourSpecState({ mode: 'increment', step: v }));
+                                  }}
+                                  style={{ padding: '4px 6px', background: '#1a2640', color: '#e2e8f0', border: '1px solid #334155', borderRadius: '3px', fontSize: '11px' }}
+                                />
+                              </label>
+                            </>
+                          )}
+
+                          {/* Manual mode: single level value */}
+                          {contourSpecMode === 'manual' && (
+                            <label style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                              <span style={{ fontSize: '10px', color: '#94a3b8' }}>Level:</span>
+                              <input
+                                type="number"
+                                step="any"
+                                value={contourLevel}
+                                onChange={(e) => {
+                                  void handleContourLevelChange(parseFloat(e.target.value) || 0);
+                                }}
+                                style={{ padding: '4px 6px', background: '#1a2640', color: '#e2e8f0', border: '1px solid #334155', borderRadius: '3px', fontSize: '11px' }}
+                              />
+                            </label>
+                          )}
+
                         </div>
                       )}
                     </div>
@@ -1967,9 +2061,8 @@ const App = () => {
               sliceEnabled={sliceEnabled}
               subsets={backendPlotState?.subsets ?? []}
               arbitrarySlices={arbitrarySlices}
-              contoursEnabled={contoursEnabled}
-              contourLevel={contourLevel}
-              contourDisplayMode={contourDisplayMode}
+              contoursEnabled={plotFamilyState === 'contour'}
+              contourAttribute={contourAttributeState}
               contourSpec={backendPlotState?.contour_spec}
               cameraAxisView={backendPlotState?.axis_view ?? 'custom'}
               cameraViewpoint={backendPlotState?.viewpoint ?? null}

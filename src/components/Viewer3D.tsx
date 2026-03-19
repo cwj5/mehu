@@ -59,8 +59,7 @@ interface Viewer3DProps {
     subsets?: BackendGridSubset[];
     arbitrarySlices?: ArbitrarySlice[];
     contoursEnabled?: boolean;
-    contourLevel?: number;
-    contourDisplayMode?: 'surfaces' | 'lines' | 'both';
+    contourAttribute?: 'line' | 'surface' | 'grid' | 'color_contours' | 'dots';
     contourSpec?: unknown;
     cameraAxisView?:
     | 'plus_x'
@@ -656,8 +655,7 @@ export default function Viewer3D({
     subsets = [],
     arbitrarySlices = [],
     contoursEnabled = false,
-    contourLevel = 0.5,
-    contourDisplayMode = 'both',
+    contourAttribute = 'line' as 'line' | 'surface' | 'grid' | 'color_contours' | 'dots',
     contourSpec,
     cameraAxisView = 'custom',
     cameraViewpoint,
@@ -1622,8 +1620,8 @@ export default function Viewer3D({
                         );
                     })}
 
-                {/* Render iso-surfaces */}
-                {contoursEnabled && (contourDisplayMode === 'surfaces' || contourDisplayMode === 'both') &&
+                {/* Render iso-surfaces (all attributes except plain line) */}
+                {contoursEnabled && contourAttribute !== 'line' &&
                     Object.entries(isoSurfaceGeometries).map(([id, mesh]) => (
                         <group key={`iso::${id}`}>
                             <IsoSurfaceRenderer meshGeometry={mesh} color="#3b82f6" />
@@ -1631,8 +1629,8 @@ export default function Viewer3D({
                     ))
                 }
 
-                {/* Render contour lines */}
-                {contoursEnabled && (contourDisplayMode === 'lines' || contourDisplayMode === 'both') &&
+                {/* Render contour lines (line attribute, or grid/dots as first-pass fallback) */}
+                {contoursEnabled && (contourAttribute === 'line' || contourAttribute === 'grid' || contourAttribute === 'dots') &&
                     Object.entries(contourLineGeometries).map(([id, lineData]) => (
                         <group key={`contour::${id}`}>
                             <ContourLineRenderer lineData={lineData} color="#000000" />

@@ -2970,6 +2970,20 @@ fn set_plot_contour_level(level: f64) -> Result<ApplyActionResult, String> {
     ))
 }
 
+/// Convenience command: set the full contour specification (any mode).
+#[tauri::command]
+fn set_plot_contour_spec(spec: plot_state::ContourSpec) -> Result<ApplyActionResult, String> {
+    apply_plot_action(PlotAction::SetContourSpec(spec))
+}
+
+/// Convenience command: set the contour visual rendering attribute.
+#[tauri::command]
+fn set_plot_contour_attribute(
+    attribute: plot_state::ContourAttribute,
+) -> Result<ApplyActionResult, String> {
+    apply_plot_action(PlotAction::SetContourAttribute(attribute))
+}
+
 /// Convenience command: commit current plot state boundary.
 #[tauri::command]
 fn commit_plot() -> Result<ApplyActionResult, String> {
@@ -3087,6 +3101,8 @@ pub fn run() {
             set_plot_axis_view,
             set_plot_subsets,
             set_plot_contour_level,
+            set_plot_contour_spec,
+            set_plot_contour_attribute,
             commit_plot,
             execute_com_script,
             execute_plot3d_commands,
