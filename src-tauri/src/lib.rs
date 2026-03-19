@@ -2271,6 +2271,101 @@ fn get_solution_field_range(solutionId: String, field: String) -> Result<FieldRa
 }
 
 // ============================================================================
+// Contour Level Resolution
+// ============================================================================
+
+/// Result returned by the `resolve_contour_levels` command.
+#[derive(serde::Serialize)]
+pub struct ContourLevelsResult {
+    pub levels: Vec<f64>,
+    pub diagnostics: Vec<plot_state::Diagnostic>,
+}
+
+/// Resolve the current contour specification to an ordered list of absolute
+/// physical field values for the given solution and scalar field.
+///
+/// This is the canonical resolution path.  The frontend must call this command
+/// rather than implementing its own normalization / de-normalization logic.
+#[allow(non_snake_case)]
+#[tauri::command]
+fn resolve_contour_levels(
+    solutionId: String,
+    scalarField: String,
+) -> Result<ContourLevelsResult, String> {
+    use plot_state::ScalarField;
+
+    // Read current contour spec from shared state.
+    let spec = {
+        let guard = PLOT_STATE
+            .lock()
+            .map_err(|_| "Plot state lock poisoned".to_string())?;
+        guard.contour_spec.clone()
+    };
+
+    // Early-exit for the trivial case — no solution range lookup required.
+    if spec == plot_state::ContourSpec::None {
+        return Ok(ContourLevelsResult {
+            levels: vec![],
+            diagnostics: vec![],
+        });
+    }
+
+    // Parse scalar field.
+    let field_enum = ScalarField::from_str(&scalarField)
+        .ok_or_else(|| format!("Unknown scalar field: {}", scalarField))?;
+
+    // Load solution from cache.
+    let solution = {
+        let cache = SOLUTION_CACHE_V2
+            .lock()
+            .map_err(|_| "Solution cache lock poisoned".to_string())?;
+        let cached = cache
+            .get(&solutionId)
+            .ok_or_else(|| format!("Solution not found in cache: {}", solutionId))?;
+        Arc::clone(&cached.solution)
+    };
+
+    // Compute field range (same logic as get_solution_field_range).
+    let mut min_val: Option<f32> = None;
+    let mut max_val: Option<f32> = None;
+    for idx in 0..solution.rho.len() {
+        let gamma = solution.gamma.as_ref().map(|g| g[idx]);
+        let value = compute_scalar_field_from_components(
+            solution.rho[idx],
+            solution.rhou[idx],
+            solution.rhov[idx],
+            solution.rhow[idx],
+            solution.rhoe[idx],
+            gamma,
+            field_enum,
+        );
+        if !value.is_finite() {
+            continue;
+        }
+        min_val = Some(match min_val {
+            Some(cur) => cur.min(value),
+            None => value,
+        });
+        max_val = Some(match max_val {
+            Some(cur) => cur.max(value),
+            None => value,
+        });
+    }
+    let (min, max) = match (min_val, max_val) {
+        (Some(mn), Some(mx)) => (mn as f64, mx as f64),
+        // Uniform / empty field — use a trivial range so resolve() sees min==max
+        // and emits the appropriate diagnostic.
+        _ => (0.0_f64, 0.0_f64),
+    };
+
+    let (levels, diagnostics) = spec.resolve(min, max);
+    Ok(ContourLevelsResult {
+        levels,
+        diagnostics,
+    })
+}
+
+// ============================================================================
 // Contour Extraction Commands
 // ============================================================================
 
@@ -2281,7 +2376,7 @@ fn extract_iso_surface_by_id(
     gridId: String,
     solutionId: String,
     scalarField: String,
-    levelNormalized: f64,
+    levelAbsolute: f64,
     respectIblank: Option<bool>,
     showFringePoints: Option<bool>,
     iblankFilterMode: Option<String>,
@@ -2318,43 +2413,11 @@ fn extract_iso_surface_by_id(
         Arc::clone(&cached.solution)
     };
 
-    // Get field range to compute actual level
-    let mut min: Option<f32> = None;
-    let mut max: Option<f32> = None;
-    for idx in 0..solution.rho.len() {
-        let gamma = solution.gamma.as_ref().map(|g| g[idx]);
-        let value = compute_scalar_field_from_components(
-            solution.rho[idx],
-            solution.rhou[idx],
-            solution.rhov[idx],
-            solution.rhow[idx],
-            solution.rhoe[idx],
-            gamma,
-            field_enum,
-        );
-        if value.is_finite() {
-            min = Some(match min {
-                Some(current) => current.min(value),
-                None => value,
-            });
-            max = Some(match max {
-                Some(current) => current.max(value),
-                None => value,
-            });
-        }
-    }
-
-    let (min_val, max_val) = match (min, max) {
-        (Some(min), Some(max)) => (min, max),
-        _ => return Err("No finite field values found".to_string()),
-    };
-
-    // Compute actual level from normalized value
-    let level = min_val + (max_val - min_val) * levelNormalized as f32;
+    let level = levelAbsolute as f32;
 
     log_info(&format!(
-        "Extracting iso-surface for grid {} at level {} (normalized={}, range=[{}, {}])",
-        gridId, level, levelNormalized, min_val, max_val
+        "Extracting iso-surface for grid {} at absolute level {}",
+        gridId, level
     ));
 
     // TODO: Call marching cubes implementation (Step 3)
@@ -2377,7 +2440,7 @@ fn extract_slice_contours_by_id(
     plane: String,
     index: usize,
     scalarField: String,
-    levelNormalized: f64,
+    levelAbsolute: f64,
     respectIblank: Option<bool>,
     showFringePoints: Option<bool>,
     iblankFilterMode: Option<String>,
@@ -2414,38 +2477,7 @@ fn extract_slice_contours_by_id(
         Arc::clone(&cached.solution)
     };
 
-    // Get field range
-    let mut min: Option<f32> = None;
-    let mut max: Option<f32> = None;
-    for idx in 0..solution.rho.len() {
-        let gamma = solution.gamma.as_ref().map(|g| g[idx]);
-        let value = compute_scalar_field_from_components(
-            solution.rho[idx],
-            solution.rhou[idx],
-            solution.rhov[idx],
-            solution.rhow[idx],
-            solution.rhoe[idx],
-            gamma,
-            field_enum,
-        );
-        if value.is_finite() {
-            min = Some(match min {
-                Some(current) => current.min(value),
-                None => value,
-            });
-            max = Some(match max {
-                Some(current) => current.max(value),
-                None => value,
-            });
-        }
-    }
-
-    let (min_val, max_val) = match (min, max) {
-        (Some(min), Some(max)) => (min, max),
-        _ => return Err("No finite field values found".to_string()),
-    };
-
-    let level = min_val + (max_val - min_val) * levelNormalized as f32;
+    let level = levelAbsolute as f32;
 
     log_info(&format!(
         "Extracting slice contours for grid {} plane {} index {} at level {}",
@@ -2474,7 +2506,7 @@ fn extract_arbitrary_plane_contours_by_id(
     planePoint: [f32; 3],
     planeNormal: [f32; 3],
     scalarField: String,
-    levelNormalized: f64,
+    levelAbsolute: f64,
     respectIblank: Option<bool>,
     showFringePoints: Option<bool>,
     iblankFilterMode: Option<String>,
@@ -2511,38 +2543,7 @@ fn extract_arbitrary_plane_contours_by_id(
         Arc::clone(&cached.solution)
     };
 
-    // Get field range
-    let mut min: Option<f32> = None;
-    let mut max: Option<f32> = None;
-    for idx in 0..solution.rho.len() {
-        let gamma = solution.gamma.as_ref().map(|g| g[idx]);
-        let value = compute_scalar_field_from_components(
-            solution.rho[idx],
-            solution.rhou[idx],
-            solution.rhov[idx],
-            solution.rhow[idx],
-            solution.rhoe[idx],
-            gamma,
-            field_enum,
-        );
-        if value.is_finite() {
-            min = Some(match min {
-                Some(current) => current.min(value),
-                None => value,
-            });
-            max = Some(match max {
-                Some(current) => current.max(value),
-                None => value,
-            });
-        }
-    }
-
-    let (min_val, max_val) = match (min, max) {
-        (Some(min), Some(max)) => (min, max),
-        _ => return Err("No finite field values found".to_string()),
-    };
-
-    let level = min_val + (max_val - min_val) * levelNormalized as f32;
+    let level = levelAbsolute as f32;
 
     log_info(&format!(
         "Extracting arbitrary plane contours for grid {} at level {}",
@@ -3057,6 +3058,7 @@ pub fn run() {
             compute_solution_colors_subset_by_id,
             compute_solution_colors_arbitrary_plane,
             get_solution_field_range,
+            resolve_contour_levels,
             extract_iso_surface_by_id,
             extract_slice_contours_by_id,
             extract_arbitrary_plane_contours_by_id,

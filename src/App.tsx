@@ -339,8 +339,7 @@ const App = () => {
 
   // Contour state
   const [contoursEnabled, setContoursEnabled] = useState(false);
-  const [contourLevel, setContourLevel] = useState(0.5);
-  const [contourLevelWarning, setContourLevelWarning] = useState("");
+  const [contourLevel, setContourLevel] = useState(0);
   const [contourDisplayMode, setContourDisplayMode] = useState<'surfaces' | 'lines' | 'both'>('both');
   const [backendPlotState, setBackendPlotState] = useState<BackendPlotState | null>(null);
   const [backendDiagnostics, setBackendDiagnostics] = useState<BackendDiagnostic[]>([]);
@@ -612,21 +611,11 @@ const App = () => {
     }
   };
 
-  // Contour level validation and clamping
+  // Handle contour level change
   const handleContourLevelChange = async (value: number) => {
-    if (value < 0 || value > 1) {
-      const clamped = Math.max(0, Math.min(1, value));
-      setContourLevel(clamped);
-      await setPlotContourLevel(clamped);
-      await commitPlot();
-      setContourLevelWarning(`Level clamped to valid range [0, 1]`);
-      setTimeout(() => setContourLevelWarning(""), 3000);
-    } else {
-      setContourLevel(value);
-      await setPlotContourLevel(value);
-      await commitPlot();
-      setContourLevelWarning("");
-    }
+    setContourLevel(value);
+    await setPlotContourLevel(value);
+    await commitPlot();
   };
 
   // Debug: Log whenever loading state changes
@@ -1273,19 +1262,6 @@ const App = () => {
                               }}
                             />
                           </label>
-                          {contourLevelWarning && (
-                            <div style={{
-                              marginTop: '4px',
-                              padding: '4px',
-                              background: '#422006',
-                              color: '#fbbf24',
-                              fontSize: '9px',
-                              borderRadius: '2px',
-                              border: '1px solid #78350f'
-                            }}>
-                              ⚠ {contourLevelWarning}
-                            </div>
-                          )}
                         </div>
                       )}
                     </div>

@@ -1354,124 +1354,36 @@ export default function Viewer3D({
             return;
         }
 
-        type FieldRange = { min: number; max: number };
-        type ParsedContourSpec = {
-            mode?: 'none' | 'automatic' | 'increment' | 'manual';
-            count?: number;
-            start?: number;
-            increment?: number;
-            entries?: Array<{ value?: number }>;
-        };
-
-        const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
-        const numeric = (v: unknown): number | null =>
-            typeof v === 'number' && Number.isFinite(v) ? v : null;
-
-        const getGlobalRange = async (): Promise<FieldRange | null> => {
-            const solIds = Array.from(new Set(gridsWithSolution.map(g => g.solutionCacheId!)));
-            if (solIds.length === 0) {
-                return null;
-            }
-
-            const ranges = await Promise.all(solIds.map(async (solutionId) => {
-                try {
-                    return await invoke<FieldRange>('get_solution_field_range', {
-                        solutionId,
-                        field: scalarField,
-                    });
-                } catch {
-                    return null;
-                }
-            }));
-
-            const valid = ranges.filter((r): r is FieldRange => !!r);
-            if (valid.length === 0) {
-                return null;
-            }
-
-            const min = Math.min(...valid.map(r => r.min));
-            const max = Math.max(...valid.map(r => r.max));
-            if (!Number.isFinite(min) || !Number.isFinite(max) || min >= max) {
-                return null;
-            }
-            return { min, max };
-        };
-
         const resolveContourLevels = async (): Promise<number[]> => {
-            const raw = (contourSpec && typeof contourSpec === 'object') ? (contourSpec as ParsedContourSpec) : null;
-            if (!raw || !raw.mode) {
-                return [clamp01(contourLevel)];
-            }
-
-            if (raw.mode === 'none') {
+            const refSolution = gridsWithSolution.find(g => g.solutionCacheId != null);
+            if (!refSolution) {
                 return [];
             }
-
-            if (raw.mode === 'automatic') {
-                const count = Math.max(1, Math.floor(numeric(raw.count) ?? 10));
-                return Array.from({ length: count }, (_, i) => (i + 1) / (count + 1));
+            try {
+                const result = await invoke<{ levels: number[]; diagnostics: unknown[] }>(
+                    'resolve_contour_levels',
+                    { solutionId: refSolution.solutionCacheId!, scalarField }
+                );
+                return result.levels;
+            } catch (err) {
+                logger.warn(`resolve_contour_levels failed: ${err}`, 'Viewer3D');
+                return [];
             }
-
-            if (raw.mode === 'manual') {
-                const values = (raw.entries ?? [])
-                    .map((e) => numeric(e?.value))
-                    .filter((v): v is number => v !== null);
-                if (values.length === 0) {
-                    return [clamp01(contourLevel)];
-                }
-
-                const range = await getGlobalRange();
-                if (!range) {
-                    // Fallback: treat manual values as already-normalized values.
-                    return values.map(clamp01);
-                }
-                const span = range.max - range.min;
-                return values.map((v) => clamp01((v - range.min) / span));
-            }
-
-            if (raw.mode === 'increment') {
-                const start = numeric(raw.start);
-                const increment = numeric(raw.increment);
-                if (start === null || increment === null || increment <= 0) {
-                    return [clamp01(contourLevel)];
-                }
-
-                const range = await getGlobalRange();
-                if (!range) {
-                    return [clamp01(contourLevel)];
-                }
-
-                const levels: number[] = [];
-                const span = range.max - range.min;
-                const maxLevels = 128;
-
-                let v = start;
-                while (v < range.min) {
-                    v += increment;
-                }
-                while (v <= range.max && levels.length < maxLevels) {
-                    levels.push(clamp01((v - range.min) / span));
-                    v += increment;
-                }
-                return levels.length > 0 ? levels : [clamp01(contourLevel)];
-            }
-
-            return [clamp01(contourLevel)];
         };
 
         void (async () => {
-            const normalizedLevels = await resolveContourLevels();
+            const absoluteLevels = await resolveContourLevels();
             if (isCancelled) {
                 return;
             }
 
-            if (normalizedLevels.length === 0) {
+            if (absoluteLevels.length === 0) {
                 setIsoSurfaceGeometries({});
                 setContourLineGeometries({});
                 return;
             }
 
-            const uniqueLevels = Array.from(new Set(normalizedLevels.map(clamp01))).sort((a, b) => a - b);
+            const uniqueLevels = Array.from(new Set(absoluteLevels)).sort((a, b) => a - b);
 
             logger.info(
                 `Extracting contours at ${uniqueLevels.length} level(s) for field ${scalarField}`,
@@ -1486,7 +1398,7 @@ export default function Viewer3D({
                             gridId: gridItem.gridCacheId!,
                             solutionId: gridItem.solutionCacheId!,
                             scalarField: scalarField,
-                            levelNormalized: level,
+                            levelAbsolute: level,
                             respectIblank: !ignoreIblank,
                             showFringePoints: showFringePoints,
                             iblankFilterMode: iblankFilterMode,
@@ -1514,7 +1426,7 @@ export default function Viewer3D({
                                     plane: slice.plane,
                                     index: slice.index,
                                     scalarField: scalarField,
-                                    levelNormalized: level,
+                                    levelAbsolute: level,
                                     respectIblank: !ignoreIblank,
                                     showFringePoints: showFringePoints,
                                     iblankFilterMode: iblankFilterMode,
@@ -1546,7 +1458,7 @@ export default function Viewer3D({
                                         planePoint: slice.planePoint,
                                         planeNormal: slice.planeNormal,
                                         scalarField: scalarField,
-                                        levelNormalized: level,
+                                        levelAbsolute: level,
                                         respectIblank: !ignoreIblank,
                                         showFringePoints: showFringePoints,
                                         iblankFilterMode: iblankFilterMode,
@@ -1603,7 +1515,6 @@ export default function Viewer3D({
         };
     }, [
         contoursEnabled,
-        contourLevel,
         contourSpec,
         scalarField,
         grids,

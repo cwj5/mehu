@@ -169,8 +169,93 @@ impl Default for ContourSpec {
     }
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// View / camera
+impl ContourSpec {
+    /// Resolve this contour specification to an ordered list of absolute
+    /// physical field values, using the known field range \[`min`, `max`\].
+    ///
+    /// This is the **one canonical resolver** that all contour-level resolution
+    /// flows must go through; it must never receive or return normalized 0..1
+    /// values.
+    ///
+    /// # Edge / degenerate cases
+    /// - `None`: returns an empty list and no diagnostics.
+    /// - `Automatic` with a uniform field (`|max − min| < ε`): returns
+    ///   `[min]` and emits a `Warning` diagnostic.
+    /// - `Increment` whose `start` is beyond `max`: returns an empty list.
+    /// - `Manual`: values are passed through verbatim; range is not consulted.
+    pub fn resolve(&self, min: f64, max: f64) -> (Vec<f64>, Vec<Diagnostic>) {
+        let mut diags: Vec<Diagnostic> = Vec::new();
+
+        match self {
+            ContourSpec::None => (vec![], diags),
+
+            ContourSpec::Automatic { count } => {
+                let count = *count as usize;
+                let span = max - min;
+                if span.abs() < f64::EPSILON {
+                    diags.push(Diagnostic::warning(
+                        cap::CONTOURS,
+                        format!(
+                            "Uniform field (min == max == {min:.6e}); \
+                             Automatic contours collapsed to single level at field value"
+                        ),
+                    ));
+                    return (vec![min], diags);
+                }
+                // Evenly distribute `count` levels within (min, max) exclusive.
+                let levels: Vec<f64> = (1..=count)
+                    .map(|i| min + span * (i as f64) / (count as f64 + 1.0))
+                    .collect();
+                (levels, diags)
+            }
+
+            ContourSpec::Increment { start, increment } => {
+                let start = *start;
+                let increment = *increment;
+                // increment <= 0 should have been caught at parse time; be defensive.
+                if increment <= 0.0 {
+                    diags.push(Diagnostic::warning(
+                        cap::CONTOURS,
+                        "Increment must be > 0; no contour levels resolved",
+                    ));
+                    return (vec![], diags);
+                }
+                let span = max - min;
+                if span.abs() < f64::EPSILON {
+                    diags.push(Diagnostic::warning(
+                        cap::CONTOURS,
+                        format!(
+                            "Uniform field (min == max == {min:.6e}); \
+                             Increment contours produce no levels in range"
+                        ),
+                    ));
+                    return (vec![], diags);
+                }
+                // Advance `start` to the first level >= min.
+                let first = if start < min {
+                    let steps = ((min - start) / increment).ceil();
+                    start + steps * increment
+                } else {
+                    start
+                };
+                let max_levels: usize = 512;
+                let mut levels = Vec::new();
+                let mut v = first;
+                while v <= max && levels.len() < max_levels {
+                    levels.push(v);
+                    v += increment;
+                }
+                (levels, diags)
+            }
+
+            ContourSpec::Manual { entries } => {
+                let levels: Vec<f64> = entries.iter().map(|e| e.value).collect();
+                (levels, diags)
+            }
+        }
+    }
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// Which standard axis view is active (maps to a camera preset).
@@ -1261,5 +1346,146 @@ mod tests {
         );
         // `state` is moved into apply_action but we verify via `original`.
         assert_eq!(original.scalar_field, ScalarField::None);
+    }
+
+    // ── ContourSpec::resolve ──────────────────────────────────────────────────
+
+    #[test]
+    fn resolve_none_returns_empty() {
+        let (levels, diags) = ContourSpec::None.resolve(0.0, 1.0);
+        assert!(levels.is_empty());
+        assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn resolve_automatic_distributes_evenly_inside_range() {
+        // count=4 → 4 levels at t = 1/5, 2/5, 3/5, 4/5 of [0, 10]
+        let (levels, diags) = ContourSpec::Automatic { count: 4 }.resolve(0.0, 10.0);
+        assert_eq!(levels.len(), 4);
+        assert!(diags.is_empty());
+        let expected = [2.0, 4.0, 6.0, 8.0];
+        for (got, want) in levels.iter().zip(expected.iter()) {
+            assert!((got - want).abs() < 1e-10, "expected {want} got {got}");
+        }
+        // All levels are strictly inside (min, max)
+        for &v in &levels {
+            assert!(v > 0.0 && v < 10.0, "level {v} not inside (0, 10)");
+        }
+    }
+
+    #[test]
+    fn resolve_automatic_count_one() {
+        let (levels, diags) = ContourSpec::Automatic { count: 1 }.resolve(0.0, 100.0);
+        assert_eq!(levels.len(), 1);
+        assert!(diags.is_empty());
+        assert!((levels[0] - 50.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn resolve_automatic_uniform_field_emits_warning_and_single_level() {
+        let (levels, diags) = ContourSpec::Automatic { count: 5 }.resolve(3.0, 3.0);
+        assert_eq!(levels.len(), 1);
+        assert!(
+            (levels[0] - 3.0).abs() < 1e-10,
+            "level should be the uniform value 3.0"
+        );
+        assert_eq!(diags.len(), 1);
+        assert!(matches!(diags[0].severity, DiagnosticSeverity::Warning));
+    }
+
+    #[test]
+    fn resolve_increment_normal_range() {
+        // start=1.0, inc=0.5, range [0, 3] → levels: 1.0, 1.5, 2.0, 2.5, 3.0
+        let spec = ContourSpec::Increment {
+            start: 1.0,
+            increment: 0.5,
+        };
+        let (levels, diags) = spec.resolve(0.0, 3.0);
+        assert!(diags.is_empty());
+        let expected = [1.0, 1.5, 2.0, 2.5, 3.0];
+        assert_eq!(levels.len(), expected.len());
+        for (got, want) in levels.iter().zip(expected.iter()) {
+            assert!((got - want).abs() < 1e-10, "expected {want} got {got}");
+        }
+    }
+
+    #[test]
+    fn resolve_increment_start_below_min_advances_to_first_in_range() {
+        // start=-5.0, inc=2.0, range [0, 6] → first >= 0 is 1.0? No:
+        // start=-5, steps = ceil((0 - (-5)) / 2.0) = ceil(2.5) = 3, first = -5 + 3*2 = 1
+        // levels: 1.0, 3.0, 5.0
+        let spec = ContourSpec::Increment {
+            start: -5.0,
+            increment: 2.0,
+        };
+        let (levels, diags) = spec.resolve(0.0, 6.0);
+        assert!(diags.is_empty());
+        assert_eq!(levels, vec![1.0, 3.0, 5.0]);
+    }
+
+    #[test]
+    fn resolve_increment_start_beyond_max_returns_empty() {
+        let spec = ContourSpec::Increment {
+            start: 10.0,
+            increment: 1.0,
+        };
+        let (levels, diags) = spec.resolve(0.0, 5.0);
+        assert!(levels.is_empty());
+        assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn resolve_increment_negative_increment_returns_empty_with_warning() {
+        let spec = ContourSpec::Increment {
+            start: 0.0,
+            increment: -1.0,
+        };
+        let (levels, diags) = spec.resolve(0.0, 5.0);
+        assert!(levels.is_empty());
+        assert_eq!(diags.len(), 1);
+    }
+
+    #[test]
+    fn resolve_increment_uniform_field_returns_empty_with_warning() {
+        let spec = ContourSpec::Increment {
+            start: 0.0,
+            increment: 0.5,
+        };
+        let (levels, diags) = spec.resolve(2.0, 2.0);
+        assert!(levels.is_empty());
+        assert_eq!(diags.len(), 1);
+        assert!(matches!(diags[0].severity, DiagnosticSeverity::Warning));
+    }
+
+    #[test]
+    fn resolve_manual_passthrough_ignores_range() {
+        let spec = ContourSpec::Manual {
+            entries: vec![
+                ContourEntry {
+                    value: -99.0,
+                    color: None,
+                },
+                ContourEntry {
+                    value: 0.0,
+                    color: None,
+                },
+                ContourEntry {
+                    value: 42.5,
+                    color: None,
+                },
+            ],
+        };
+        // Range should have zero effect on Manual levels
+        let (levels, diags) = spec.resolve(0.0, 1.0);
+        assert!(diags.is_empty());
+        assert_eq!(levels, vec![-99.0, 0.0, 42.5]);
+    }
+
+    #[test]
+    fn resolve_manual_empty_entries_returns_empty() {
+        let spec = ContourSpec::Manual { entries: vec![] };
+        let (levels, diags) = spec.resolve(0.0, 1.0);
+        assert!(levels.is_empty());
+        assert!(diags.is_empty());
     }
 }
