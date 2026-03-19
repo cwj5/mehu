@@ -70,9 +70,9 @@ pub fn execute_parsed_script(
 
 fn format_show_output(state: &PlotState) -> String {
     format!(
-        "SHOW: field={:?}, mode={:?}, axis_view={:?}, text_annotations={}, walls={}, subsets={}",
+        "SHOW: field={:?}, family={:?}, axis_view={:?}, text_annotations={}, walls={}, subsets={}",
         state.scalar_field,
-        state.plot_mode,
+        state.plot_family,
         state.axis_view,
         state.text_annotations.len(),
         state.walls.len(),
@@ -84,7 +84,7 @@ fn format_show_output(state: &PlotState) -> String {
 mod tests {
     use super::*;
     use crate::com_parser::parse_com_file;
-    use crate::plot_state::{AxisView, PlotMode, PlotText, ScalarField};
+    use crate::plot_state::{AxisView, PlotFamily, PlotText, ScalarField};
     use std::fs;
 
     #[test]
@@ -92,7 +92,7 @@ mod tests {
         let initial = PlotState::default();
         let actions = vec![
             PlotAction::SetScalarField(ScalarField::Density),
-            PlotAction::SetPlotMode(PlotMode::Contours),
+            PlotAction::SetPlotFamily(PlotFamily::Contour),
             PlotAction::CommitPlot,
             PlotAction::SetAxisView(AxisView::MinusZ),
         ];
@@ -100,18 +100,18 @@ mod tests {
         let result = execute_actions(initial, &actions);
         assert_eq!(result.intents.len(), 1);
         assert_eq!(result.intents[0].state.scalar_field, ScalarField::Density);
-        assert_eq!(result.intents[0].state.plot_mode, PlotMode::Contours);
+        assert_eq!(result.intents[0].state.plot_family, PlotFamily::Contour);
     }
 
     #[test]
     fn equal_plot_state_yields_equal_render_intent() {
         let mut state_a = PlotState::default();
         state_a.scalar_field = ScalarField::Pressure;
-        state_a.plot_mode = PlotMode::Surface3d;
+        state_a.plot_family = PlotFamily::FunctionSurface;
 
         let mut state_b = PlotState::default();
         state_b.scalar_field = ScalarField::Pressure;
-        state_b.plot_mode = PlotMode::Surface3d;
+        state_b.plot_family = PlotFamily::FunctionSurface;
 
         let intent_a = RenderIntent::from_state(&state_a);
         let intent_b = RenderIntent::from_state(&state_b);

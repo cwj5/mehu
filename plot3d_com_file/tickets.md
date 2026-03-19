@@ -275,7 +275,9 @@ Relevant decisions:
 5. Function-surface or carpet rendering may ship as a bounded MVP if incomplete paths are explicit.
 6. Legacy contour attributes are shared parity state; wireframe and shading remain local viewer styling.
 
-### TKT-007A: Shared state and parser contracts for contour specs, attributes, and plot families
+### ~~TKT-007A: Shared state and parser contracts for contour specs, attributes, and plot families~~ ✅ COMPLETE
+
+Completed: 2026-03-18. Added `ContourAttribute` enum (`Line`, `Surface`, `Grid`, `ColorContours`, `Dots`; default `Line`) and replaced `PlotMode` with explicit `PlotFamily` enum (`Contour` (default), `FunctionSurface`) in `plot_state.rs`. `PlotState` gains `contour_attribute: ContourAttribute` field and `plot_mode`/`plot_family` rename. `PlotAction` gains `SetPlotFamily` (replacing `SetPlotMode`) and new `SetContourAttribute`. Parser (`com_parser.rs`) now emits `SetContourAttribute` for `/LINE`, `/SURFACE`, `/GRID`, `/COLOR`, `/DOTS` qualifiers on `CONTOURS`; `/LINE` is no longer a distinct PLOT family — it maps to `FunctionSurface` alongside `/SURFACE`/`/CARPET`; `/2D` and `/3D` accepted without effect. Tauri command `set_plot_mode` replaced by `set_plot_family`. Frontend `BackendPlotMode` replaced by `BackendPlotFamily` + new `BackendContourAttribute` type; `BackendPlotState` updated accordingly. All 180 Rust tests and 104 TypeScript tests pass.
 
 Execution metadata:
 

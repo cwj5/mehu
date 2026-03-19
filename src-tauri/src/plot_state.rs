@@ -294,21 +294,61 @@ pub struct PlotText {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Plot mode (PLOT)
+// Contour attribute (CONTOURS attribute qualifier)
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// Modern plot mode representation for legacy `PLOT` behavior.
+/// How contour levels are visually rendered.  Set through the `CONTOURS`
+/// command's attribute qualifiers.  The default is `Line`.
+///
+/// These correspond to the legacy "contour attribute type" concept used by both
+/// contour plots and function-surface plots (the CONTOURS command controls
+/// attribute for both families).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum PlotMode {
-    Surface3d,
-    Contours,
-    Lines,
+pub enum ContourAttribute {
+    /// Line contours (default).
+    Line,
+    /// Filled polygon surface.
+    Surface,
+    /// Grid mesh lines.
+    Grid,
+    /// Filled contours using the field colormap.
+    ColorContours,
+    /// Dot representation.
+    Dots,
 }
 
-impl Default for PlotMode {
+impl Default for ContourAttribute {
     fn default() -> Self {
-        PlotMode::Surface3d
+        ContourAttribute::Line
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Plot family (PLOT qualifier)
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Which visualization family the current `PLOT` command selects.
+///
+/// Replaces the legacy string-keyed "plot mode" with explicit semantics:
+/// - `Contour` (default) — scalar levels drawn on geometry (`PLOT/CONTOUR`).
+/// - `FunctionSurface` — function value plotted as a spatial dimension
+///   (`PLOT/SURFACE`, `PLOT/CARPET`, or the 2D-degenerate `PLOT/LINE`).
+///
+/// Plot-family selection is owned by this enum and must not be re-encoded
+/// through retired UI shortcuts such as an "Enable Contours" checkbox.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlotFamily {
+    /// Contour plot — scalar iso-levels on a mesh surface (default).
+    Contour,
+    /// Function-surface / carpet plot — scalar value treated as a spatial axis.
+    FunctionSurface,
+}
+
+impl Default for PlotFamily {
+    fn default() -> Self {
+        PlotFamily::Contour
     }
 }
 
@@ -351,8 +391,10 @@ pub struct PlotState {
     // MINMAX
     pub minmax: MinMaxOverride,
 
-    // CONTOURS
+    // CONTOURS: level specification
     pub contour_spec: ContourSpec,
+    // CONTOURS: visual attribute (line/surface/grid/color/dots)
+    pub contour_attribute: ContourAttribute,
 
     // WALLS
     pub walls: Vec<GridSubset>,
@@ -367,7 +409,7 @@ pub struct PlotState {
     pub text_annotations: Vec<PlotText>,
 
     // PLOT
-    pub plot_mode: PlotMode,
+    pub plot_family: PlotFamily,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -422,8 +464,11 @@ pub enum PlotAction {
     // SHOW: emit a status snapshot in executor output.
     ShowStatus,
 
-    // PLOT: set rendering mode (surface, contour, line).
-    SetPlotMode(PlotMode),
+    // PLOT: choose between contour and function-surface families.
+    SetPlotFamily(PlotFamily),
+
+    // CONTOURS: set the visual rendering attribute (line/surface/grid/etc.).
+    SetContourAttribute(ContourAttribute),
 
     // PLOT: commit current state as a render intent (handled by the executor
     // layer; `apply_action` records the intent but does not render).
@@ -681,8 +726,12 @@ pub fn apply_action(mut state: PlotState, action: PlotAction) -> (PlotState, Vec
             diags.push(Diagnostic::info(cap::SHOW, "Show status requested"));
         }
 
-        PlotAction::SetPlotMode(mode) => {
-            state.plot_mode = mode;
+        PlotAction::SetPlotFamily(family) => {
+            state.plot_family = family;
+        }
+
+        PlotAction::SetContourAttribute(attr) => {
+            state.contour_attribute = attr;
         }
 
         PlotAction::CommitPlot => {
@@ -1113,19 +1162,52 @@ mod tests {
         assert!(diags.is_empty());
     }
 
-    // ── Plot mode ─────────────────────────────────────────────────────────────
+    // ── Plot family ───────────────────────────────────────────────────────────
 
     #[test]
-    fn plot_mode_defaults_to_surface3d() {
+    fn plot_family_defaults_to_contour() {
         let state = default_state();
-        assert_eq!(state.plot_mode, PlotMode::Surface3d);
+        assert_eq!(state.plot_family, PlotFamily::Contour);
     }
 
     #[test]
-    fn set_plot_mode_updates_mode() {
+    fn set_plot_family_updates_family() {
         let state = default_state();
-        let (new_state, diags) = apply_action(state, PlotAction::SetPlotMode(PlotMode::Contours));
-        assert_eq!(new_state.plot_mode, PlotMode::Contours);
+        let (new_state, diags) = apply_action(
+            state,
+            PlotAction::SetPlotFamily(PlotFamily::FunctionSurface),
+        );
+        assert_eq!(new_state.plot_family, PlotFamily::FunctionSurface);
+        assert!(diags.is_empty());
+    }
+
+    // ── Contour attribute ─────────────────────────────────────────────────────
+
+    #[test]
+    fn contour_attribute_defaults_to_line() {
+        let state = default_state();
+        assert_eq!(state.contour_attribute, ContourAttribute::Line);
+    }
+
+    #[test]
+    fn set_contour_attribute_updates_attribute() {
+        let state = default_state();
+        let (new_state, diags) = apply_action(
+            state,
+            PlotAction::SetContourAttribute(ContourAttribute::Surface),
+        );
+        assert_eq!(new_state.contour_attribute, ContourAttribute::Surface);
+        assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn set_contour_attribute_color_contours() {
+        let state = default_state();
+        let (new_state, diags) = apply_action(
+            state,
+            PlotAction::SetContourAttribute(ContourAttribute::ColorContours),
+        );
+        assert_eq!(new_state.contour_attribute, ContourAttribute::ColorContours);
         assert!(diags.is_empty());
     }
 
@@ -1160,11 +1242,11 @@ mod tests {
                 z: None,
             }),
         );
-        let (s4, _) = apply_action(s3, PlotAction::SetPlotMode(PlotMode::Lines));
+        let (s4, _) = apply_action(s3, PlotAction::SetPlotFamily(PlotFamily::FunctionSurface));
         assert_eq!(s4.scalar_field, ScalarField::Density);
         assert_eq!(s4.contour_spec, ContourSpec::Automatic { count: 5 });
         assert_eq!(s4.minmax.x, Some(AxisBounds { min: 0.1, max: 1.2 }));
-        assert_eq!(s4.plot_mode, PlotMode::Lines);
+        assert_eq!(s4.plot_family, PlotFamily::FunctionSurface);
     }
 
     // ── apply_action is pure (original not mutated) ───────────────────────────

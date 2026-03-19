@@ -42,7 +42,9 @@ type BackendScalarField =
   | 'pressure'
   | 'energy';
 
-type BackendPlotMode = 'surface3d' | 'contours' | 'lines';
+type BackendPlotFamily = 'contour' | 'function_surface';
+
+type BackendContourAttribute = 'line' | 'surface' | 'grid' | 'color_contours' | 'dots';
 
 type BackendAxisView =
   | 'plus_x'
@@ -77,7 +79,8 @@ const AXIS_VIEW_OPTIONS: Array<{ value: BackendAxisView; label: string }> = [
 
 interface BackendPlotState {
   scalar_field: BackendScalarField;
-  plot_mode: BackendPlotMode;
+  plot_family: BackendPlotFamily;
+  contour_attribute: BackendContourAttribute;
   axis_view: BackendAxisView;
   contour_spec: unknown;
   subsets: BackendGridSubset[];
@@ -370,12 +373,12 @@ const App = () => {
     }
   };
 
-  const setPlotMode = async (mode: BackendPlotMode) => {
+  const setPlotFamily = async (family: BackendPlotFamily) => {
     try {
-      const result = await invoke<ApplyPlotActionResult>('set_plot_mode', { mode });
+      const result = await invoke<ApplyPlotActionResult>('set_plot_family', { family });
       updateBackendFromResult(result);
     } catch (e) {
-      logger.error(`Failed to set plot mode: ${e}`, 'App');
+      logger.error(`Failed to set plot family: ${e}`, 'App');
     }
   };
 
@@ -846,15 +849,11 @@ const App = () => {
 
     setCurrentScalarField(backendPlotState.scalar_field as ScalarField);
 
-    if (backendPlotState.plot_mode === 'surface3d') {
-      setContoursEnabled(false);
-    } else {
+    if (backendPlotState.plot_family === 'contour') {
       setContoursEnabled(true);
-      if (backendPlotState.plot_mode === 'lines') {
-        setContourDisplayMode('lines');
-      } else {
-        setContourDisplayMode('both');
-      }
+      setContourDisplayMode('both');
+    } else {
+      setContoursEnabled(false);
     }
 
     const contourValue = extractFirstManualContourValue(backendPlotState.contour_spec);
@@ -1207,11 +1206,9 @@ const App = () => {
                           onChange={(e) => {
                             const enabled = e.target.checked;
                             setContoursEnabled(enabled);
-                            const mode: BackendPlotMode = enabled
-                              ? (contourDisplayMode === 'lines' ? 'lines' : 'contours')
-                              : 'surface3d';
+                            const family: BackendPlotFamily = enabled ? 'contour' : 'function_surface';
                             void (async () => {
-                              await setPlotMode(mode);
+                              await setPlotFamily(family);
                               await commitPlot();
                             })();
                           }}
@@ -1231,9 +1228,10 @@ const App = () => {
                                 const nextMode = e.target.value as 'surfaces' | 'lines' | 'both';
                                 setContourDisplayMode(nextMode);
                                 if (contoursEnabled) {
-                                  const mode: BackendPlotMode = nextMode === 'lines' ? 'lines' : 'contours';
+                                  // Display mode is local styling; plot family stays 'contour'.
+                                  // (contourDisplayMode will be retired in TKT-007C)
                                   void (async () => {
-                                    await setPlotMode(mode);
+                                    await setPlotFamily('contour');
                                     await commitPlot();
                                   })();
                                 }

@@ -2881,10 +2881,10 @@ fn set_plot_scalar_field(field: plot_state::ScalarField) -> Result<ApplyActionRe
     apply_plot_action(PlotAction::SetScalarField(field))
 }
 
-/// Convenience command: set plot mode via a stable argument shape.
+/// Convenience command: set plot family (contour vs function-surface) via a stable argument shape.
 #[tauri::command]
-fn set_plot_mode(mode: plot_state::PlotMode) -> Result<ApplyActionResult, String> {
-    apply_plot_action(PlotAction::SetPlotMode(mode))
+fn set_plot_family(family: plot_state::PlotFamily) -> Result<ApplyActionResult, String> {
+    apply_plot_action(PlotAction::SetPlotFamily(family))
 }
 
 /// Convenience command: set camera viewpoint via a stable argument shape.
@@ -3080,7 +3080,7 @@ pub fn run() {
             get_plot_state,
             apply_plot_action,
             set_plot_scalar_field,
-            set_plot_mode,
+            set_plot_family,
             set_plot_viewpoint,
             set_plot_axis_view,
             set_plot_subsets,

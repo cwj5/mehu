@@ -60,7 +60,7 @@ describe('App frontend integration', () => {
     beforeEach(() => {
         invokeMock.mockReset();
 
-        let currentPlotMode = 'surface3d';
+        let currentPlotFamily = 'function_surface';
         let currentAxisView = 'custom';
         let currentSubsets: Array<Record<string, unknown>> = [];
 
@@ -68,7 +68,8 @@ describe('App frontend integration', () => {
             if (cmd === 'get_plot_state') {
                 return {
                     scalar_field: 'none',
-                    plot_mode: currentPlotMode,
+                    plot_family: currentPlotFamily,
+                    contour_attribute: 'line',
                     axis_view: currentAxisView,
                     contour_spec: { mode: 'none' },
                     subsets: currentSubsets,
@@ -117,7 +118,8 @@ describe('App frontend integration', () => {
                 return {
                     state: {
                         scalar_field: 'none',
-                        plot_mode: currentPlotMode,
+                        plot_family: currentPlotFamily,
+                        contour_attribute: 'line',
                         axis_view: currentAxisView,
                         contour_spec: { mode: 'none' },
                         subsets: currentSubsets,
@@ -127,12 +129,13 @@ describe('App frontend integration', () => {
                 };
             }
 
-            if (cmd === 'set_plot_mode') {
-                currentPlotMode = String(args?.mode ?? 'surface3d');
+            if (cmd === 'set_plot_family') {
+                currentPlotFamily = String(args?.family ?? 'contour');
                 return {
                     state: {
                         scalar_field: 'none',
-                        plot_mode: currentPlotMode,
+                        plot_family: currentPlotFamily,
+                        contour_attribute: 'line',
                         axis_view: currentAxisView,
                         contour_spec: { mode: 'none' },
                         subsets: currentSubsets,
@@ -148,7 +151,8 @@ describe('App frontend integration', () => {
                 return {
                     state: {
                         scalar_field: 'none',
-                        plot_mode: currentPlotMode,
+                        plot_family: currentPlotFamily,
+                        contour_attribute: 'line',
                         axis_view: currentAxisView,
                         contour_spec: { mode: 'none' },
                         subsets: currentSubsets,
@@ -162,7 +166,8 @@ describe('App frontend integration', () => {
                 return {
                     state: {
                         scalar_field: 'none',
-                        plot_mode: currentPlotMode,
+                        plot_family: currentPlotFamily,
+                        contour_attribute: 'line',
                         axis_view: currentAxisView,
                         contour_spec: { mode: 'none' },
                         subsets: currentSubsets,
@@ -222,7 +227,7 @@ describe('App frontend integration', () => {
         expect(setCall[1]).toEqual({ view: 'plane_xy' });
     });
 
-    it('commits contour enable changes through set_plot_mode then commit_plot', async () => {
+    it('commits contour enable changes through set_plot_family then commit_plot', async () => {
         render(<App />);
 
         const loadButton = await screen.findByRole('button', { name: 'Load Files' });
@@ -232,16 +237,16 @@ describe('App frontend integration', () => {
         fireEvent.click(contourCheckbox);
 
         await waitFor(() => {
-            expect(invokeMock).toHaveBeenCalledWith('set_plot_mode', { mode: 'contours' });
+            expect(invokeMock).toHaveBeenCalledWith('set_plot_family', { family: 'contour' });
             expect(invokeMock).toHaveBeenCalledWith('commit_plot');
         });
 
         const calledCommands = invokeMock.mock.calls.map(([cmd]) => cmd);
-        const setModeIdx = calledCommands.indexOf('set_plot_mode');
+        const setFamilyIdx = calledCommands.indexOf('set_plot_family');
         const commitIdx = calledCommands.lastIndexOf('commit_plot');
 
-        expect(setModeIdx).toBeGreaterThan(-1);
-        expect(commitIdx).toBeGreaterThan(setModeIdx);
+        expect(setFamilyIdx).toBeGreaterThan(-1);
+        expect(commitIdx).toBeGreaterThan(setFamilyIdx);
     });
 
     it('commits subset edits when Enter is pressed in a slice field', async () => {

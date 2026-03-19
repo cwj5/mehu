@@ -1,8 +1,8 @@
 use crate::function_mapping::map_legacy_function_number;
 use crate::plot_state::{
-    cap, AxisBounds, AxisView, ContourEntry, ContourSpec, DatasetRef, Diagnostic,
-    DiagnosticSeverity, FsurfaceSpec, GridSubset, IndexRange, MinMaxOverride, PlotAction, PlotMode,
-    PlotText, ScalarField, ViewPoint,
+    cap, AxisBounds, AxisView, ContourAttribute, ContourEntry, ContourSpec, DatasetRef, Diagnostic,
+    DiagnosticSeverity, FsurfaceSpec, GridSubset, IndexRange, MinMaxOverride, PlotAction,
+    PlotFamily, PlotText, ScalarField, ViewPoint,
 };
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -542,6 +542,25 @@ fn parse_contours(args: &[String], file: &Path, line: u32, out: &mut ParsedScrip
         ));
     }
 
+    // Attribute qualifiers are orthogonal to level-mode qualifiers; emit them first.
+    // If multiple attribute qualifiers appear on one line, the last one in this list wins.
+    let attr = if qualifier_values.contains_key("LINE") {
+        Some(ContourAttribute::Line)
+    } else if qualifier_values.contains_key("SURFACE") {
+        Some(ContourAttribute::Surface)
+    } else if qualifier_values.contains_key("GRID") {
+        Some(ContourAttribute::Grid)
+    } else if qualifier_values.contains_key("COLOR") {
+        Some(ContourAttribute::ColorContours)
+    } else if qualifier_values.contains_key("DOTS") {
+        Some(ContourAttribute::Dots)
+    } else {
+        None
+    };
+    if let Some(attribute) = attr {
+        out.actions.push(PlotAction::SetContourAttribute(attribute));
+    }
+
     // /INCREMENT mode: explicit qualifier takes priority.
     if qualifier_values.contains_key("INCREMENT") {
         let increment = qualifier_values
@@ -587,7 +606,15 @@ fn parse_contours(args: &[String], file: &Path, line: u32, out: &mut ParsedScrip
     for qualifier in qualifier_values.keys() {
         if !matches!(
             qualifier.as_str(),
-            "AUTOMATIC" | "RANGE" | "ATTRIBUTES" | "NOATTRIBUTES"
+            "AUTOMATIC"
+                | "RANGE"
+                | "ATTRIBUTES"
+                | "NOATTRIBUTES"
+                | "LINE"
+                | "SURFACE"
+                | "GRID"
+                | "COLOR"
+                | "DOTS"
         ) {
             out.diagnostics.push(diagnostic(
                 cap::CONTOURS,
@@ -605,13 +632,16 @@ fn parse_plot(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {
     for arg in args {
         if let Some((name, _)) = parse_qualifier(arg) {
             match name.as_str() {
-                "SURFACE" | "CARPET" => out
+                // SURFACE / CARPET / LINE are all function-surface family
+                // (in 2D, LINE is the degenerate case of CARPET/SURFACE).
+                "SURFACE" | "CARPET" | "LINE" => out
                     .actions
-                    .push(PlotAction::SetPlotMode(PlotMode::Surface3d)),
-                "LINE" => out.actions.push(PlotAction::SetPlotMode(PlotMode::Lines)),
+                    .push(PlotAction::SetPlotFamily(PlotFamily::FunctionSurface)),
                 "CONTOUR" => out
                     .actions
-                    .push(PlotAction::SetPlotMode(PlotMode::Contours)),
+                    .push(PlotAction::SetPlotFamily(PlotFamily::Contour)),
+                // /2D and /3D are accepted without effect on shared state.
+                "2D" | "3D" => {}
                 _ => out.diagnostics.push(diagnostic(
                     cap::PLOT,
                     DiagnosticSeverity::Warning,
@@ -1179,7 +1209,7 @@ mod tests {
         assert_eq!(parsed.actions.len(), 2);
         assert_eq!(
             parsed.actions[0],
-            PlotAction::SetPlotMode(PlotMode::Surface3d)
+            PlotAction::SetPlotFamily(PlotFamily::FunctionSurface)
         );
         assert_eq!(parsed.actions[1], PlotAction::CommitPlot);
     }
@@ -1326,7 +1356,7 @@ mod tests {
         fs::write(&file, "FUN 100\nVP 1.0 2.0 3.0\nMM -1.0 1.0\nPL/SURFACE\n").expect("write");
 
         let parsed = parse_com_file(&file).expect("parse");
-        // SetScalarField(Density) + SetViewpoint + SetMinMax + SetPlotMode(Surface3d) + CommitPlot
+        // SetScalarField(Density) + SetViewpoint + SetMinMax + SetPlotFamily(FunctionSurface) + CommitPlot
         assert_eq!(parsed.actions.len(), 5);
         assert_eq!(
             parsed.actions[0],
@@ -1343,7 +1373,7 @@ mod tests {
         assert!(matches!(parsed.actions[2], PlotAction::SetMinMax(_)));
         assert_eq!(
             parsed.actions[3],
-            PlotAction::SetPlotMode(PlotMode::Surface3d)
+            PlotAction::SetPlotFamily(PlotFamily::FunctionSurface)
         );
         assert_eq!(parsed.actions[4], PlotAction::CommitPlot);
     }
@@ -1400,7 +1430,7 @@ PLOT/CONTOUR
         // Expected action sequence:
         // 0 SetDataset, 1 SetScalarField(Pressure), 2 SetAxisView(MinusZ),
         // 3 SetViewpoint, 4 SetMinMax, 5 SetContourSpec(Automatic{15}),
-        // 6 AddTextAnnotation, 7 SetWalls, 8 SetPlotMode(Contours), 9 CommitPlot
+        // 6 AddTextAnnotation, 7 SetWalls, 8 SetPlotFamily(Contour), 9 CommitPlot
         assert_eq!(parsed.actions.len(), 10);
         assert!(matches!(parsed.actions[0], PlotAction::SetDataset(_)));
         assert_eq!(
@@ -1428,7 +1458,7 @@ PLOT/CONTOUR
         assert!(matches!(parsed.actions[7], PlotAction::SetWalls(_)));
         assert_eq!(
             parsed.actions[8],
-            PlotAction::SetPlotMode(PlotMode::Contours)
+            PlotAction::SetPlotFamily(PlotFamily::Contour)
         );
         assert_eq!(parsed.actions[9], PlotAction::CommitPlot);
     }
