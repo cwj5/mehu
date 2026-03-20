@@ -28,9 +28,10 @@ use logger::{
 };
 use once_cell::sync::Lazy;
 use plot3d::{
-    get_last_solution_metadata, read_plot3d_function, read_plot3d_grid_ascii,
-    read_plot3d_grid_with_metadata, read_plot3d_solution, read_plot3d_solution_ascii,
-    GridDimensions, MeshGeometry, Plot3DFunction, Plot3DGrid, Plot3DSolution, SolutionFileMetadata,
+    extract_contour_lines_from_triangles, get_last_solution_metadata, read_plot3d_function,
+    read_plot3d_grid_ascii, read_plot3d_grid_with_metadata, read_plot3d_solution,
+    read_plot3d_solution_ascii, GridDimensions, MeshGeometry, Plot3DFunction, Plot3DGrid,
+    Plot3DSolution, SolutionFileMetadata,
 };
 use plot_state::{apply_action, ApplyActionResult, PlotAction, PlotState};
 use script_executor::{execute_parsed_script, ScriptExecutionResult};
@@ -479,6 +480,16 @@ static GRID_CACHE: Lazy<Mutex<HashMap<String, CachedGrid>>> =
 static SOLUTION_CACHE_V2: Lazy<Mutex<HashMap<String, CachedSolution>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
+#[derive(Clone)]
+struct CachedArbitraryPlaneField {
+    vertices: Arc<Vec<f32>>,
+    triangle_indices: Arc<Vec<u32>>,
+    scalar_values: Arc<Vec<f32>>,
+}
+
+static ARBITRARY_PLANE_FIELD_CACHE: Lazy<Mutex<HashMap<String, CachedArbitraryPlaneField>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
 /// Counter for generating unique grid IDs
 static GRID_ID_COUNTER: Lazy<Mutex<u64>> = Lazy::new(|| Mutex::new(0));
 
@@ -520,6 +531,86 @@ fn generate_solution_id(file_path: &str, grid_index: usize) -> String {
             .as_millis()
             % 100000
     )
+}
+
+fn quantize_plane_component(v: f32) -> i64 {
+    // 1e-6 quantization keeps cache keys stable against small float jitter.
+    (v as f64 * 1_000_000.0).round() as i64
+}
+
+fn arbitrary_plane_field_cache_key(
+    grid_id: &str,
+    solution_id: &str,
+    plane_point: [f32; 3],
+    plane_normal: [f32; 3],
+    scalar_field: &str,
+    respect_iblank: bool,
+    show_fringe_points: bool,
+    iblank_filter_mode: IblankFilterMode,
+) -> String {
+    let mode = match iblank_filter_mode {
+        IblankFilterMode::Vertex => "vertex",
+        IblankFilterMode::Cell => "cell",
+    };
+    format!(
+        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+        grid_id,
+        solution_id,
+        scalar_field,
+        quantize_plane_component(plane_point[0]),
+        quantize_plane_component(plane_point[1]),
+        quantize_plane_component(plane_point[2]),
+        quantize_plane_component(plane_normal[0]),
+        quantize_plane_component(plane_normal[1]),
+        quantize_plane_component(plane_normal[2]),
+        if respect_iblank { 1 } else { 0 },
+        if show_fringe_points { 1 } else { 0 },
+        mode,
+        "v1"
+    )
+}
+
+fn get_or_build_arbitrary_plane_field_sample(
+    grid: &Plot3DGrid,
+    solution: &Plot3DSolution,
+    scalar_field: plot_state::ScalarField,
+    plane_point: [f32; 3],
+    plane_normal: [f32; 3],
+    respect_iblank: bool,
+    show_fringe_points: bool,
+    iblank_filter_mode: IblankFilterMode,
+    cache_key: &str,
+) -> Result<CachedArbitraryPlaneField, String> {
+    if let Ok(cache) = ARBITRARY_PLANE_FIELD_CACHE.lock() {
+        if let Some(found) = cache.get(cache_key) {
+            return Ok(found.clone());
+        }
+    }
+
+    let (vertices, triangle_indices, scalar_values) = grid.interpolate_arbitrary_plane_field_data(
+        solution,
+        plane_point,
+        plane_normal,
+        scalar_field,
+        respect_iblank,
+        show_fringe_points,
+        iblank_filter_mode,
+    )?;
+
+    let sample = CachedArbitraryPlaneField {
+        vertices: Arc::new(vertices),
+        triangle_indices: Arc::new(triangle_indices),
+        scalar_values: Arc::new(scalar_values),
+    };
+
+    if let Ok(mut cache) = ARBITRARY_PLANE_FIELD_CACHE.lock() {
+        if cache.len() > 128 {
+            cache.clear();
+        }
+        cache.insert(cache_key.to_string(), sample.clone());
+    }
+
+    Ok(sample)
 }
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
@@ -1979,10 +2070,23 @@ fn compute_solution_colors_arbitrary_plane(
     use plot_state::ScalarField;
     use solution::{compute_colors_with_range, ColorScheme};
 
+    struct LoadingEndGuard {
+        window: WebviewWindow,
+    }
+
+    impl Drop for LoadingEndGuard {
+        fn drop(&mut self) {
+            let _ = self.window.emit("loading-end", ());
+        }
+    }
+
     let _ = window.emit(
         "loading-start",
         format!("Computing {} field on arbitrary plane...", field),
     );
+    let _loading_end_guard = LoadingEndGuard {
+        window: window.clone(),
+    };
 
     let (effective_respect_iblank, effective_show_fringe_points, effective_filter_mode) =
         normalize_iblank_flags(respect_iblank, show_fringe_points, iblank_filter_mode);
@@ -2181,8 +2285,6 @@ fn compute_solution_colors_arbitrary_plane(
 
     let colors = compute_colors_with_range(&values, &scheme, global_min, global_max);
     mesh.colors = Some(colors);
-
-    let _ = window.emit("loading-end", ());
 
     Ok(mesh)
 }
@@ -2544,23 +2646,126 @@ fn extract_arbitrary_plane_contours_by_id(
     };
 
     let level = levelAbsolute as f32;
+    let cache_key = arbitrary_plane_field_cache_key(
+        &gridId,
+        &solutionId,
+        planePoint,
+        planeNormal,
+        &scalarField,
+        effective_respect_iblank,
+        effective_show_fringe_points,
+        effective_filter_mode,
+    );
 
     log_info(&format!(
         "Extracting arbitrary plane contours for grid {} at level {}",
         gridId, level
     ));
 
-    // TODO: Call contour-line extraction implementation (Step 4)
-    grid.extract_arbitrary_plane_contours(
+    let sample = get_or_build_arbitrary_plane_field_sample(
+        &grid,
         &solution,
+        field_enum,
         planePoint,
         planeNormal,
-        field_enum,
-        level,
         effective_respect_iblank,
         effective_show_fringe_points,
         effective_filter_mode,
+        &cache_key,
+    )?;
+
+    if sample.scalar_values.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    extract_contour_lines_from_triangles(
+        sample.vertices.as_slice(),
+        sample.triangle_indices.as_slice(),
+        sample.scalar_values.as_slice(),
+        level,
     )
+}
+
+/// Extract contour lines from arbitrary plane for multiple levels in one pass.
+#[allow(non_snake_case)]
+#[tauri::command]
+fn extract_arbitrary_plane_contours_multi_by_id(
+    gridId: String,
+    solutionId: String,
+    planePoint: [f32; 3],
+    planeNormal: [f32; 3],
+    scalarField: String,
+    levelsAbsolute: Vec<f64>,
+    respectIblank: Option<bool>,
+    showFringePoints: Option<bool>,
+    iblankFilterMode: Option<String>,
+    _window: WebviewWindow,
+) -> Result<Vec<Vec<f32>>, String> {
+    use plot_state::ScalarField;
+
+    let (effective_respect_iblank, effective_show_fringe_points, effective_filter_mode) =
+        normalize_iblank_flags(respectIblank, showFringePoints, iblankFilterMode);
+
+    let field_enum = ScalarField::from_str(&scalarField)
+        .ok_or_else(|| format!("Unknown scalar field: {}", scalarField))?;
+
+    let grid = {
+        let cache = GRID_CACHE
+            .lock()
+            .map_err(|_| "Grid cache lock poisoned".to_string())?;
+        let cached = cache
+            .get(&gridId)
+            .ok_or_else(|| format!("Grid not found in cache: {}", gridId))?;
+        Arc::clone(&cached.grid)
+    };
+
+    let solution = {
+        let cache = SOLUTION_CACHE_V2
+            .lock()
+            .map_err(|_| "Solution cache lock poisoned".to_string())?;
+        let cached = cache
+            .get(&solutionId)
+            .ok_or_else(|| format!("Solution not found in cache: {}", solutionId))?;
+        Arc::clone(&cached.solution)
+    };
+
+    let cache_key = arbitrary_plane_field_cache_key(
+        &gridId,
+        &solutionId,
+        planePoint,
+        planeNormal,
+        &scalarField,
+        effective_respect_iblank,
+        effective_show_fringe_points,
+        effective_filter_mode,
+    );
+
+    let sample = get_or_build_arbitrary_plane_field_sample(
+        &grid,
+        &solution,
+        field_enum,
+        planePoint,
+        planeNormal,
+        effective_respect_iblank,
+        effective_show_fringe_points,
+        effective_filter_mode,
+        &cache_key,
+    )?;
+
+    if sample.scalar_values.is_empty() {
+        return Ok(vec![Vec::new(); levelsAbsolute.len()]);
+    }
+
+    let mut all = Vec::with_capacity(levelsAbsolute.len());
+    for level in levelsAbsolute.iter() {
+        all.push(extract_contour_lines_from_triangles(
+            sample.vertices.as_slice(),
+            sample.triangle_indices.as_slice(),
+            sample.scalar_values.as_slice(),
+            *level as f32,
+        )?);
+    }
+    Ok(all)
 }
 
 // ============================================================================
@@ -2668,6 +2873,9 @@ fn clear_grid_cache() -> Result<(), String> {
 
     let count = cache.len();
     cache.clear();
+    if let Ok(mut arbitrary_cache) = ARBITRARY_PLANE_FIELD_CACHE.lock() {
+        arbitrary_cache.clear();
+    }
     log_info(&format!("Cleared {} grids from cache", count));
     Ok(())
 }
@@ -2681,6 +2889,9 @@ fn clear_solution_cache_v2() -> Result<(), String> {
 
     let count = cache.len();
     cache.clear();
+    if let Ok(mut arbitrary_cache) = ARBITRARY_PLANE_FIELD_CACHE.lock() {
+        arbitrary_cache.clear();
+    }
     log_info(&format!("Cleared {} solutions from cache", count));
     Ok(())
 }
@@ -2693,6 +2904,9 @@ fn unload_grid(grid_id: String) -> Result<(), String> {
         .map_err(|_| "Grid cache lock poisoned".to_string())?;
 
     if cache.remove(&grid_id).is_some() {
+        if let Ok(mut arbitrary_cache) = ARBITRARY_PLANE_FIELD_CACHE.lock() {
+            arbitrary_cache.retain(|k, _| !k.starts_with(&format!("{}|", grid_id)));
+        }
         log_info(&format!("Unloaded grid from cache: {}", grid_id));
         Ok(())
     } else {
@@ -2708,6 +2922,9 @@ fn unload_solution(solution_id: String) -> Result<(), String> {
         .map_err(|_| "Solution cache lock poisoned".to_string())?;
 
     if cache.remove(&solution_id).is_some() {
+        if let Ok(mut arbitrary_cache) = ARBITRARY_PLANE_FIELD_CACHE.lock() {
+            arbitrary_cache.retain(|k, _| !k.contains(&format!("|{}|", solution_id)));
+        }
         log_info(&format!("Unloaded solution from cache: {}", solution_id));
         Ok(())
     } else {
@@ -3076,6 +3293,7 @@ pub fn run() {
             extract_iso_surface_by_id,
             extract_slice_contours_by_id,
             extract_arbitrary_plane_contours_by_id,
+            extract_arbitrary_plane_contours_multi_by_id,
             list_cached_grids,
             list_cached_solutions,
             get_grid_metadata,

@@ -10,6 +10,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { logger } from '../utils/logger';
 import type { GridItem, GridSlice, ArbitrarySlice } from '../types/grids';
 import type { ColorScheme } from '../utils/colorMapping';
+import { mapValueToColor, normalizeValue, rgbToHex } from '../utils/colorMapping';
 import type { ScalarField } from '../utils/solutionData';
 import { getVisibleGridItems } from '../utils/gridUtils';
 
@@ -294,10 +295,12 @@ function SolidMeshRenderer({
     meshGeometry,
     color,
     dimmed,
+    forceSolidColor = false,
 }: {
     meshGeometry: MeshGeometry;
     color: string;
     dimmed: boolean;
+    forceSolidColor?: boolean;
 }) {
     // Shader for field quantity colors (vertex colors) - both sides equally visible
     const vertexColorMaterial = useMemo(() => {
@@ -473,7 +476,7 @@ function SolidMeshRenderer({
     }, [meshGeometry]);
 
     // Use vertex colors if available, otherwise use single color
-    const hasColors = !!meshGeometry.colors && meshGeometry.colors.length === meshGeometry.vertices.length;
+    const hasColors = !forceSolidColor && !!meshGeometry.colors && meshGeometry.colors.length === meshGeometry.vertices.length;
 
     return (
         <mesh geometry={geometry} frustumCulled={true}>
@@ -490,10 +493,12 @@ function MeshRenderer({
     meshGeometry,
     color,
     dimmed,
+    forceSolidColor = false,
 }: {
     meshGeometry: MeshGeometry;
     color: string;
     dimmed: boolean;
+    forceSolidColor?: boolean;
 }) {
     const vertexColorMaterial = useMemo(() => {
         return new ShaderMaterial({
@@ -532,7 +537,7 @@ function MeshRenderer({
         );
 
         const colors = meshGeometry.colors;
-        const hasColors = !!colors && colors.length === meshGeometry.vertices.length;
+        const hasColors = !forceSolidColor && !!colors && colors.length === meshGeometry.vertices.length;
 
         // Add vertex colors if available and length matches vertices
         if (hasColors) {
@@ -572,10 +577,10 @@ function MeshRenderer({
         geo.computeBoundingSphere();
 
         return geo;
-    }, [meshGeometry]);
+    }, [forceSolidColor, meshGeometry]);
 
     // Use vertex colors if available, otherwise use single color
-    const hasColors = !!meshGeometry.colors && meshGeometry.colors.length === meshGeometry.vertices.length;
+    const hasColors = !forceSolidColor && !!meshGeometry.colors && meshGeometry.colors.length === meshGeometry.vertices.length;
 
     return (
         <lineSegments geometry={geometry} frustumCulled={true}>
@@ -612,30 +617,33 @@ function IsoSurfaceRenderer({ meshGeometry, color }: { meshGeometry: MeshGeometr
 
 // Contour line renderer (thick line segments using LineSegments2)
 function ContourLineRenderer({ lineData, color }: { lineData: Float32Array; color: string }) {
+    const { size } = useThree();
+
     const lineSegments = useMemo(() => {
         const geometry = new LineSegmentsGeometry();
         geometry.setPositions(lineData);
 
         const material = new LineMaterial({
             color: color,
-            linewidth: 3, // in pixels
-            resolution: new THREE.Vector2(window.innerWidth, window.innerHeight),
+            linewidth: 2, // in pixels
+            resolution: new THREE.Vector2(size.width, size.height),
+            depthTest: false,
+            depthWrite: false,
+            transparent: true,
+            opacity: 1.0,
         });
 
         const segments = new LineSegments2(geometry, material);
         segments.computeLineDistances();
+        segments.renderOrder = 20;
         return segments;
-    }, [lineData, color]);
+    }, [lineData, color, size.height, size.width]);
 
     useEffect(() => {
-        const handleResize = () => {
-            if (lineSegments.material instanceof LineMaterial) {
-                lineSegments.material.resolution.set(window.innerWidth, window.innerHeight);
-            }
-        };
-        window.addEventListener('resize', handleResize);
-        return () => window.removeEventListener('resize', handleResize);
-    }, [lineSegments]);
+        if (lineSegments.material instanceof LineMaterial) {
+            lineSegments.material.resolution.set(size.width, size.height);
+        }
+    }, [lineSegments, size.height, size.width]);
 
     return <primitive object={lineSegments} frustumCulled={true} />;
 }
@@ -662,13 +670,48 @@ export default function Viewer3D({
     onCameraCommit,
     onLoadingChange
 }: Viewer3DProps) {
+    type ContourLineGeometry = {
+        lineData: Float32Array;
+        color: string;
+    };
+
     const [meshById, setMeshById] = useState<Record<string, MeshGeometry>>({});
     const [loadingById, setLoadingById] = useState<Record<string, number>>({});
     const [error, setError] = useState<string | null>(null);
 
     // Contour state
     const [isoSurfaceGeometries, setIsoSurfaceGeometries] = useState<Record<string, MeshGeometry>>({});
-    const [contourLineGeometries, setContourLineGeometries] = useState<Record<string, Float32Array>>({});
+    const [contourLineGeometries, setContourLineGeometries] = useState<Record<string, ContourLineGeometry>>({});
+
+    const mergedContourLinesByColor = useMemo(() => {
+        const buckets = new Map<string, Float32Array[]>();
+
+        Object.values(contourLineGeometries).forEach((contour) => {
+            if (!buckets.has(contour.color)) {
+                buckets.set(contour.color, []);
+            }
+            buckets.get(contour.color)!.push(contour.lineData);
+        });
+
+        const mergeArrays = (arrays: Float32Array[]): Float32Array => {
+            if (arrays.length === 1) {
+                return arrays[0];
+            }
+            const totalLength = arrays.reduce((sum, arr) => sum + arr.length, 0);
+            const merged = new Float32Array(totalLength);
+            let offset = 0;
+            arrays.forEach((arr) => {
+                merged.set(arr, offset);
+                offset += arr.length;
+            });
+            return merged;
+        };
+
+        return Array.from(buckets.entries()).map(([color, chunks]) => ({
+            color,
+            lineData: mergeArrays(chunks),
+        }));
+    }, [contourLineGeometries]);
 
     type MeshResult = { id: string; mesh: MeshGeometry } | { id: string; error: string };
 
@@ -704,6 +747,28 @@ export default function Viewer3D({
         [arbitrarySlices]
     );
 
+    const subsetsContentKey = useMemo(
+        () => (subsets || [])
+            .map((s) => {
+                const i = s.i_range ? `${s.i_range.start}:${s.i_range.end ?? ''}` : '-';
+                const j = s.j_range ? `${s.j_range.start}:${s.j_range.end ?? ''}` : '-';
+                const k = s.k_range ? `${s.k_range.start}:${s.k_range.end ?? ''}` : '-';
+                return `${s.grid}|${i}|${j}|${k}`;
+            })
+            .sort()
+            .join(';'),
+        [subsets]
+    );
+
+    const contourArbitrarySlicesKey = useMemo(
+        () => (arbitrarySlices || [])
+            .filter((s) => s.enabled && s.applied)
+            .map((s) => `${s.id}|${s.planePoint.join(',')}|${s.planeNormal.join(',')}|${s.applyVersion}`)
+            .sort()
+            .join(';'),
+        [arbitrarySlices]
+    );
+
     const subsetsByGridId = useMemo(() => {
         const byGrid: Record<string, BackendGridSubset[]> = {};
         for (const subset of subsets) {
@@ -717,17 +782,17 @@ export default function Viewer3D({
             byGrid[grid.id].push(subset);
         }
         return byGrid;
-    }, [grids, subsets]);
+    }, [grids, subsetsContentKey]);
 
     const subsetSlicesByGridId = useMemo(() => {
         const byGrid: Record<string, GridSlice[]> = {};
         const resolveRange = (range: BackendIndexRange | null | undefined, dim: number) => {
             if (!range) {
-                return null;
+                return { start: 1, end: dim };
             }
             const resolve = (n: number) => (n < 0 ? dim + n + 1 : n);
             const start = Math.max(1, Math.min(dim, resolve(range.start)));
-            const endRaw = range.end != null ? resolve(range.end) : start;
+            const endRaw = range.end != null ? resolve(range.end) : dim;
             const end = Math.max(1, Math.min(dim, endRaw));
             return start <= end ? { start, end } : { start: end, end: start };
         };
@@ -741,20 +806,32 @@ export default function Viewer3D({
                 const i = resolveRange(subset.i_range, grid.dimensions.i);
                 const j = resolveRange(subset.j_range, grid.dimensions.j);
                 const k = resolveRange(subset.k_range, grid.dimensions.k);
-                const active = [
-                    i ? { plane: 'I' as const, range: i } : null,
-                    j ? { plane: 'J' as const, range: j } : null,
-                    k ? { plane: 'K' as const, range: k } : null,
-                ].filter((x): x is { plane: 'I' | 'J' | 'K'; range: { start: number; end: number } } => !!x);
+                const axes = [
+                    { plane: 'I' as const, range: i, dim: Math.max(1, grid.dimensions.i) },
+                    { plane: 'J' as const, range: j, dim: Math.max(1, grid.dimensions.j) },
+                    { plane: 'K' as const, range: k, dim: Math.max(1, grid.dimensions.k) },
+                ];
 
-                // Contour slice extraction APIs are plane/index based; represent only point slices.
-                if (active.length !== 1 || active[0].range.start !== active[0].range.end) {
+                const classified = axes.map((axis) => {
+                    const isPoint = axis.range.start === axis.range.end;
+                    const isFull = axis.range.start === 1 && axis.range.end === axis.dim;
+                    return { ...axis, isPoint, isFull };
+                });
+
+                const points = classified.filter((axis) => axis.isPoint);
+                const othersAreFull = classified
+                    .filter((axis) => !axis.isPoint)
+                    .every((axis) => axis.isFull);
+
+                // Represent GUI-style slicing: one point axis, others full-range.
+                if (points.length !== 1 || !othersAreFull) {
                     continue;
                 }
+                const active = points[0];
                 slices.push({
                     id: `subset-slice-${grid.id}-${idx}`,
-                    plane: active[0].plane,
-                    index: active[0].range.start - 1,
+                    plane: active.plane,
+                    index: active.range.start - 1,
                 });
             }
 
@@ -1339,6 +1416,8 @@ export default function Viewer3D({
     // Contour extraction effect
     useEffect(() => {
         let isCancelled = false;
+        const wantsIsoSurfaces = contourAttribute === 'surface' || contourAttribute === 'color_contours';
+        const wantsContourLines = contourAttribute === 'line' || contourAttribute === 'grid' || contourAttribute === 'dots';
 
         if (!contoursEnabled || scalarField === 'none') {
             // Clear contours when disabled or no field selected
@@ -1389,72 +1468,43 @@ export default function Viewer3D({
             );
 
             // Extract iso-surfaces for each grid and each resolved level.
-            const isoSurfacePromises = gridsWithSolution.flatMap((gridItem) =>
-                uniqueLevels.map(async (level, levelIndex) => {
-                    try {
-                        const mesh = await invoke<MeshGeometry>('extract_iso_surface_by_id', {
-                            gridId: gridItem.gridCacheId!,
-                            solutionId: gridItem.solutionCacheId!,
-                            scalarField: scalarField,
-                            levelAbsolute: level,
-                            respectIblank: !ignoreIblank,
-                            showFringePoints: showFringePoints,
-                            iblankFilterMode: iblankFilterMode,
-                        });
-                        return { id: `${gridItem.id}::lvl${levelIndex}`, mesh };
-                    } catch (err) {
-                        logger.warn(`Failed to extract iso-surface for grid ${gridItem.id}: ${err}`, 'Viewer3D');
-                        return null;
-                    }
-                })
-            );
+            const isoSurfacePromises = wantsIsoSurfaces
+                ? gridsWithSolution.flatMap((gridItem) =>
+                    uniqueLevels.map(async (level, levelIndex) => {
+                        try {
+                            const mesh = await invoke<MeshGeometry>('extract_iso_surface_by_id', {
+                                gridId: gridItem.gridCacheId!,
+                                solutionId: gridItem.solutionCacheId!,
+                                scalarField: scalarField,
+                                levelAbsolute: level,
+                                respectIblank: !ignoreIblank,
+                                showFringePoints: showFringePoints,
+                                iblankFilterMode: iblankFilterMode,
+                            });
+                            return { id: `${gridItem.id}::lvl${levelIndex}`, mesh };
+                        } catch (err) {
+                            logger.warn(`Failed to extract iso-surface for grid ${gridItem.id}: ${err}`, 'Viewer3D');
+                            return null;
+                        }
+                    })
+                )
+                : [];
 
             // Extract contour lines for slices (only visible grids).
             const visibleGridIds = new Set(visibleGrids.map(g => g.id));
-            const sliceContourPromises = gridsWithSolution
-                .filter(gridItem => visibleGridIds.has(gridItem.id))
-                .flatMap((gridItem) => {
-                    const slices = subsetSlicesByGridId[gridItem.id] || [];
-                    return slices.flatMap((slice) =>
-                        uniqueLevels.map(async (level, levelIndex) => {
-                            try {
-                                const lineData = await invoke<number[]>('extract_slice_contours_by_id', {
-                                    gridId: gridItem.gridCacheId!,
-                                    solutionId: gridItem.solutionCacheId!,
-                                    plane: slice.plane,
-                                    index: slice.index,
-                                    scalarField: scalarField,
-                                    levelAbsolute: level,
-                                    respectIblank: !ignoreIblank,
-                                    showFringePoints: showFringePoints,
-                                    iblankFilterMode: iblankFilterMode,
-                                });
-                                return {
-                                    id: `slice::${gridItem.id}::${slice.id}::lvl${levelIndex}`,
-                                    lineData: new Float32Array(lineData)
-                                };
-                            } catch (err) {
-                                logger.warn(`Failed to extract slice contours for ${gridItem.id}/${slice.id}: ${err}`, 'Viewer3D');
-                                return null;
-                            }
-                        })
-                    );
-                });
-
-            // Extract contour lines for arbitrary planes (only visible grids).
-            const arbitraryContourPromises = (arbitrarySlices || [])
-                .filter(s => s.enabled && s.applied)
-                .flatMap((slice) => {
-                    return gridsWithSolution
-                        .filter(gridItem => visibleGridIds.has(gridItem.id))
-                        .flatMap((gridItem) =>
+            const sliceContourPromises = wantsContourLines
+                ? gridsWithSolution
+                    .filter(gridItem => visibleGridIds.has(gridItem.id))
+                    .flatMap((gridItem) => {
+                        const slices = subsetSlicesByGridId[gridItem.id] || [];
+                        return slices.flatMap((slice) =>
                             uniqueLevels.map(async (level, levelIndex) => {
                                 try {
-                                    const lineData = await invoke<number[]>('extract_arbitrary_plane_contours_by_id', {
+                                    const lineData = await invoke<number[]>('extract_slice_contours_by_id', {
                                         gridId: gridItem.gridCacheId!,
                                         solutionId: gridItem.solutionCacheId!,
-                                        planePoint: slice.planePoint,
-                                        planeNormal: slice.planeNormal,
+                                        plane: slice.plane,
+                                        index: slice.index,
                                         scalarField: scalarField,
                                         levelAbsolute: level,
                                         respectIblank: !ignoreIblank,
@@ -1462,16 +1512,55 @@ export default function Viewer3D({
                                         iblankFilterMode: iblankFilterMode,
                                     });
                                     return {
-                                        id: `arbitrary::${slice.id}::${gridItem.id}::lvl${levelIndex}`,
+                                        id: `slice::${gridItem.id}::${slice.id}::lvl${levelIndex}`,
+                                        level,
                                         lineData: new Float32Array(lineData)
                                     };
-                                } catch {
-                                    // Plane may not intersect this grid - expected.
+                                } catch (err) {
+                                    logger.warn(`Failed to extract slice contours for ${gridItem.id}/${slice.id}: ${err}`, 'Viewer3D');
                                     return null;
                                 }
                             })
                         );
-                });
+                    })
+                : [];
+
+            // Extract contour lines for arbitrary planes (only visible grids).
+            const arbitraryContourPromises = wantsContourLines
+                ? (arbitrarySlices || [])
+                    .filter(s => s.enabled && s.applied)
+                    .flatMap((slice) => {
+                        return gridsWithSolution
+                            .flatMap((gridItem) =>
+                                [
+                                    (async () => {
+                                        try {
+                                            const lineSets = await invoke<number[][]>('extract_arbitrary_plane_contours_multi_by_id', {
+                                                gridId: gridItem.gridCacheId!,
+                                                solutionId: gridItem.solutionCacheId!,
+                                                planePoint: slice.planePoint,
+                                                planeNormal: slice.planeNormal,
+                                                scalarField: scalarField,
+                                                levelsAbsolute: uniqueLevels,
+                                                respectIblank: !ignoreIblank,
+                                                showFringePoints: showFringePoints,
+                                                iblankFilterMode: iblankFilterMode,
+                                            });
+
+                                            return uniqueLevels.map((level, levelIndex) => ({
+                                                id: `arbitrary::${slice.id}::${gridItem.id}::lvl${levelIndex}`,
+                                                level,
+                                                lineData: new Float32Array(lineSets[levelIndex] ?? []),
+                                            }));
+                                        } catch {
+                                            // Plane may not intersect this grid - expected.
+                                            return [] as Array<{ id: string; level: number; lineData: Float32Array }>;
+                                        }
+                                    })(),
+                                ]
+                            );
+                    })
+                : [];
 
             Promise.all([
                 Promise.all(isoSurfacePromises),
@@ -1491,10 +1580,18 @@ export default function Viewer3D({
                 setIsoSurfaceGeometries(newIsoSurfaces);
 
                 // Update contour lines.
-                const newContourLines: Record<string, Float32Array> = {};
-                [...sliceResults, ...arbitraryResults].forEach(result => {
+                const minLevel = uniqueLevels[0];
+                const maxLevel = uniqueLevels[uniqueLevels.length - 1];
+                const newContourLines: Record<string, ContourLineGeometry> = {};
+                const flattenedArbitraryResults = arbitraryResults.flat();
+                [...sliceResults, ...flattenedArbitraryResults].forEach(result => {
                     if (result && result.lineData.length > 0) {
-                        newContourLines[result.id] = result.lineData;
+                        const normalized = normalizeValue(result.level, minLevel, maxLevel);
+                        const rgb = mapValueToColor(normalized, colorScheme);
+                        newContourLines[result.id] = {
+                            lineData: result.lineData,
+                            color: rgbToHex(rgb),
+                        };
                     }
                 });
                 setContourLineGeometries(newContourLines);
@@ -1513,15 +1610,17 @@ export default function Viewer3D({
         };
     }, [
         contoursEnabled,
+        contourAttribute,
         contourSpec,
         scalarField,
         grids,
         subsetSlicesByGridId,
-        arbitrarySlices,
+        contourArbitrarySlicesKey,
         ignoreIblank,
         showFringePoints,
         iblankFilterMode,
         visibleGrids,
+        colorScheme,
     ]);
 
     const enabledArbitraryIds = useMemo(
@@ -1575,6 +1674,7 @@ export default function Viewer3D({
                                     meshGeometry={mesh}
                                     color={displayColor}
                                     dimmed={dimmed}
+                                    forceSolidColor={contoursEnabled}
                                 />
                             )}
                             {/* Render wireframe */}
@@ -1583,6 +1683,7 @@ export default function Viewer3D({
                                     meshGeometry={mesh}
                                     color={displayColor}
                                     dimmed={dimmed}
+                                    forceSolidColor={contoursEnabled}
                                 />
                             )}
                         </group>
@@ -1607,6 +1708,7 @@ export default function Viewer3D({
                                         meshGeometry={mesh}
                                         color={sliceColor}
                                         dimmed={false}
+                                        forceSolidColor={contoursEnabled}
                                     />
                                 )}
                                 {showWireframe && (
@@ -1614,14 +1716,15 @@ export default function Viewer3D({
                                         meshGeometry={mesh}
                                         color={sliceColor}
                                         dimmed={false}
+                                        forceSolidColor={contoursEnabled}
                                     />
                                 )}
                             </group>
                         );
                     })}
 
-                {/* Render iso-surfaces (all attributes except plain line) */}
-                {contoursEnabled && contourAttribute !== 'line' &&
+                {/* Render iso-surfaces (surface-based contour attributes) */}
+                {contoursEnabled && (contourAttribute === 'surface' || contourAttribute === 'color_contours') &&
                     Object.entries(isoSurfaceGeometries).map(([id, mesh]) => (
                         <group key={`iso::${id}`}>
                             <IsoSurfaceRenderer meshGeometry={mesh} color="#3b82f6" />
@@ -1631,9 +1734,9 @@ export default function Viewer3D({
 
                 {/* Render contour lines (line attribute, or grid/dots as first-pass fallback) */}
                 {contoursEnabled && (contourAttribute === 'line' || contourAttribute === 'grid' || contourAttribute === 'dots') &&
-                    Object.entries(contourLineGeometries).map(([id, lineData]) => (
-                        <group key={`contour::${id}`}>
-                            <ContourLineRenderer lineData={lineData} color="#000000" />
+                    mergedContourLinesByColor.map((contour, idx) => (
+                        <group key={`contour-color::${contour.color}::${idx}`}>
+                            <ContourLineRenderer lineData={contour.lineData} color={contour.color} />
                         </group>
                     ))
                 }

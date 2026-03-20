@@ -332,8 +332,11 @@ const App = () => {
   const [contourAttributeState, setContourAttributeState] = useState<BackendContourAttribute>('line');
   const [contourSpecMode, setContourSpecMode] = useState<ContourSpecMode>('none');
   const [contourAutoCount, setContourAutoCount] = useState(10);
+  const [contourAutoCountDraft, setContourAutoCountDraft] = useState('10');
   const [contourIncrStart, setContourIncrStart] = useState(0);
+  const [contourIncrStartDraft, setContourIncrStartDraft] = useState('0');
   const [contourIncrStep, setContourIncrStep] = useState(1);
+  const [contourIncrStepDraft, setContourIncrStepDraft] = useState('1');
   const [contourLevel, setContourLevel] = useState(0);
   const [backendPlotState, setBackendPlotState] = useState<BackendPlotState | null>(null);
   const [backendDiagnostics, setBackendDiagnostics] = useState<BackendDiagnostic[]>([]);
@@ -637,6 +640,28 @@ const App = () => {
     await commitPlot();
   };
 
+  const applyAutomaticContourCount = async () => {
+    const parsed = Number.parseFloat(contourAutoCountDraft);
+    const nextCount = Math.max(1, Math.round(Number.isFinite(parsed) ? parsed : contourAutoCount));
+    setContourAutoCount(nextCount);
+    setContourAutoCountDraft(String(nextCount));
+    await setPlotContourSpecForCurrentMode(buildContourSpecState({ mode: 'automatic', count: nextCount }));
+  };
+
+  const applyIncrementContourSpec = async () => {
+    const parsedStart = Number.parseFloat(contourIncrStartDraft);
+    const parsedStep = Number.parseFloat(contourIncrStepDraft);
+    const nextStart = Number.isFinite(parsedStart) ? parsedStart : contourIncrStart;
+    const nextStep = Number.isFinite(parsedStep) ? parsedStep : contourIncrStep;
+    setContourIncrStart(nextStart);
+    setContourIncrStep(nextStep);
+    setContourIncrStartDraft(String(nextStart));
+    setContourIncrStepDraft(String(nextStep));
+    await setPlotContourSpecForCurrentMode(
+      buildContourSpecState({ mode: 'increment', start: nextStart, step: nextStep })
+    );
+  };
+
   const handlePlotFamilyChange = async (family: BackendPlotFamily) => {
     setPlotFamilyState(family);
     await setPlotFamily(family);
@@ -832,8 +857,9 @@ const App = () => {
   };
 
   const handleCameraCommit = async (vp: { x: number; y: number; z: number }) => {
-    await setPlotViewpoint(vp);
-    await commitPlot();
+    // Camera navigation is purely a local view concern. Do not push
+    // viewpoint updates into backend PlotState on every interaction.
+    void vp;
   };
 
   const applyGuiManagedSubsets = async (options?: {
@@ -885,9 +911,16 @@ const App = () => {
       setContourSpecMode(mode);
       if (mode === 'automatic' && typeof s.count === 'number') {
         setContourAutoCount(s.count);
+        setContourAutoCountDraft(String(s.count));
       } else if (mode === 'increment') {
-        if (typeof s.start === 'number') setContourIncrStart(s.start);
-        if (typeof s.increment === 'number') setContourIncrStep(s.increment);
+        if (typeof s.start === 'number') {
+          setContourIncrStart(s.start);
+          setContourIncrStartDraft(String(s.start));
+        }
+        if (typeof s.increment === 'number') {
+          setContourIncrStep(s.increment);
+          setContourIncrStepDraft(String(s.increment));
+        }
       } else if (mode === 'manual' && Array.isArray(s.entries) && s.entries.length > 0) {
         const val = s.entries[0]?.value;
         if (typeof val === 'number' && Number.isFinite(val)) setContourLevel(val);
@@ -1294,14 +1327,26 @@ const App = () => {
                                 type="number"
                                 min="1"
                                 step="1"
-                                value={contourAutoCount}
+                                value={contourAutoCountDraft}
                                 onChange={(e) => {
-                                  const n = Math.max(1, Math.round(parseFloat(e.target.value) || 1));
-                                  setContourAutoCount(n);
-                                  void setPlotContourSpecForCurrentMode(buildContourSpecState({ mode: 'automatic', count: n }));
+                                  setContourAutoCountDraft(e.target.value);
+                                }}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') {
+                                    void applyAutomaticContourCount();
+                                  }
                                 }}
                                 style={{ padding: '4px 6px', background: '#1a2640', color: '#e2e8f0', border: '1px solid #334155', borderRadius: '3px', fontSize: '11px' }}
                               />
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  void applyAutomaticContourCount();
+                                }}
+                                style={{ padding: '4px 6px', background: '#334155', color: '#e2e8f0', border: '1px solid #475569', borderRadius: '3px', fontSize: '11px', cursor: 'pointer' }}
+                              >
+                                Apply
+                              </button>
                             </label>
                           )}
 
@@ -1313,11 +1358,14 @@ const App = () => {
                                 <input
                                   type="number"
                                   step="any"
-                                  value={contourIncrStart}
+                                  value={contourIncrStartDraft}
                                   onChange={(e) => {
-                                    const v = parseFloat(e.target.value) || 0;
-                                    setContourIncrStart(v);
-                                    void setPlotContourSpecForCurrentMode(buildContourSpecState({ mode: 'increment', start: v }));
+                                    setContourIncrStartDraft(e.target.value);
+                                  }}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                      void applyIncrementContourSpec();
+                                    }
                                   }}
                                   style={{ padding: '4px 6px', background: '#1a2640', color: '#e2e8f0', border: '1px solid #334155', borderRadius: '3px', fontSize: '11px' }}
                                 />
@@ -1328,15 +1376,27 @@ const App = () => {
                                   type="number"
                                   min="0.000001"
                                   step="any"
-                                  value={contourIncrStep}
+                                  value={contourIncrStepDraft}
                                   onChange={(e) => {
-                                    const v = parseFloat(e.target.value) || 1;
-                                    setContourIncrStep(v);
-                                    void setPlotContourSpecForCurrentMode(buildContourSpecState({ mode: 'increment', step: v }));
+                                    setContourIncrStepDraft(e.target.value);
+                                  }}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                      void applyIncrementContourSpec();
+                                    }
                                   }}
                                   style={{ padding: '4px 6px', background: '#1a2640', color: '#e2e8f0', border: '1px solid #334155', borderRadius: '3px', fontSize: '11px' }}
                                 />
                               </label>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  void applyIncrementContourSpec();
+                                }}
+                                style={{ padding: '4px 6px', background: '#334155', color: '#e2e8f0', border: '1px solid #475569', borderRadius: '3px', fontSize: '11px', cursor: 'pointer' }}
+                              >
+                                Apply
+                              </button>
                             </>
                           )}
 

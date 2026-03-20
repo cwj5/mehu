@@ -437,6 +437,173 @@ const TRI_TABLE: [[i32; 16]; 256] = [
 ];
 
 impl Plot3DGrid {
+    fn scalar_field_from_components(
+        rho: f32,
+        rhou: f32,
+        rhov: f32,
+        rhow: f32,
+        rhoe: f32,
+        gamma: Option<f32>,
+        field: crate::plot_state::ScalarField,
+    ) -> f32 {
+        use crate::plot_state::ScalarField;
+
+        match field {
+            ScalarField::Density => rho,
+            ScalarField::UVelocity => {
+                if rho > 0.0 {
+                    rhou / rho
+                } else {
+                    0.0
+                }
+            }
+            ScalarField::VVelocity => {
+                if rho > 0.0 {
+                    rhov / rho
+                } else {
+                    0.0
+                }
+            }
+            ScalarField::WVelocity => {
+                if rho > 0.0 {
+                    rhow / rho
+                } else {
+                    0.0
+                }
+            }
+            ScalarField::VelocityMagnitude => {
+                if rho > 0.0 {
+                    let u = rhou / rho;
+                    let v = rhov / rho;
+                    let w = rhow / rho;
+                    (u * u + v * v + w * w).sqrt()
+                } else {
+                    0.0
+                }
+            }
+            ScalarField::MomentumX => rhou,
+            ScalarField::MomentumY => rhov,
+            ScalarField::MomentumZ => rhow,
+            ScalarField::Pressure => {
+                const DEFAULT_GAMMA: f32 = 1.4;
+                if rho > 0.0 {
+                    let gamma = gamma.unwrap_or(DEFAULT_GAMMA);
+                    let u = rhou / rho;
+                    let v = rhov / rho;
+                    let w = rhow / rho;
+                    let kinetic_energy = 0.5 * rho * (u * u + v * v + w * w);
+                    let internal_energy = rhoe - kinetic_energy;
+                    (gamma - 1.0) * internal_energy
+                } else {
+                    0.0
+                }
+            }
+            ScalarField::Energy => rhoe,
+            _ => 0.0,
+        }
+    }
+
+    fn interpolate_arbitrary_plane_field(
+        &self,
+        solution: &Plot3DSolution,
+        plane_point: [f32; 3],
+        plane_normal: [f32; 3],
+        scalar_field: crate::plot_state::ScalarField,
+        respect_iblank: bool,
+        show_fringe_points: bool,
+        iblank_filter_mode: crate::IblankFilterMode,
+    ) -> Result<(Vec<f32>, Vec<u32>, Vec<f32>), String> {
+        let sliced_grid = self.slice_arbitrary_plane_with_solution(
+            plane_point,
+            plane_normal,
+            respect_iblank,
+            show_fringe_points,
+            iblank_filter_mode,
+        )?;
+
+        let vertex_cell_data = match sliced_grid.vertex_cell_data.as_ref() {
+            Some(v) => v,
+            None => {
+                return Ok((
+                    sliced_grid.vertices,
+                    sliced_grid.triangle_indices,
+                    Vec::new(),
+                ))
+            }
+        };
+
+        let i_dim = self.dimensions.i as usize;
+        let j_dim = self.dimensions.j as usize;
+
+        let corners_for_cell = |cell_i: usize, cell_j: usize, cell_k: usize| {
+            [
+                Self::linear_index(cell_i, cell_j, cell_k, i_dim, j_dim),
+                Self::linear_index(cell_i + 1, cell_j, cell_k, i_dim, j_dim),
+                Self::linear_index(cell_i + 1, cell_j + 1, cell_k, i_dim, j_dim),
+                Self::linear_index(cell_i, cell_j + 1, cell_k, i_dim, j_dim),
+                Self::linear_index(cell_i, cell_j, cell_k + 1, i_dim, j_dim),
+                Self::linear_index(cell_i + 1, cell_j, cell_k + 1, i_dim, j_dim),
+                Self::linear_index(cell_i + 1, cell_j + 1, cell_k + 1, i_dim, j_dim),
+                Self::linear_index(cell_i, cell_j + 1, cell_k + 1, i_dim, j_dim),
+            ]
+        };
+
+        let mut corner_scalar_cache: HashMap<usize, f32> = HashMap::new();
+        let scalar_at_index = |idx: usize, cache: &mut HashMap<usize, f32>| -> f32 {
+            if let Some(v) = cache.get(&idx) {
+                return *v;
+            }
+            let value = Self::scalar_field_from_components(
+                solution.rho[idx],
+                solution.rhou[idx],
+                solution.rhov[idx],
+                solution.rhow[idx],
+                solution.rhoe[idx],
+                solution.gamma.as_ref().map(|g| g[idx]),
+                scalar_field,
+            );
+            cache.insert(idx, value);
+            value
+        };
+
+        let mut slice_scalars = Vec::with_capacity(vertex_cell_data.len());
+        for vcd in vertex_cell_data.iter() {
+            let corners = corners_for_cell(vcd.cell_i, vcd.cell_j, vcd.cell_k);
+            let mut scalar_val = 0.0;
+            for (weight_idx, &corner_idx) in corners.iter().enumerate() {
+                scalar_val +=
+                    vcd.weights[weight_idx] * scalar_at_index(corner_idx, &mut corner_scalar_cache);
+            }
+            slice_scalars.push(scalar_val);
+        }
+
+        Ok((
+            sliced_grid.vertices,
+            sliced_grid.triangle_indices,
+            slice_scalars,
+        ))
+    }
+
+    pub fn interpolate_arbitrary_plane_field_data(
+        &self,
+        solution: &Plot3DSolution,
+        plane_point: [f32; 3],
+        plane_normal: [f32; 3],
+        scalar_field: crate::plot_state::ScalarField,
+        respect_iblank: bool,
+        show_fringe_points: bool,
+        iblank_filter_mode: crate::IblankFilterMode,
+    ) -> Result<(Vec<f32>, Vec<u32>, Vec<f32>), String> {
+        self.interpolate_arbitrary_plane_field(
+            solution,
+            plane_point,
+            plane_normal,
+            scalar_field,
+            respect_iblank,
+            show_fringe_points,
+            iblank_filter_mode,
+        )
+    }
     /// Calculate total number of points
     pub fn total_points(&self) -> usize {
         (self.dimensions.i as usize) * (self.dimensions.j as usize) * (self.dimensions.k as usize)
@@ -1904,73 +2071,6 @@ impl Plot3DGrid {
             iblank_filter_mode,
         )
     }
-
-    /// Extract contour lines from arbitrary plane at specified level
-    pub fn extract_arbitrary_plane_contours(
-        &self,
-        solution: &Plot3DSolution,
-        plane_point: [f32; 3],
-        plane_normal: [f32; 3],
-        scalar_field: crate::plot_state::ScalarField,
-        level: f32,
-        respect_iblank: bool,
-        show_fringe_points: bool,
-        iblank_filter_mode: crate::IblankFilterMode,
-    ) -> Result<Vec<f32>, String> {
-        // Slice the grid with the arbitrary plane
-        let sliced_grid = self.slice_arbitrary_plane(
-            plane_point,
-            plane_normal,
-            respect_iblank,
-            show_fringe_points,
-            iblank_filter_mode,
-        )?;
-
-        // Get scalar values at vertices using vertex_cell_data
-        if sliced_grid.vertex_cell_data.is_none() {
-            return Ok(vec![]); // No interpolation data available
-        }
-
-        let vertex_cell_data = sliced_grid.vertex_cell_data.as_ref().unwrap();
-        let mut slice_scalars = Vec::new();
-
-        for vcd in vertex_cell_data.iter() {
-            // Interpolate scalar value from cell corners
-            let mut scalar_val = 0.0;
-            let i_dim = self.dimensions.i as usize;
-            let j_dim = self.dimensions.j as usize;
-
-            // Get indices of 8 cell corners
-            let corners = [
-                Self::linear_index(vcd.cell_i, vcd.cell_j, vcd.cell_k, i_dim, j_dim),
-                Self::linear_index(vcd.cell_i + 1, vcd.cell_j, vcd.cell_k, i_dim, j_dim),
-                Self::linear_index(vcd.cell_i + 1, vcd.cell_j + 1, vcd.cell_k, i_dim, j_dim),
-                Self::linear_index(vcd.cell_i, vcd.cell_j + 1, vcd.cell_k, i_dim, j_dim),
-                Self::linear_index(vcd.cell_i, vcd.cell_j, vcd.cell_k + 1, i_dim, j_dim),
-                Self::linear_index(vcd.cell_i + 1, vcd.cell_j, vcd.cell_k + 1, i_dim, j_dim),
-                Self::linear_index(vcd.cell_i + 1, vcd.cell_j + 1, vcd.cell_k + 1, i_dim, j_dim),
-                Self::linear_index(vcd.cell_i, vcd.cell_j + 1, vcd.cell_k + 1, i_dim, j_dim),
-            ];
-
-            // Compute scalar field at corners and interpolate
-            use crate::solution::compute_scalar_field;
-            let scalar_values = compute_scalar_field(solution, scalar_field);
-
-            for (i, &corner_idx) in corners.iter().enumerate() {
-                scalar_val += vcd.weights[i] * scalar_values[corner_idx];
-            }
-
-            slice_scalars.push(scalar_val);
-        }
-
-        // The sliced_grid has triangle_indices we can use
-        extract_contour_lines_from_triangles(
-            &sliced_grid.vertices,
-            &sliced_grid.triangle_indices,
-            &slice_scalars,
-            level,
-        )
-    }
 }
 
 /// Extract contour lines from 2D structured grid
@@ -2069,7 +2169,7 @@ fn extract_contour_lines_2d(
 
 /// Extract contour lines from triangulated mesh
 /// Returns flat array of line segment endpoints (x1,y1,z1, x2,y2,z2, ...)
-fn extract_contour_lines_from_triangles(
+pub fn extract_contour_lines_from_triangles(
     vertices: &[f32],
     triangle_indices: &[u32],
     scalar_values: &[f32],
