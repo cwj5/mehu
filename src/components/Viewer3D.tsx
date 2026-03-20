@@ -59,9 +59,10 @@ interface Viewer3DProps {
     sliceEnabled?: boolean;
     subsets?: BackendGridSubset[];
     arbitrarySlices?: ArbitrarySlice[];
-    contoursEnabled?: boolean;
+    plotFamily?: 'contour' | 'function_surface';
     contourAttribute?: 'line' | 'surface' | 'grid' | 'color_contours' | 'dots';
     contourSpec?: unknown;
+    isoSurfaceOpacity?: number;
     cameraAxisView?:
     | 'plus_x'
     | 'minus_x'
@@ -597,8 +598,12 @@ function MeshRenderer({
     );
 }
 
-// Iso-surface renderer (solid single-color mesh)
-function IsoSurfaceRenderer({ meshGeometry, color }: { meshGeometry: MeshGeometry; color: string }) {
+// Iso-surface renderer — double-sided with optional transparency.
+function IsoSurfaceRenderer({ meshGeometry, color, opacity = 1.0 }: {
+    meshGeometry: MeshGeometry;
+    color: string;
+    opacity?: number;
+}) {
     const geometry = useMemo(() => {
         const geo = new BufferGeometry();
         geo.setAttribute('position', new BufferAttribute(new Float32Array(meshGeometry.vertices), 3));
@@ -610,7 +615,13 @@ function IsoSurfaceRenderer({ meshGeometry, color }: { meshGeometry: MeshGeometr
 
     return (
         <mesh geometry={geometry} frustumCulled={true}>
-            <meshStandardMaterial color={color} />
+            <meshStandardMaterial
+                color={color}
+                side={THREE.DoubleSide}
+                transparent={opacity < 1.0}
+                opacity={opacity}
+                depthWrite={opacity >= 1.0}
+            />
         </mesh>
     );
 }
@@ -662,25 +673,48 @@ export default function Viewer3D({
     sliceEnabled = false,
     subsets = [],
     arbitrarySlices = [],
-    contoursEnabled = false,
+    plotFamily = 'contour',
     contourAttribute = 'line' as 'line' | 'surface' | 'grid' | 'color_contours' | 'dots',
     contourSpec,
+    isoSurfaceOpacity = 1.0,
     cameraAxisView = 'custom',
     cameraViewpoint,
     onCameraCommit,
     onLoadingChange
 }: Viewer3DProps) {
+    type IsoSurfaceGeometry = {
+        mesh: MeshGeometry;
+        level: number;
+        color: string;
+    };
+
     type ContourLineGeometry = {
         lineData: Float32Array;
         color: string;
     };
+
+    const isContourPlotFamily = plotFamily === 'contour';
+    const contourSpecMode =
+        contourSpec && typeof contourSpec === 'object' && 'mode' in contourSpec
+            ? String((contourSpec as { mode?: unknown }).mode ?? 'none')
+            : 'none';
+
+    const renderNotice = useMemo(() => {
+        if (!isContourPlotFamily && contourSpecMode !== 'none') {
+            return 'Contour levels/attributes are ignored in Function Surface mode (MVP behavior).';
+        }
+        if (isContourPlotFamily && (contourAttribute === 'grid' || contourAttribute === 'dots')) {
+            return `${contourAttribute.toUpperCase()} contour attribute is not fully implemented yet; rendering line contours as a first-pass fallback.`;
+        }
+        return null;
+    }, [contourAttribute, contourSpecMode, isContourPlotFamily]);
 
     const [meshById, setMeshById] = useState<Record<string, MeshGeometry>>({});
     const [loadingById, setLoadingById] = useState<Record<string, number>>({});
     const [error, setError] = useState<string | null>(null);
 
     // Contour state
-    const [isoSurfaceGeometries, setIsoSurfaceGeometries] = useState<Record<string, MeshGeometry>>({});
+    const [isoSurfaceGeometries, setIsoSurfaceGeometries] = useState<Record<string, IsoSurfaceGeometry>>({});
     const [contourLineGeometries, setContourLineGeometries] = useState<Record<string, ContourLineGeometry>>({});
 
     const mergedContourLinesByColor = useMemo(() => {
@@ -759,6 +793,8 @@ export default function Viewer3D({
             .join(';'),
         [subsets]
     );
+
+    const contourSpecKey = useMemo(() => JSON.stringify(contourSpec), [contourSpec]);
 
     const contourArbitrarySlicesKey = useMemo(
         () => (arbitrarySlices || [])
@@ -856,7 +892,7 @@ export default function Viewer3D({
 
         const currentColorKey = `${scalarField}|${colorScheme}`;
         // Only include APPLIED slices in the slice key to avoid reprocessing while editing
-        const sliceKey = `${sliceEnabled}|${ignoreIblank}|${showFringePoints}|${iblankFilterMode}|${JSON.stringify(subsets)}|${appliedSlicesKey}`;
+        const sliceKey = `${sliceEnabled}|${ignoreIblank}|${showFringePoints}|${iblankFilterMode}|${subsetsContentKey}|${appliedSlicesKey}`;
         const shouldRecolor = lastColorKeyRef.current !== currentColorKey;
         const shouldReslice = lastSliceKeyRef.current !== sliceKey;
 
@@ -1406,7 +1442,7 @@ export default function Viewer3D({
                 message: `[Viewer3D] effect cancelled ms=${Math.round(performance.now() - effectStart)}`
             });
         };
-    }, [grids, ignoreIblank, showFringePoints, iblankFilterMode, scalarField, colorScheme, sliceEnabled, subsets, subsetsByGridId, appliedSlicesKey]);
+    }, [grids, ignoreIblank, showFringePoints, iblankFilterMode, scalarField, colorScheme, sliceEnabled, subsetsContentKey, subsetsByGridId, appliedSlicesKey]);
     const visibleGrids = useMemo(
         () => getVisibleGridItems(grids, selectedGridIds, isolateSelected),
         [grids, isolateSelected, selectedGridIds]
@@ -1416,15 +1452,15 @@ export default function Viewer3D({
     // Contour extraction effect
     useEffect(() => {
         let isCancelled = false;
-        const wantsIsoSurfaces = contourAttribute === 'surface' || contourAttribute === 'color_contours';
-        const wantsContourLines = contourAttribute === 'line' || contourAttribute === 'grid' || contourAttribute === 'dots';
-
-        if (!contoursEnabled || scalarField === 'none') {
+        if (!isContourPlotFamily || scalarField === 'none') {
             // Clear contours when disabled or no field selected
             setIsoSurfaceGeometries({});
             setContourLineGeometries({});
             return;
         }
+
+        const wantsIsoSurfaces = contourAttribute === 'surface' || contourAttribute === 'color_contours';
+        const wantsContourLines = contourAttribute === 'line' || contourAttribute === 'grid' || contourAttribute === 'dots';
 
         const gridsWithSolution = grids.filter(g => g.hasSolution && g.solutionCacheId && g.gridCacheId);
         if (gridsWithSolution.length === 0) {
@@ -1481,7 +1517,7 @@ export default function Viewer3D({
                                 showFringePoints: showFringePoints,
                                 iblankFilterMode: iblankFilterMode,
                             });
-                            return { id: `${gridItem.id}::lvl${levelIndex}`, mesh };
+                            return { id: `${gridItem.id}::lvl${levelIndex}`, mesh, level };
                         } catch (err) {
                             logger.warn(`Failed to extract iso-surface for grid ${gridItem.id}: ${err}`, 'Viewer3D');
                             return null;
@@ -1571,17 +1607,23 @@ export default function Viewer3D({
                     return;
                 }
                 // Update iso-surfaces.
-                const newIsoSurfaces: Record<string, MeshGeometry> = {};
+                const minLevel = uniqueLevels[0];
+                const maxLevel = uniqueLevels[uniqueLevels.length - 1];
+                const newIsoSurfaces: Record<string, IsoSurfaceGeometry> = {};
                 isoResults.forEach(result => {
                     if (result && result.mesh.vertex_count > 0) {
-                        newIsoSurfaces[result.id] = result.mesh;
+                        let color = '#3b82f6';
+                        if (contourAttribute === 'color_contours') {
+                            const normalized = normalizeValue(result.level, minLevel, maxLevel);
+                            const rgb = mapValueToColor(normalized, colorScheme);
+                            color = rgbToHex(rgb);
+                        }
+                        newIsoSurfaces[result.id] = { mesh: result.mesh, level: result.level, color };
                     }
                 });
                 setIsoSurfaceGeometries(newIsoSurfaces);
 
                 // Update contour lines.
-                const minLevel = uniqueLevels[0];
-                const maxLevel = uniqueLevels[uniqueLevels.length - 1];
                 const newContourLines: Record<string, ContourLineGeometry> = {};
                 const flattenedArbitraryResults = arbitraryResults.flat();
                 [...sliceResults, ...flattenedArbitraryResults].forEach(result => {
@@ -1609,9 +1651,9 @@ export default function Viewer3D({
             isCancelled = true;
         };
     }, [
-        contoursEnabled,
+        isContourPlotFamily,
         contourAttribute,
-        contourSpec,
+        contourSpecKey,
         scalarField,
         grids,
         subsetSlicesByGridId,
@@ -1663,8 +1705,8 @@ export default function Viewer3D({
                         return null;
                     }
                     const dimmed = selectedGridIds.length > 0 && !selectedGridIds.includes(gridItem.id) && !isolateSelected;
-                    // Use grey color when contours are enabled, otherwise use grid color
-                    const displayColor = contoursEnabled ? '#808080' : gridItem.color;
+                    // Contour family uses neutral context geometry; function-surface keeps field coloring.
+                    const displayColor = isContourPlotFamily ? '#808080' : gridItem.color;
 
                     return (
                         <group key={gridItem.id}>
@@ -1674,7 +1716,7 @@ export default function Viewer3D({
                                     meshGeometry={mesh}
                                     color={displayColor}
                                     dimmed={dimmed}
-                                    forceSolidColor={contoursEnabled}
+                                    forceSolidColor={isContourPlotFamily}
                                 />
                             )}
                             {/* Render wireframe */}
@@ -1683,7 +1725,7 @@ export default function Viewer3D({
                                     meshGeometry={mesh}
                                     color={displayColor}
                                     dimmed={dimmed}
-                                    forceSolidColor={contoursEnabled}
+                                    forceSolidColor={isContourPlotFamily}
                                 />
                             )}
                         </group>
@@ -1699,8 +1741,8 @@ export default function Viewer3D({
                         return enabledArbitraryIds.has(sliceId);
                     })
                     .map(([id, mesh]) => {
-                        // Use grey when contours enabled, otherwise light blue
-                        const sliceColor = contoursEnabled ? '#808080' : '#60a5fa';
+                        // Contour family uses neutral context geometry; function-surface keeps contrasty slice color.
+                        const sliceColor = isContourPlotFamily ? '#808080' : '#60a5fa';
                         return (
                             <group key={id}>
                                 {shadingMode === 'smooth' && (
@@ -1708,7 +1750,7 @@ export default function Viewer3D({
                                         meshGeometry={mesh}
                                         color={sliceColor}
                                         dimmed={false}
-                                        forceSolidColor={contoursEnabled}
+                                        forceSolidColor={isContourPlotFamily}
                                     />
                                 )}
                                 {showWireframe && (
@@ -1716,7 +1758,7 @@ export default function Viewer3D({
                                         meshGeometry={mesh}
                                         color={sliceColor}
                                         dimmed={false}
-                                        forceSolidColor={contoursEnabled}
+                                        forceSolidColor={isContourPlotFamily}
                                     />
                                 )}
                             </group>
@@ -1724,16 +1766,16 @@ export default function Viewer3D({
                     })}
 
                 {/* Render iso-surfaces (surface-based contour attributes) */}
-                {contoursEnabled && (contourAttribute === 'surface' || contourAttribute === 'color_contours') &&
-                    Object.entries(isoSurfaceGeometries).map(([id, mesh]) => (
+                {isContourPlotFamily && (contourAttribute === 'surface' || contourAttribute === 'color_contours') &&
+                    Object.entries(isoSurfaceGeometries).map(([id, iso]) => (
                         <group key={`iso::${id}`}>
-                            <IsoSurfaceRenderer meshGeometry={mesh} color="#3b82f6" />
+                            <IsoSurfaceRenderer meshGeometry={iso.mesh} color={iso.color} opacity={isoSurfaceOpacity} />
                         </group>
                     ))
                 }
 
                 {/* Render contour lines (line attribute, or grid/dots as first-pass fallback) */}
-                {contoursEnabled && (contourAttribute === 'line' || contourAttribute === 'grid' || contourAttribute === 'dots') &&
+                {isContourPlotFamily && (contourAttribute === 'line' || contourAttribute === 'grid' || contourAttribute === 'dots') &&
                     mergedContourLinesByColor.map((contour, idx) => (
                         <group key={`contour-color::${contour.color}::${idx}`}>
                             <ContourLineRenderer lineData={contour.lineData} color={contour.color} />
@@ -1763,6 +1805,12 @@ export default function Viewer3D({
                 }}
             >
                 {isLoading && <div>Loading mesh...</div>}
+
+                {renderNotice && (
+                    <div style={{ marginTop: isLoading ? '8px' : '0', color: '#facc15', maxWidth: '240px' }}>
+                        {renderNotice}
+                    </div>
+                )}
 
                 {visibleGrids.length > 0 && (
                     <div style={{ marginTop: isLoading ? '10px' : '0', fontSize: '0.9em' }}>

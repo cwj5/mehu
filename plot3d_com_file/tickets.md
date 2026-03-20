@@ -363,7 +363,9 @@ Dependencies:
 1. TKT-007A
 2. TKT-007B
 
-### TKT-007D: Renderer semantic split and bounded function-surface MVP
+### ~~TKT-007D: Renderer semantic split and bounded function-surface MVP~~ ✅ COMPLETE
+
+Completed: 2026-03-19. Viewer integration now uses explicit `plotFamily` renderer branching (`contour` vs `function_surface`) instead of legacy contour-enable assumptions. In `Viewer3D.tsx`, contour extraction and overlay rendering execute only for contour family, while function-surface mode uses the base mesh path deterministically. `COLOR CONTOURS` now colors iso-surfaces by resolved contour level through the existing field colormap (rather than fixed single-color surfaces). First-pass unsupported combinations now surface explicit UI messaging in the viewer (for `GRID`/`DOTS` fallback and contour-spec inputs while in function-surface mode), eliminating silent fallback behavior.
 
 Execution metadata:
 

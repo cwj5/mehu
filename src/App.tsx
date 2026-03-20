@@ -338,6 +338,8 @@ const App = () => {
   const [contourIncrStep, setContourIncrStep] = useState(1);
   const [contourIncrStepDraft, setContourIncrStepDraft] = useState('1');
   const [contourLevel, setContourLevel] = useState(0);
+  const [contourLevelDraft, setContourLevelDraft] = useState('0');
+  const [isoSurfaceOpacity, setIsoSurfaceOpacity] = useState(1.0);
   const [backendPlotState, setBackendPlotState] = useState<BackendPlotState | null>(null);
   const [backendDiagnostics, setBackendDiagnostics] = useState<BackendDiagnostic[]>([]);
   const [showCommandWindow, setShowCommandWindow] = useState(false);
@@ -617,10 +619,13 @@ const App = () => {
     }
   };
 
-  // Handle contour level change (manual single-level)
-  const handleContourLevelChange = async (value: number) => {
-    setContourLevel(value);
-    await setPlotContourSpecForCurrentMode(buildContourSpecState({ level: value }));
+  // Apply manual single contour level (called by Apply button or Enter key).
+  const applyManualContourLevel = async () => {
+    const parsed = Number.parseFloat(contourLevelDraft);
+    const nextLevel = Number.isFinite(parsed) ? parsed : contourLevel;
+    setContourLevel(nextLevel);
+    setContourLevelDraft(String(nextLevel));
+    await setPlotContourSpecForCurrentMode(buildContourSpecState({ mode: 'manual', level: nextLevel }));
   };
 
   // Build a ContourSpec-shaped object from current spec-mode state.
@@ -674,9 +679,13 @@ const App = () => {
     await commitPlot();
   };
 
-  const handleContourSpecModeChange = async (mode: ContourSpecMode) => {
+  // Mode selection is local-only; nothing is sent to the backend until Apply is clicked.
+  const handleContourSpecModeChange = (mode: ContourSpecMode) => {
     setContourSpecMode(mode);
-    await setPlotContourSpecForCurrentMode(buildContourSpecState({ mode }));
+  };
+
+  const applyContourSpecNone = async () => {
+    await setPlotContourSpecForCurrentMode(buildContourSpecState({ mode: 'none' }));
   };
 
   // Debug: Log whenever loading state changes
@@ -930,7 +939,10 @@ const App = () => {
         }
       } else if (mode === 'manual' && Array.isArray(s.entries) && s.entries.length > 0) {
         const val = s.entries[0]?.value;
-        if (typeof val === 'number' && Number.isFinite(val)) setContourLevel(val);
+        if (typeof val === 'number' && Number.isFinite(val)) {
+          setContourLevel(val);
+          setContourLevelDraft(String(val));
+        }
       }
     }
 
@@ -1315,7 +1327,7 @@ const App = () => {
                             <select
                               value={contourSpecMode}
                               onChange={(e) => {
-                                void handleContourSpecModeChange(e.target.value as ContourSpecMode);
+                                handleContourSpecModeChange(e.target.value as ContourSpecMode);
                               }}
                               style={{ padding: '4px 6px', background: '#1a2640', color: '#e2e8f0', border: '1px solid #334155', borderRadius: '3px', fontSize: '11px' }}
                             >
@@ -1325,6 +1337,17 @@ const App = () => {
                               <option value="manual">Manual</option>
                             </select>
                           </label>
+
+                          {/* None mode: explicit Apply so the backend spec is cleared */}
+                          {contourSpecMode === 'none' && (
+                            <button
+                              type="button"
+                              onClick={() => { void applyContourSpecNone(); }}
+                              style={{ padding: '4px 6px', background: '#334155', color: '#e2e8f0', border: '1px solid #475569', borderRadius: '3px', fontSize: '11px', cursor: 'pointer' }}
+                            >
+                              Apply
+                            </button>
+                          )}
 
                           {/* Automatic mode: count */}
                           {contourSpecMode === 'automatic' && (
@@ -1407,18 +1430,40 @@ const App = () => {
                             </>
                           )}
 
-                          {/* Manual mode: single level value */}
+                          {/* Manual mode: single level value — only applied on click/Enter */}
                           {contourSpecMode === 'manual' && (
                             <label style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                               <span style={{ fontSize: '10px', color: '#94a3b8' }}>Level:</span>
                               <input
                                 type="number"
                                 step="any"
-                                value={contourLevel}
-                                onChange={(e) => {
-                                  void handleContourLevelChange(parseFloat(e.target.value) || 0);
-                                }}
+                                value={contourLevelDraft}
+                                onChange={(e) => { setContourLevelDraft(e.target.value); }}
+                                onKeyDown={(e) => { if (e.key === 'Enter') { void applyManualContourLevel(); } }}
                                 style={{ padding: '4px 6px', background: '#1a2640', color: '#e2e8f0', border: '1px solid #334155', borderRadius: '3px', fontSize: '11px' }}
+                              />
+                              <button
+                                type="button"
+                                onClick={() => { void applyManualContourLevel(); }}
+                                style={{ padding: '4px 6px', background: '#334155', color: '#e2e8f0', border: '1px solid #475569', borderRadius: '3px', fontSize: '11px', cursor: 'pointer' }}
+                              >
+                                Apply
+                              </button>
+                            </label>
+                          )}
+
+                          {/* Surface opacity slider (surface / color_contours attributes only) */}
+                          {(contourAttributeState === 'surface' || contourAttributeState === 'color_contours') && (
+                            <label style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                              <span style={{ fontSize: '10px', color: '#94a3b8' }}>Surface Opacity: {Math.round(isoSurfaceOpacity * 100)}%</span>
+                              <input
+                                type="range"
+                                min="0"
+                                max="1"
+                                step="0.05"
+                                value={isoSurfaceOpacity}
+                                onChange={(e) => { setIsoSurfaceOpacity(parseFloat(e.target.value)); }}
+                                style={{ accentColor: '#3b82f6' }}
                               />
                             </label>
                           )}
@@ -2128,9 +2173,10 @@ const App = () => {
               sliceEnabled={sliceEnabled}
               subsets={backendPlotState?.subsets ?? []}
               arbitrarySlices={arbitrarySlices}
-              contoursEnabled={plotFamilyState === 'contour'}
+              plotFamily={plotFamilyState}
               contourAttribute={contourAttributeState}
               contourSpec={backendPlotState?.contour_spec}
+              isoSurfaceOpacity={isoSurfaceOpacity}
               cameraAxisView={backendPlotState?.axis_view ?? 'custom'}
               cameraViewpoint={backendPlotState?.viewpoint ?? null}
               onCameraCommit={handleCameraCommit}
