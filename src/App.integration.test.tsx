@@ -291,3 +291,259 @@ describe('App frontend integration', () => {
         expect(commitIdx).toBeGreaterThan(setSubsetsIdx);
     });
 });
+
+// ──────────────────────────────────────────────────────────────────────────────
+// TKT-007E: Contour spec editor commits and regression coverage
+// ──────────────────────────────────────────────────────────────────────────────
+
+describe('Contour spec editor commits (TKT-007E)', () => {
+    afterEach(() => {
+        cleanup();
+    });
+
+    // Re-usable helper that builds a mock response shaped like ApplyPlotActionResult
+    function makeResult(overrides: Partial<{
+        plot_family: string;
+        contour_attribute: string;
+        contour_spec: object;
+    }> = {}) {
+        return {
+            state: {
+                scalar_field: 'none',
+                plot_family: overrides.plot_family ?? 'contour',
+                contour_attribute: overrides.contour_attribute ?? 'line',
+                axis_view: 'custom',
+                contour_spec: overrides.contour_spec ?? { mode: 'none' },
+                subsets: [],
+                viewpoint: null,
+            },
+            diagnostics: [],
+        };
+    }
+
+    beforeEach(() => {
+        invokeMock.mockReset();
+
+        let currentPlotFamily = 'contour';
+        let currentContourAttribute = 'line';
+        let currentContourSpec: object = { mode: 'none' };
+
+        invokeMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
+            if (cmd === 'get_plot_state') {
+                return {
+                    scalar_field: 'none',
+                    plot_family: currentPlotFamily,
+                    contour_attribute: currentContourAttribute,
+                    axis_view: 'custom',
+                    contour_spec: currentContourSpec,
+                    subsets: [],
+                    viewpoint: null,
+                };
+            }
+            if (cmd === 'open_multiple_files_dialog') {
+                return ['/tmp/grid.xyz', '/tmp/grid.q'];
+            }
+            if (cmd === 'clear_grid_cache' || cmd === 'clear_solution_cache_v2') {
+                return null;
+            }
+            if (cmd === 'load_plot3d_file_cached') {
+                const path = args?.path;
+                if (path === '/tmp/grid.xyz') {
+                    return [{ id: 'grid-cache-1', file_path: '/tmp/grid.xyz', file_name: 'grid.xyz', grid_index: 0, dimensions: { i: 3, j: 3, k: 3 }, has_iblank: false, has_solution: false }];
+                }
+                throw new Error('not a grid file');
+            }
+            if (cmd === 'load_plot3d_solution_cached') {
+                return [{ id: 'sol-cache-1', grid_index: 0, dimensions: { i: 3, j: 3, k: 3 } }];
+            }
+            if (cmd === 'set_plot_family') {
+                currentPlotFamily = String(args?.family ?? 'contour');
+                return makeResult({ plot_family: currentPlotFamily, contour_attribute: currentContourAttribute, contour_spec: currentContourSpec });
+            }
+            if (cmd === 'set_plot_contour_attribute') {
+                currentContourAttribute = String(args?.attribute ?? 'line');
+                return makeResult({ plot_family: currentPlotFamily, contour_attribute: currentContourAttribute, contour_spec: currentContourSpec });
+            }
+            if (cmd === 'set_plot_contour_spec') {
+                currentContourSpec = (args?.spec as object) ?? { mode: 'none' };
+                return makeResult({ plot_family: currentPlotFamily, contour_attribute: currentContourAttribute, contour_spec: currentContourSpec });
+            }
+            if (cmd === 'commit_plot') {
+                return makeResult({ plot_family: currentPlotFamily, contour_attribute: currentContourAttribute, contour_spec: currentContourSpec });
+            }
+            return null;
+        });
+    });
+
+    async function loadFiles() {
+        render(<App />);
+        const loadButton = await screen.findByRole('button', { name: 'Load Files' });
+        fireEvent.click(loadButton);
+        // Wait for Plot Family select to be visible (gated behind hasSolution)
+        await screen.findByDisplayValue('Contour');
+    }
+
+    it('mode selector change does NOT immediately commit to backend', async () => {
+        await loadFiles();
+
+        // Switch Levels mode from None → Automatic (local-only, no invoke)
+        invokeMock.mockClear();
+        const levelsSelect = await screen.findByDisplayValue('None');
+        fireEvent.change(levelsSelect, { target: { value: 'automatic' } });
+
+        // No IPC call should have happened yet
+        expect(invokeMock).not.toHaveBeenCalledWith('set_plot_contour_spec', expect.anything());
+        expect(invokeMock).not.toHaveBeenCalledWith('commit_plot');
+    });
+
+    it('commits Automatic contour spec when Apply is clicked', async () => {
+        await loadFiles();
+
+        const levelsSelect = await screen.findByDisplayValue('None');
+        fireEvent.change(levelsSelect, { target: { value: 'automatic' } });
+
+        // Count input appears after mode switch
+        const countInput = await screen.findByDisplayValue('10');
+        fireEvent.change(countInput, { target: { value: '8' } });
+
+        // No commit yet (still draft)
+        expect(invokeMock).not.toHaveBeenCalledWith('set_plot_contour_spec', expect.anything());
+
+        const applyButton = await screen.findByRole('button', { name: 'Apply' });
+        fireEvent.click(applyButton);
+
+        await waitFor(() => {
+            expect(invokeMock).toHaveBeenCalledWith(
+                'set_plot_contour_spec',
+                { spec: { mode: 'automatic', count: 8 } }
+            );
+            expect(invokeMock).toHaveBeenCalledWith('commit_plot');
+        });
+
+        // Ordering: set_plot_contour_spec before commit_plot
+        const calls = invokeMock.mock.calls.map(([cmd]) => cmd);
+        const specIdx = calls.lastIndexOf('set_plot_contour_spec');
+        const commitIdx = calls.lastIndexOf('commit_plot');
+        expect(specIdx).toBeGreaterThan(-1);
+        expect(commitIdx).toBeGreaterThan(specIdx);
+    });
+
+    it('commits Increment contour spec when Apply is clicked', async () => {
+        await loadFiles();
+
+        const levelsSelect = await screen.findByDisplayValue('None');
+        fireEvent.change(levelsSelect, { target: { value: 'increment' } });
+
+        // Start defaults to '0', Step defaults to '1'
+        const [startInput] = await screen.findAllByDisplayValue('0');
+        fireEvent.change(startInput, { target: { value: '1.5' } });
+
+        const stepInput = await screen.findByDisplayValue('1');
+        fireEvent.change(stepInput, { target: { value: '0.5' } });
+
+        invokeMock.mockClear();
+        const applyButton = await screen.findByRole('button', { name: 'Apply' });
+        fireEvent.click(applyButton);
+
+        await waitFor(() => {
+            expect(invokeMock).toHaveBeenCalledWith(
+                'set_plot_contour_spec',
+                { spec: { mode: 'increment', start: 1.5, increment: 0.5 } }
+            );
+            expect(invokeMock).toHaveBeenCalledWith('commit_plot');
+        });
+
+        const calls = invokeMock.mock.calls.map(([cmd]) => cmd);
+        const specIdx = calls.lastIndexOf('set_plot_contour_spec');
+        const commitIdx = calls.lastIndexOf('commit_plot');
+        expect(commitIdx).toBeGreaterThan(specIdx);
+    });
+
+    it('commits Manual contour level when Apply is clicked', async () => {
+        await loadFiles();
+
+        const levelsSelect = await screen.findByDisplayValue('None');
+        fireEvent.change(levelsSelect, { target: { value: 'manual' } });
+
+        const levelInput = await screen.findByDisplayValue('0');
+        fireEvent.change(levelInput, { target: { value: '42.75' } });
+
+        // No commit yet — only draft changed
+        expect(invokeMock).not.toHaveBeenCalledWith('set_plot_contour_spec', expect.anything());
+
+        invokeMock.mockClear();
+        const applyButton = await screen.findByRole('button', { name: 'Apply' });
+        fireEvent.click(applyButton);
+
+        await waitFor(() => {
+            expect(invokeMock).toHaveBeenCalledWith(
+                'set_plot_contour_spec',
+                { spec: { mode: 'manual', entries: [{ value: 42.75, color: null }] } }
+            );
+            expect(invokeMock).toHaveBeenCalledWith('commit_plot');
+        });
+    });
+
+    it('commits Manual level on Enter key without needing Apply button click', async () => {
+        await loadFiles();
+
+        const levelsSelect = await screen.findByDisplayValue('None');
+        fireEvent.change(levelsSelect, { target: { value: 'manual' } });
+
+        const levelInput = await screen.findByDisplayValue('0');
+        fireEvent.change(levelInput, { target: { value: '77' } });
+
+        invokeMock.mockClear();
+        fireEvent.keyDown(levelInput, { key: 'Enter', code: 'Enter' });
+
+        await waitFor(() => {
+            expect(invokeMock).toHaveBeenCalledWith(
+                'set_plot_contour_spec',
+                { spec: { mode: 'manual', entries: [{ value: 77, color: null }] } }
+            );
+        });
+    });
+
+    it('commits contour attribute change immediately on select change', async () => {
+        await loadFiles();
+
+        invokeMock.mockClear();
+        const attributeSelect = await screen.findByDisplayValue('Line');
+        fireEvent.change(attributeSelect, { target: { value: 'surface' } });
+
+        await waitFor(() => {
+            expect(invokeMock).toHaveBeenCalledWith(
+                'set_plot_contour_attribute',
+                { attribute: 'surface' }
+            );
+            expect(invokeMock).toHaveBeenCalledWith('commit_plot');
+        });
+
+        const calls = invokeMock.mock.calls.map(([cmd]) => cmd);
+        const attrIdx = calls.lastIndexOf('set_plot_contour_attribute');
+        const commitIdx = calls.lastIndexOf('commit_plot');
+        expect(commitIdx).toBeGreaterThan(attrIdx);
+    });
+
+    it('plot family round-trip: contour → function_surface → contour', async () => {
+        await loadFiles();
+
+        invokeMock.mockClear();
+        const plotFamilySelect = await screen.findByDisplayValue('Contour');
+        fireEvent.change(plotFamilySelect, { target: { value: 'function_surface' } });
+
+        await waitFor(() => {
+            expect(invokeMock).toHaveBeenCalledWith('set_plot_family', { family: 'function_surface' });
+            expect(invokeMock).toHaveBeenCalledWith('commit_plot');
+        });
+
+        invokeMock.mockClear();
+        const updatedSelect = await screen.findByDisplayValue('Function Surface');
+        fireEvent.change(updatedSelect, { target: { value: 'contour' } });
+
+        await waitFor(() => {
+            expect(invokeMock).toHaveBeenCalledWith('set_plot_family', { family: 'contour' });
+            expect(invokeMock).toHaveBeenCalledWith('commit_plot');
+        });
+    });
+});

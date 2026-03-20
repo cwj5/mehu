@@ -229,7 +229,9 @@ Relevant decisions:
 1. Apply/release commit model.
 2. Shared state must remain authoritative.
 
-### TKT-007 (Epic): Absolute multi-level contours and plot-family semantic alignment
+### ~~TKT-007 (Epic): Absolute multi-level contours and plot-family semantic alignment~~ ✅ COMPLETE
+
+Completed: 2026-03-20. All sub-tickets TKT-007A through TKT-007E complete.
 
 Updated scope: 2026-03-17. This is now an umbrella ticket split into implementation-sized parts (TKT-007A through TKT-007E).
 
@@ -307,7 +309,7 @@ Dependencies:
 2. TKT-004
 3. TKT-006
 
-### TKT-007B: Absolute contour-level resolution and IPC contract migration ✅ COMPLETE
+### ~~TKT-007B: Absolute contour-level resolution and IPC contract migration~~ ✅ COMPLETE
 
 Execution metadata:
 
@@ -334,7 +336,7 @@ Dependencies:
 
 1. TKT-007A
 
-### TKT-007C: GUI contour model and editor migration ✅ COMPLETE
+### ~~TKT-007C: GUI contour model and editor migration~~ ✅ COMPLETE
 
 Execution metadata:
 
@@ -395,7 +397,9 @@ Dependencies:
 2. TKT-007B
 3. TKT-007C
 
-### TKT-007E: TKT-007 parity and regression test coverage
+### ~~TKT-007E: TKT-007 parity and regression test coverage~~ ✅ COMPLETE
+
+Completed: 2026-03-20. Added 8 Rust unit tests and 7 frontend integration tests covering all acceptance criteria.
 
 Execution metadata:
 

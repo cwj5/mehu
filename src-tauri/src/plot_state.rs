@@ -825,6 +825,27 @@ pub fn apply_action(mut state: PlotState, action: PlotAction) -> (PlotState, Vec
             // when it handles this action.  We emit an info diagnostic so
             // callers can observe the boundary in a diagnostic stream.
             diags.push(Diagnostic::info(cap::PLOT, "Plot committed"));
+
+            // Warn on unsupported combinations so callers can surface them.
+            if state.plot_family == PlotFamily::FunctionSurface
+                && state.contour_spec != ContourSpec::None
+            {
+                diags.push(Diagnostic::warning(
+                    cap::CONTOURS,
+                    "Contour spec is ignored in Function Surface mode; switch to Contour plot family to use contour levels.",
+                ));
+            }
+            if state.plot_family == PlotFamily::Contour
+                && matches!(
+                    state.contour_attribute,
+                    ContourAttribute::Grid | ContourAttribute::Dots
+                )
+            {
+                diags.push(Diagnostic::warning(
+                    cap::CONTOURS,
+                    "GRID and DOTS contour attributes are not fully implemented; rendering as Line contours.",
+                ));
+            }
         }
     }
 
@@ -1487,5 +1508,147 @@ mod tests {
         let (levels, diags) = spec.resolve(0.0, 1.0);
         assert!(levels.is_empty());
         assert!(diags.is_empty());
+    }
+
+    // ── Normalized-contour regression (AC#1) ──────────────────────────────────
+    // Manual entries must be treated as absolute physical values regardless of
+    // field range.  A value that looks like a fraction (e.g. 0.5) must NOT be
+    // re-mapped as a fraction of [min, max].
+
+    #[test]
+    fn resolve_manual_normalized_appearing_value_is_absolute_not_fraction() {
+        // 0.5 looks like "50%" but must be returned as the absolute value 0.5,
+        // not re-mapped to 0.5 * (200 - 100) + 100 = 150.
+        let spec = ContourSpec::Manual {
+            entries: vec![ContourEntry {
+                value: 0.5,
+                color: None,
+            }],
+        };
+        let (levels, diags) = spec.resolve(100.0, 200.0);
+        assert!(diags.is_empty());
+        assert_eq!(levels.len(), 1);
+        assert!(
+            (levels[0] - 0.5).abs() < 1e-10,
+            "expected absolute 0.5 but got {}",
+            levels[0]
+        );
+    }
+
+    #[test]
+    fn resolve_manual_out_of_field_range_passes_through_unchanged() {
+        // A level outside [min, max] must still be returned as-is — no clamping.
+        let spec = ContourSpec::Manual {
+            entries: vec![
+                ContourEntry {
+                    value: -50.0,
+                    color: None,
+                },
+                ContourEntry {
+                    value: 999.0,
+                    color: None,
+                },
+            ],
+        };
+        let (levels, diags) = spec.resolve(0.0, 100.0);
+        assert!(diags.is_empty());
+        assert_eq!(levels, vec![-50.0, 999.0]);
+    }
+
+    // ── CommitPlot unsupported-combination diagnostics (AC#3) ─────────────────
+
+    #[test]
+    fn commit_plot_function_surface_with_active_contour_spec_emits_warning() {
+        let mut state = default_state();
+        state.plot_family = PlotFamily::FunctionSurface;
+        state.contour_spec = ContourSpec::Automatic { count: 5 };
+
+        let (new_state, diags) = apply_action(state, PlotAction::CommitPlot);
+
+        // State is never mutated by CommitPlot.
+        assert_eq!(new_state.plot_family, PlotFamily::FunctionSurface);
+
+        // Must have the info diagnostic + the unsupported-combination warning.
+        let caps: Vec<&str> = diags.iter().map(|d| d.capability.as_str()).collect();
+        assert!(
+            caps.contains(&cap::PLOT),
+            "expected PLOT info diagnostic, got {:?}",
+            caps
+        );
+        let warnings: Vec<_> = diags
+            .iter()
+            .filter(|d| d.severity == DiagnosticSeverity::Warning && d.capability == cap::CONTOURS)
+            .collect();
+        assert_eq!(
+            warnings.len(),
+            1,
+            "expected exactly one CONTOURS warning, got {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn commit_plot_function_surface_with_none_contour_spec_no_warning() {
+        let mut state = default_state();
+        state.plot_family = PlotFamily::FunctionSurface;
+        state.contour_spec = ContourSpec::None;
+
+        let (_, diags) = apply_action(state, PlotAction::CommitPlot);
+
+        let warnings: Vec<_> = diags
+            .iter()
+            .filter(|d| d.severity == DiagnosticSeverity::Warning)
+            .collect();
+        assert!(
+            warnings.is_empty(),
+            "expected no warnings for FunctionSurface + None spec, got {:?}",
+            warnings
+        );
+    }
+
+    #[test]
+    fn commit_plot_contour_family_with_grid_attribute_warns() {
+        let mut state = default_state();
+        state.plot_family = PlotFamily::Contour;
+        state.contour_attribute = ContourAttribute::Grid;
+
+        let (_, diags) = apply_action(state, PlotAction::CommitPlot);
+
+        let warnings: Vec<_> = diags
+            .iter()
+            .filter(|d| d.severity == DiagnosticSeverity::Warning && d.capability == cap::CONTOURS)
+            .collect();
+        assert_eq!(
+            warnings.len(),
+            1,
+            "expected one CONTOURS warning for Grid attribute, got {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn commit_plot_contour_family_with_dots_attribute_warns() {
+        let mut state = default_state();
+        state.plot_family = PlotFamily::Contour;
+        state.contour_attribute = ContourAttribute::Dots;
+
+        let (_, diags) = apply_action(state, PlotAction::CommitPlot);
+
+        let warnings: Vec<_> = diags
+            .iter()
+            .filter(|d| d.severity == DiagnosticSeverity::Warning && d.capability == cap::CONTOURS)
+            .collect();
+        assert_eq!(warnings.len(), 1);
+    }
+
+    #[test]
+    fn commit_plot_contour_family_with_line_attribute_no_warning() {
+        let state = default_state(); // PlotFamily::Contour + ContourAttribute::Line
+        let (_, diags) = apply_action(state, PlotAction::CommitPlot);
+        let warnings: Vec<_> = diags
+            .iter()
+            .filter(|d| d.severity == DiagnosticSeverity::Warning)
+            .collect();
+        assert!(warnings.is_empty());
     }
 }
