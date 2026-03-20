@@ -857,9 +857,16 @@ const App = () => {
   };
 
   const handleCameraCommit = async (vp: { x: number; y: number; z: number }) => {
-    // Camera navigation is purely a local view concern. Do not push
-    // viewpoint updates into backend PlotState on every interaction.
-    void vp;
+    const current = backendPlotState?.viewpoint;
+    if (current) {
+      const dx = current.x - vp.x;
+      const dy = current.y - vp.y;
+      const dz = current.z - vp.z;
+      if ((dx * dx + dy * dy + dz * dz) < 1e-8) {
+        return;
+      }
+    }
+    await setPlotViewpoint(vp);
   };
 
   const applyGuiManagedSubsets = async (options?: {
