@@ -638,15 +638,14 @@ function ContourLineRenderer({ lineData, color }: { lineData: Float32Array; colo
             color: color,
             linewidth: 2, // in pixels
             resolution: new THREE.Vector2(size.width, size.height),
-            depthTest: false,
-            depthWrite: false,
-            transparent: true,
+            depthTest: true,
+            depthWrite: true,
+            transparent: false,
             opacity: 1.0,
         });
 
         const segments = new LineSegments2(geometry, material);
         segments.computeLineDistances();
-        segments.renderOrder = 20;
         return segments;
     }, [lineData, color, size.height, size.width]);
 
