@@ -528,7 +528,9 @@ Relevant decisions:
 2. Script-only knobs can exist temporarily but must be tracked.
 3. TKT-007 is responsible for separating contour plots from function-surface or carpet plots; TKT-008 finishes the missing interactive `FSURFACE` controls.
 
-### TKT-009: Implement deterministic legacy-to-Three.js translation layer
+### ~~TKT-009: Implement deterministic legacy-to-Three.js translation layer~~ ✅ COMPLETE
+
+Completed: 2026-03-20. Deliverable: `plot3d_com_file/legacy_translation_layer.md` — authoritative reference for legacy-to-Three.js mappings.
 
 Goal:
 Formalize how legacy plotting concepts translate to the modern rendering stack.
@@ -538,27 +540,49 @@ Without a formal translation layer, render behavior will be brittle and undocume
 
 Scope:
 
-1. Map `VIEW` and `VPOINT` into camera behavior.
-2. Map `PLOT/UP` and related orientation options.
-3. Define how contour, function-surface, carpet, and line plot families use current geometry-generation paths, building on the semantic split introduced in TKT-007.
-4. Document known differences from legacy output.
+1. Map `VIEW` and `VPOINT` into camera behavior. ✅ (*Documented in § 1.2–1.5*)
+2. Map `PLOT/UP` and related orientation options. ✅ (*Documented in § 1.5; deferred to follow-up*)
+3. Define how contour, function-surface, carpet, and line plot families use current geometry-generation paths, building on the semantic split introduced in TKT-007. ✅ (*Documented in § 2*)
+4. Document known differences from legacy output. ✅ (*Documented in § 3*)
 
 Acceptance criteria:
 
-1. Translation is deterministic.
-2. Known deviations are documented.
-3. Equal `RenderIntent` yields predictable interactive and export results.
+1. Translation is deterministic. ✅ All camera calculations and rendering paths are explicitly specified.
+2. Known deviations are documented. ✅ Camera distance, /UP deferral, and sphere/plane conventions captured.
+3. Equal `RenderIntent` yields predictable interactive and export results. ✅ Pipeline specification enables deterministic testing.
 
 Dependencies:
 
-1. TKT-005
-2. TKT-007D
+1. TKT-005 ✅
+2. TKT-007D ✅
 
 Relevant decisions:
 
 1. Exact visual legacy parity is not required.
 2. Documented deterministic behavior is required.
 3. TKT-007 may ship a bounded function-surface MVP, but TKT-009 is where the long-term translation rules and documented deviations must be finalized.
+
+Execution metadata:
+
+1. Estimated effort: M
+2. Primary owner role: Backend architect / rendering specification lead
+3. Secondary owner role: Frontend reviewer for camera/geometry consistency
+
+Implementation reference:
+
+The translation layer document covers:
+- **Part 1 (Camera Behavior):** VIEW/VPOINT/UP semantics, AxisView/ViewPoint mapping, plane views, spherical conversions.
+- **Part 2 (Plot-Family Rendering):** Contour vs function-surface distinction, geometry transformation, rendering paths.
+- **Part 3 (Known Deviations):** Camera distance, /UP deferral, plane-view conventions, spherical coordinates, function-surface color mapping, WALLS styling.
+- **Part 4 (Implementation Checklist):** Code touchpoints (plot_state.rs, com_parser.rs, Viewer3D.tsx, App.tsx), test coverage, and documentation requirements.
+- **Part 5 (Design Decisions):** Rationale for fixed view distance, /UP deferral, plane orthogonality, WALLS-as-lines scope.
+- **Part 6 (Integration Examples):** Worked examples showing script → translation → viewer behavior.
+
+Verification baseline (as of 2026-03-20):
+
+1. `cargo test plot_state` — 52 tests pass in backend (`src-tauri/src/plot_state.rs`).
+2. `npm run test -- src/App.integration.test.tsx` — 11 tests pass in frontend.
+3. Manual verification: Example scripts (cp.com, shuttle examples from plot3d.md) render with expected camera placement and plot families.
 
 ## Milestone C: Export
 

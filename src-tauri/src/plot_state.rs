@@ -853,6 +853,31 @@ pub fn apply_action(mut state: PlotState, action: PlotAction) -> (PlotState, Vec
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// Coordinate conversion helpers
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Convert spherical coordinates (DISSPLA convention) to Cartesian.
+///
+/// DISSPLA convention:
+/// - phi: azimuth angle in horizontal plane (degrees), measured from +X toward +Y.
+/// - theta: elevation angle above horizontal plane (degrees).
+/// - radius: distance from origin.
+///
+/// Returns (x, y, z) Cartesian coordinates.
+pub fn spherical_to_cartesian(phi_deg: f64, theta_deg: f64, radius: f64) -> (f64, f64, f64) {
+    let phi_rad = phi_deg.to_radians();
+    let theta_rad = theta_deg.to_radians();
+
+    let xy_distance = theta_rad.cos(); // Horizontal distance from Z axis
+    let z = theta_rad.sin() * radius;
+
+    let x = xy_distance * phi_rad.cos() * radius;
+    let y = xy_distance * phi_rad.sin() * radius;
+
+    (x, y, z)
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Tests
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -1650,5 +1675,109 @@ mod tests {
             .filter(|d| d.severity == DiagnosticSeverity::Warning)
             .collect();
         assert!(warnings.is_empty());
+    }
+
+    // ── Spherical-to-Cartesian Conversion ─────────────────────────────────────
+
+    #[test]
+    fn spherical_45_45_10_converts_correctly() {
+        // φ=45°, θ=45°, r=10 should give approximately (5.0, 5.0, 7.07)
+        let (x, y, z) = spherical_to_cartesian(45.0, 45.0, 10.0);
+        assert!((x - 5.0).abs() < 0.01, "x mismatch: {}", x);
+        assert!((y - 5.0).abs() < 0.01, "y mismatch: {}", y);
+        assert!((z - 7.07).abs() < 0.01, "z mismatch: {}", z);
+    }
+
+    #[test]
+    fn spherical_0_0_10_looks_towards_positive_x() {
+        // φ=0°, θ=0°, r=10: azimuth 0, no elevation → (10, 0, 0)
+        let (x, y, z) = spherical_to_cartesian(0.0, 0.0, 10.0);
+        assert!((x - 10.0).abs() < 1e-10, "x={} should be 10.0", x);
+        assert!(y.abs() < 1e-10, "y={} should be 0.0", y);
+        assert!(z.abs() < 1e-10, "z={} should be 0.0", z);
+    }
+
+    #[test]
+    fn spherical_90_0_10_looks_towards_positive_y() {
+        // φ=90°, θ=0°, r=10: azimuth 90°, no elevation → (0, 10, 0)
+        let (x, y, z) = spherical_to_cartesian(90.0, 0.0, 10.0);
+        assert!(x.abs() < 1e-10, "x={} should be 0.0", x);
+        assert!((y - 10.0).abs() < 1e-10, "y={} should be 10.0", y);
+        assert!(z.abs() < 1e-10, "z={} should be 0.0", z);
+    }
+
+    #[test]
+    fn spherical_0_90_10_looks_straight_up() {
+        // φ=0° (irrelevant), θ=90°, r=10: full elevation → (0, 0, 10)
+        let (x, y, z) = spherical_to_cartesian(0.0, 90.0, 10.0);
+        assert!(x.abs() < 1e-10, "x={} should be 0.0", x);
+        assert!(y.abs() < 1e-10, "y={} should be 0.0", y);
+        assert!((z - 10.0).abs() < 1e-10, "z={} should be 10.0", z);
+    }
+
+    #[test]
+    fn spherical_0_neg90_10_looks_straight_down() {
+        // φ=0° (irrelevant), θ=-90°, r=10: full negative elevation → (0, 0, -10)
+        let (x, y, z) = spherical_to_cartesian(0.0, -90.0, 10.0);
+        assert!(x.abs() < 1e-10, "x={} should be 0.0", x);
+        assert!(y.abs() < 1e-10, "y={} should be 0.0", y);
+        assert!((z + 10.0).abs() < 1e-10, "z={} should be -10.0", z);
+    }
+
+    #[test]
+    fn spherical_180_0_10_looks_towards_negative_x() {
+        // φ=180°, θ=0°, r=10: azimuth 180°, no elevation → (-10, 0, 0)
+        let (x, y, z) = spherical_to_cartesian(180.0, 0.0, 10.0);
+        assert!((x + 10.0).abs() < 1e-10, "x={} should be -10.0", x);
+        assert!(y.abs() < 1e-10, "y={} should be 0.0", y);
+        assert!(z.abs() < 1e-10, "z={} should be 0.0", z);
+    }
+
+    #[test]
+    fn spherical_270_0_10_looks_towards_negative_y() {
+        // φ=270°, θ=0°, r=10: azimuth 270° (equiv -90°), no elevation → (0, -10, 0)
+        let (x, y, z) = spherical_to_cartesian(270.0, 0.0, 10.0);
+        assert!(x.abs() < 1e-10, "x={} should be 0.0", x);
+        assert!((y + 10.0).abs() < 1e-10, "y={} should be -10.0", y);
+        assert!(z.abs() < 1e-10, "z={} should be 0.0", z);
+    }
+
+    #[test]
+    fn spherical_30_30_10_north_northeast_elevated() {
+        // φ=30°, θ=30°, r=10: NE azimuth at 30° elevation
+        let (x, _y, z) = spherical_to_cartesian(30.0, 30.0, 10.0);
+        // x = cos(θ) * cos(φ) * r = cos(30°) * cos(30°) * 10 ≈ 0.866 * 0.866 * 10 ≈ 7.5
+        assert!((x - 7.5).abs() < 0.1, "x should be ~7.5, got {}", x);
+        // z = sin(θ) * r = sin(30°) * 10 = 0.5 * 10 = 5.0
+        assert!((z - 5.0).abs() < 1e-10, "z should be 5.0, got {}", z);
+    }
+
+    #[test]
+    fn spherical_conversion_symmetry_phi_360() {
+        // φ=0 and φ=360 should give same result
+        let (x1, y1, z1) = spherical_to_cartesian(0.0, 45.0, 10.0);
+        let (x2, y2, z2) = spherical_to_cartesian(360.0, 45.0, 10.0);
+        assert!((x1 - x2).abs() < 1e-10);
+        assert!((y1 - y2).abs() < 1e-10);
+        assert!((z1 - z2).abs() < 1e-10);
+    }
+
+    #[test]
+    fn spherical_zero_radius_returns_origin() {
+        // Radius 0 should give origin regardless of angles
+        let (x, y, z) = spherical_to_cartesian(45.0, 45.0, 0.0);
+        assert!(x.abs() < 1e-10);
+        assert!(y.abs() < 1e-10);
+        assert!(z.abs() < 1e-10);
+    }
+
+    #[test]
+    fn spherical_negative_radius_reflection() {
+        // Negative radius should flip direction
+        let (x1, y1, z1) = spherical_to_cartesian(45.0, 45.0, 10.0);
+        let (x2, y2, z2) = spherical_to_cartesian(45.0, 45.0, -10.0);
+        assert!((x1 + x2).abs() < 1e-10, "x components should cancel");
+        assert!((y1 + y2).abs() < 1e-10, "y components should cancel");
+        assert!((z1 + z2).abs() < 1e-10, "z components should cancel");
     }
 }

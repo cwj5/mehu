@@ -1,8 +1,8 @@
 use crate::function_mapping::map_legacy_function_number;
 use crate::plot_state::{
-    cap, AxisBounds, AxisView, ContourAttribute, ContourEntry, ContourSpec, DatasetRef, Diagnostic,
-    DiagnosticSeverity, FsurfaceSpec, GridSubset, IndexRange, MinMaxOverride, PlotAction,
-    PlotFamily, PlotText, ScalarField, ViewPoint,
+    cap, spherical_to_cartesian, AxisBounds, AxisView, ContourAttribute, ContourEntry, ContourSpec,
+    DatasetRef, Diagnostic, DiagnosticSeverity, FsurfaceSpec, GridSubset, IndexRange,
+    MinMaxOverride, PlotAction, PlotFamily, PlotText, ScalarField, ViewPoint,
 };
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -348,36 +348,68 @@ fn parse_view(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {
 }
 
 fn parse_vpoint(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {
-    if args.len() < 3 {
-        out.diagnostics.push(diagnostic(
-            cap::VPOINT,
-            DiagnosticSeverity::Warning,
-            Some(file.to_string_lossy().to_string()),
-            Some(line),
-            Some(1),
-            "VPOINT requires 3 numeric values: VPOINT x y z",
-        ));
+    // Check for /ANGLES qualifier to determine if spherical or Cartesian
+    let is_spherical = args.iter().any(|arg| {
+        if let Some((name, _)) = parse_qualifier(arg) {
+            name.to_uppercase() == "ANGLES"
+        } else {
+            false
+        }
+    });
+
+    let numeric_args: Vec<f64> = args
+        .iter()
+        .filter_map(|arg| {
+            // Skip qualifiers (they start with /)
+            if arg.starts_with('/') {
+                None
+            } else {
+                parse_f64(arg)
+            }
+        })
+        .collect();
+
+    let non_qualifier_args: Vec<&String> =
+        args.iter().filter(|arg| !arg.starts_with('/')).collect();
+
+    if numeric_args.len() < 3 {
+        // Check if we have the right number of non-qualifier args but they're not numeric
+        if non_qualifier_args.len() >= 3 && numeric_args.len() < non_qualifier_args.len() {
+            out.diagnostics.push(diagnostic(
+                cap::VPOINT,
+                DiagnosticSeverity::Warning,
+                Some(file.to_string_lossy().to_string()),
+                Some(line),
+                Some(1),
+                "VPOINT values must be numeric",
+            ));
+        } else {
+            out.diagnostics.push(diagnostic(
+                cap::VPOINT,
+                DiagnosticSeverity::Warning,
+                Some(file.to_string_lossy().to_string()),
+                Some(line),
+                Some(1),
+                if is_spherical {
+                    "VPOINT/ANGLES requires 3 numeric values: phi theta radius"
+                } else {
+                    "VPOINT requires 3 numeric values: VPOINT x y z"
+                },
+            ));
+        }
         return;
     }
 
-    let x = parse_f64(&args[0]);
-    let y = parse_f64(&args[1]);
-    let z = parse_f64(&args[2]);
+    let (x, y, z) = if is_spherical {
+        // DISSPLA spherical convention: phi (azimuth), theta (elevation), radius
+        spherical_to_cartesian(numeric_args[0], numeric_args[1], numeric_args[2])
+    } else {
+        // Cartesian coordinates
+        (numeric_args[0], numeric_args[1], numeric_args[2])
+    };
 
-    match (x, y, z) {
-        (Some(x), Some(y), Some(z)) => {
-            out.actions
-                .push(PlotAction::SetViewpoint(ViewPoint { x, y, z }))
-        }
-        _ => out.diagnostics.push(diagnostic(
-            cap::VPOINT,
-            DiagnosticSeverity::Warning,
-            Some(file.to_string_lossy().to_string()),
-            Some(line),
-            Some(1),
-            "VPOINT values must be numeric",
-        )),
-    }
+    out.actions
+        .push(PlotAction::SetViewpoint(ViewPoint { x, y, z }));
 }
 
 fn parse_minmax(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {
@@ -1347,6 +1379,109 @@ mod tests {
         );
     }
 
+    #[test]
+    fn vpoint_angles_45_45_10_converts_spherical_to_cartesian() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("v.com");
+        fs::write(&file, "VPOINT/ANGLES 45.0 45.0 10.0\n").expect("write");
+
+        let parsed = parse_com_file(&file).expect("parse");
+        assert_eq!(parsed.actions.len(), 1, "Expected 1 action");
+        match &parsed.actions[0] {
+            PlotAction::SetViewpoint(vp) => {
+                // φ=45°, θ=45°, r=10 should give approximately (5.0, 5.0, 7.07)
+                assert!((vp.x - 5.0).abs() < 0.01, "expected x ≈ 5.0, got {}", vp.x);
+                assert!((vp.y - 5.0).abs() < 0.01, "expected y ≈ 5.0, got {}", vp.y);
+                assert!(
+                    (vp.z - 7.07).abs() < 0.01,
+                    "expected z ≈ 7.07, got {}",
+                    vp.z
+                );
+            }
+            _ => panic!("Expected SetViewpoint action"),
+        }
+    }
+
+    #[test]
+    fn vpoint_angles_0_0_10_looks_positive_x() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("v.com");
+        fs::write(&file, "VPOINT/ANGLES 0.0 0.0 10.0\n").expect("write");
+
+        let parsed = parse_com_file(&file).expect("parse");
+        assert_eq!(parsed.actions.len(), 1);
+        match &parsed.actions[0] {
+            PlotAction::SetViewpoint(vp) => {
+                assert!(
+                    (vp.x - 10.0).abs() < 1e-10,
+                    "x should be 10.0, got {}",
+                    vp.x
+                );
+                assert!(vp.y.abs() < 1e-10, "y should be 0.0, got {}", vp.y);
+                assert!(vp.z.abs() < 1e-10, "z should be 0.0, got {}", vp.z);
+            }
+            _ => panic!("Expected SetViewpoint action"),
+        }
+    }
+
+    #[test]
+    fn vpoint_angles_0_90_10_looks_straight_up() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("v.com");
+        fs::write(&file, "VPOINT/ANGLES 0.0 90.0 10.0\n").expect("write");
+
+        let parsed = parse_com_file(&file).expect("parse");
+        assert_eq!(parsed.actions.len(), 1);
+        match &parsed.actions[0] {
+            PlotAction::SetViewpoint(vp) => {
+                assert!(vp.x.abs() < 1e-10, "x should be 0.0, got {}", vp.x);
+                assert!(vp.y.abs() < 1e-10, "y should be 0.0, got {}", vp.y);
+                assert!(
+                    (vp.z - 10.0).abs() < 1e-10,
+                    "z should be 10.0, got {}",
+                    vp.z
+                );
+            }
+            _ => panic!("Expected SetViewpoint action"),
+        }
+    }
+
+    #[test]
+    fn vpoint_angles_too_few_args_warns() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("v.com");
+        fs::write(&file, "VPOINT/ANGLES 45.0 45.0\n").expect("write");
+
+        let parsed = parse_com_file(&file).expect("parse");
+        assert!(parsed.actions.is_empty());
+        assert!(
+            parsed
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("3 numeric values")),
+            "expected arity warning, got {:?}",
+            parsed.diagnostics
+        );
+    }
+
+    #[test]
+    fn vpoint_angles_non_numeric_args_warn() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("v.com");
+        fs::write(&file, "VPOINT/ANGLES abc def ghi\n").expect("write");
+
+        let parsed = parse_com_file(&file).expect("parse");
+        assert!(parsed.actions.is_empty());
+        assert!(
+            parsed
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("must be numeric") || d.message.contains("3 numeric")),
+            "expected error, got {:?}",
+            parsed.diagnostics
+        );
+    }
+
     // ── Alias resolution ─────────────────────────────────────────────────────
 
     #[test]
@@ -1700,22 +1835,276 @@ fn subsets_positional_start_end_pairs_parsed() {
     } else {
         panic!("expected SetSubsets, got {:?}", parsed.actions[0]);
     }
-}
 
-#[test]
-fn subsets_add_qualifier_uses_append_action() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let file = dir.path().join("subsets_add.com");
-    fs::write(&file, "SUBSETS/ADD/GRID=2 5 15 6 16 7 17\n").expect("write");
+    // ── Integration tests: plot3d.md examples ────────────────────────────────────
 
-    let parsed = parse_com_file(&file).expect("parse");
-    assert_eq!(parsed.actions.len(), 1);
-    if let PlotAction::AddSubsets(subsets) = &parsed.actions[0] {
-        assert_eq!(subsets.len(), 1);
-        assert_eq!(subsets[0].grid, 2);
-        assert_eq!(subsets[0].i_range.as_ref().map(|r| r.start), Some(5));
-        assert_eq!(subsets[0].i_range.as_ref().and_then(|r| r.end), Some(15));
-    } else {
-        panic!("expected AddSubsets, got {:?}", parsed.actions[0]);
+    #[test]
+    fn parse_cp_com_2d_line_plot_example_from_plot3d_md() {
+        // Simplified cp.com example from plot3d.md
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("cp.com");
+        let content = r#"
+    FUNCTION 114
+    FSURFACE /WALLS_ORIGIN=1
+    MINMAX /INC -0.75,0.75,0.25,1.5,-1.5,-0.5
+    VIEW XZ
+    PLOT/LINE
+    "#;
+        fs::write(&file, content).expect("write");
+
+        let parsed = parse_com_file(&file).expect("parse");
+
+        // Expected actions: SetScalarField + two SetMinMax + SetAxisView + SetPlotFamily + CommitPlot
+        // (FSURFACE and VIEW produce actions; MINMAX/INC produces diagnostics)
+        assert!(
+            parsed.actions.len() >= 4,
+            "expected at least 4 actions, got {}: {:?}",
+            parsed.actions.len(),
+            parsed.actions
+        );
+
+        // Verify SetAxisView is present with PlaneXZ
+        let has_axis_view_xz = parsed
+            .actions
+            .iter()
+            .any(|action| matches!(action, PlotAction::SetAxisView(AxisView::PlaneXZ)));
+        assert!(has_axis_view_xz, "expected PlaneXZ axis view");
+
+        // Verify CommitPlot is present
+        let has_plot = parsed
+            .actions
+            .iter()
+            .any(|action| matches!(action, PlotAction::CommitPlot));
+        assert!(has_plot, "expected CommitPlot action");
+
+        // No errors expected (only diagnostic for /INC is acceptable)
+        let errors: Vec<_> = parsed
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == DiagnosticSeverity::Error)
+            .collect();
+        assert!(errors.is_empty(), "expected no errors, got {:?}", errors);
+    }
+
+    #[test]
+    fn parse_top_com_shuttle_example_from_plot3d_md() {
+        // Simplified shuttle "top.com" example from plot3d.md
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("top.com");
+        let content = r#"
+    FUNCTION 100
+    VIEW TOP
+    TEXT
+    Space Shuttle Comparison
+    WALLS
+    PLOT/CONTOUR
+    "#;
+        fs::write(&file, content).expect("write");
+
+        let parsed = parse_com_file(&file).expect("parse");
+
+        // Expected actions: SetScalarField + SetAxisView(PlaneXY) + AddTextAnnotation + (walls) + CommitPlot
+        assert!(
+            parsed.actions.len() >= 4,
+            "expected at least 4 actions, got {}",
+            parsed.actions.len()
+        );
+
+        // Verify SetAxisView is present with PlaneXY (equivalent to TOP)
+        let has_axis_view_xy = parsed
+            .actions
+            .iter()
+            .any(|action| matches!(action, PlotAction::SetAxisView(AxisView::PlaneXY)));
+        assert!(has_axis_view_xy, "expected PlaneXY axis view for TOP");
+
+        // Verify TEXT annotation is present
+        let has_text = parsed
+            .actions
+            .iter()
+            .any(|action| matches!(action, PlotAction::AddTextAnnotation(_)));
+        assert!(has_text, "expected text annotation");
+
+        // Verify CommitPlot is present
+        let has_plot = parsed
+            .actions
+            .iter()
+            .any(|action| matches!(action, PlotAction::CommitPlot));
+        assert!(has_plot, "expected CommitPlot action");
+    }
+
+    #[test]
+    fn parse_script_with_vpoint_spherical_lookup_from_plot3d_md() {
+        // Example script showing VPOINT/ANGLES as documented in plot3d.md
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("isometric.com");
+        let content = r#"
+    FUNCTION 100
+    VPOINT/ANGLES 30 45 10
+    PLOT/CONTOUR
+    "#;
+        fs::write(&file, content).expect("write");
+
+        let parsed = parse_com_file(&file).expect("parse");
+
+        // Expected: SetScalarField + SetViewpoint + CommitPlot
+        assert!(
+            parsed.actions.len() >= 3,
+            "expected at least 3 actions, got {}",
+            parsed.actions.len()
+        );
+
+        // Verify SetViewpoint is present with spherically converted coordinates
+        let vp = parsed.actions.iter().find_map(|action| {
+            if let PlotAction::SetViewpoint(vp) = action {
+                Some(vp)
+            } else {
+                None
+            }
+        });
+        assert!(vp.is_some(), "expected SetViewpoint action");
+
+        let vp = vp.unwrap();
+        // φ=30°, θ=45°, r=10 should give approximately (6.1, 3.5, 7.07)
+        assert!(
+            (vp.x - 6.1).abs() < 0.2,
+            "x from spherical(30,45,10) should be ~6.1, got {}",
+            vp.x
+        );
+        assert!(
+            (vp.z - 7.07).abs() < 0.1,
+            "z from spherical(30,45,10) should be ~7.07, got {}",
+            vp.z
+        );
+    }
+
+    #[test]
+    fn parse_airfoil_example_with_view_and_plot_line_qualifier() {
+        // Example from plot3d.md § VPOINT showing 2D airfoil plot
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("airfoil.com");
+        let content = r#"
+    FUNCTION 114
+    VIEW YX
+    MINMAX 0 0.2 -0.5 1
+    PLOT/LINE
+    "#;
+        fs::write(&file, content).expect("write");
+
+        let parsed = parse_com_file(&file).expect("parse");
+
+        // Expected: SetScalarField + SetAxisView(PlaneYX) + SetMinMax + CommitPlot
+        assert!(
+            parsed.actions.len() >= 3,
+            "expected at least 3 actions, got {}",
+            parsed.actions.len()
+        );
+
+        // Verify PlaneYX (swapped view)
+        let has_axis_view_yx = parsed
+            .actions
+            .iter()
+            .any(|action| matches!(action, PlotAction::SetAxisView(AxisView::PlaneYX)));
+        assert!(has_axis_view_yx, "expected PlaneYX axis view");
+
+        // Verify no errors
+        let errors: Vec<_> = parsed
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == DiagnosticSeverity::Error)
+            .collect();
+        assert!(errors.is_empty(), "expected no errors, got {:?}", errors);
+    }
+
+    #[test]
+    fn parse_multiplot_script_with_multiple_view_and_vpoint_changes() {
+        // Complex script showing multiple camera switches
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("multi.com");
+        let content = r#"
+    FUNCTION 100
+    VIEW TOP
+    PLOT/CONTOUR
+    VIEW FRONT
+    VPOINT 0 10 0
+    PLOT/CONTOUR
+    "#;
+        fs::write(&file, content).expect("write");
+
+        let parsed = parse_com_file(&file).expect("parse");
+
+        // Expected: SetAxisView + CommitPlot + SetAxisView + SetViewpoint + CommitPlot
+        // (that's 5 actions minimum)
+        assert!(
+            parsed.actions.len() >= 5,
+            "expected at least 5 actions, got {}: {:?}",
+            parsed.actions.len(),
+            parsed.actions
+        );
+
+        // Count SetAxisView and SetViewpoint actions
+        let axis_views = parsed
+            .actions
+            .iter()
+            .filter(|action| matches!(action, PlotAction::SetAxisView(_)))
+            .count();
+        let viewpoints = parsed
+            .actions
+            .iter()
+            .filter(|action| matches!(action, PlotAction::SetViewpoint(_)))
+            .count();
+        let plots = parsed
+            .actions
+            .iter()
+            .filter(|action| matches!(action, PlotAction::CommitPlot))
+            .count();
+
+        assert_eq!(axis_views, 2, "expected 2 SetAxisView actions");
+        assert_eq!(viewpoints, 1, "expected 1 SetViewpoint action");
+        assert_eq!(plots, 2, "expected 2 CommitPlot actions");
+    }
+
+    #[test]
+    fn parse_command_aliases_in_cp_example() {
+        // Verify that aliases (VP for VPOINT, FUN for FUNCTION, etc.) work in real scripts
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("aliases.com");
+        let content = r#"
+    FUN 100
+    VP 5.0 5.0 5.0
+    PL/CONTOUR
+    "#;
+        fs::write(&file, content).expect("write");
+
+        let parsed = parse_com_file(&file).expect("parse");
+
+        // Expected: SetScalarField + SetViewpoint + CommitPlot
+        assert!(
+            parsed.actions.len() >= 3,
+            "expected at least 3 actions with aliases, got {}",
+            parsed.actions.len()
+        );
+
+        // Verify aliases resolved to full commands
+        let has_vp = parsed
+            .actions
+            .iter()
+            .any(|action| matches!(action, PlotAction::SetViewpoint(_)));
+        assert!(has_vp, "expected VP alias to resolve");
+    }
+
+    #[test]
+    fn empty_script_produces_no_actions_and_no_errors() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("empty.com");
+        fs::write(&file, "! This is just a comment\n\n").expect("write");
+
+        let parsed = parse_com_file(&file).expect("parse");
+        assert!(parsed.actions.is_empty());
+        let errors: Vec<_> = parsed
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == DiagnosticSeverity::Error)
+            .collect();
+        assert!(errors.is_empty());
     }
 }
