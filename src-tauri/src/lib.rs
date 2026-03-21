@@ -3174,6 +3174,72 @@ fn set_plot_subsets(subsets: Vec<plot_state::GridSubset>) -> Result<ApplyActionR
     apply_plot_action(PlotAction::SetSubsets(resolved))
 }
 
+/// Convenience command: replace plot walls via a stable argument shape.
+#[tauri::command]
+fn set_plot_walls(walls: Vec<plot_state::GridSubset>) -> Result<ApplyActionResult, String> {
+    let resolved = {
+        let cache = GRID_CACHE
+            .lock()
+            .map_err(|e| format!("Failed to lock grid cache: {e}"))?;
+        walls
+            .into_iter()
+            .map(|s| resolve_subset_negatives(s, &cache))
+            .collect()
+    };
+    apply_plot_action(PlotAction::SetWalls(resolved))
+}
+
+/// Convenience command: set or clear FSURFACE specification.
+#[tauri::command]
+fn set_plot_fsurface(
+    fsurface: Option<plot_state::FsurfaceSpec>,
+) -> Result<ApplyActionResult, String> {
+    apply_plot_action(PlotAction::SetFsurface(fsurface))
+}
+
+/// Convenience command: add one text annotation.
+#[tauri::command]
+fn add_plot_text_annotation(text: plot_state::PlotText) -> Result<ApplyActionResult, String> {
+    apply_plot_action(PlotAction::AddTextAnnotation(text))
+}
+
+/// Convenience command: clear all text annotations.
+#[tauri::command]
+fn clear_plot_text_annotations() -> Result<ApplyActionResult, String> {
+    apply_plot_action(PlotAction::ClearTextAnnotations)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ShowStatusResult {
+    status: String,
+    state: PlotState,
+    diagnostics: Vec<plot_state::Diagnostic>,
+}
+
+/// Execute SHOW status against current PlotState and return formatted summary.
+#[tauri::command]
+fn show_plot_status() -> Result<ShowStatusResult, String> {
+    let guard = PLOT_STATE
+        .lock()
+        .map_err(|e| format!("Failed to lock plot state: {e}"))?;
+    let current = guard.clone();
+    let (state, diagnostics) = apply_action(current, PlotAction::ShowStatus);
+    let status = format!(
+        "SHOW: field={:?}, family={:?}, axis_view={:?}, text_annotations={}, walls={}, subsets={}",
+        state.scalar_field,
+        state.plot_family,
+        state.axis_view,
+        state.text_annotations.len(),
+        state.walls.len(),
+        state.subsets.len()
+    );
+    Ok(ShowStatusResult {
+        status,
+        state,
+        diagnostics,
+    })
+}
+
 /// Convenience command: set a single manual contour level.
 #[tauri::command]
 fn set_plot_contour_level(level: f64) -> Result<ApplyActionResult, String> {
@@ -3318,9 +3384,14 @@ pub fn run() {
             set_plot_viewpoint,
             set_plot_axis_view,
             set_plot_subsets,
+            set_plot_walls,
+            set_plot_fsurface,
+            add_plot_text_annotation,
+            clear_plot_text_annotations,
             set_plot_contour_level,
             set_plot_contour_spec,
             set_plot_contour_attribute,
+            show_plot_status,
             commit_plot,
             execute_com_script,
             execute_plot3d_commands,

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, cleanup, within } from '@testing-library/react';
 import App from './App';
 
 const { invokeMock } = vi.hoisted(() => ({
@@ -72,7 +72,10 @@ describe('App frontend integration', () => {
                     contour_attribute: 'line',
                     axis_view: currentAxisView,
                     contour_spec: { mode: 'none' },
+                    walls: [],
                     subsets: currentSubsets,
+                    fsurface: null,
+                    text_annotations: [],
                     viewpoint: null,
                 };
             }
@@ -122,7 +125,10 @@ describe('App frontend integration', () => {
                         contour_attribute: 'line',
                         axis_view: currentAxisView,
                         contour_spec: { mode: 'none' },
+                        walls: [],
                         subsets: currentSubsets,
+                        fsurface: null,
+                        text_annotations: [],
                         viewpoint: { x: 1, y: 0, z: 0 },
                     },
                     diagnostics: [],
@@ -138,7 +144,10 @@ describe('App frontend integration', () => {
                         contour_attribute: 'line',
                         axis_view: currentAxisView,
                         contour_spec: { mode: 'none' },
+                        walls: [],
                         subsets: currentSubsets,
+                        fsurface: null,
+                        text_annotations: [],
                         viewpoint: { x: 1, y: 0, z: 0 },
                     },
                     diagnostics: [],
@@ -155,7 +164,10 @@ describe('App frontend integration', () => {
                         contour_attribute: 'line',
                         axis_view: currentAxisView,
                         contour_spec: { mode: 'none' },
+                        walls: [],
                         subsets: currentSubsets,
+                        fsurface: null,
+                        text_annotations: [],
                         viewpoint: { x: 1, y: 0, z: 0 },
                     },
                     diagnostics: [],
@@ -314,7 +326,10 @@ describe('Contour spec editor commits (TKT-007E)', () => {
                 contour_attribute: overrides.contour_attribute ?? 'line',
                 axis_view: 'custom',
                 contour_spec: overrides.contour_spec ?? { mode: 'none' },
+                walls: [],
                 subsets: [],
+                fsurface: null,
+                text_annotations: [],
                 viewpoint: null,
             },
             diagnostics: [],
@@ -336,7 +351,10 @@ describe('Contour spec editor commits (TKT-007E)', () => {
                     contour_attribute: currentContourAttribute,
                     axis_view: 'custom',
                     contour_spec: currentContourSpec,
+                    walls: [],
                     subsets: [],
+                    fsurface: null,
+                    text_annotations: [],
                     viewpoint: null,
                 };
             }
@@ -435,7 +453,8 @@ describe('Contour spec editor commits (TKT-007E)', () => {
         fireEvent.change(levelsSelect, { target: { value: 'increment' } });
 
         // Start defaults to '0', Step defaults to '1'
-        const [startInput] = await screen.findAllByDisplayValue('0');
+        const startLabel = await screen.findByText('Start:');
+        const startInput = within(startLabel.closest('label') as HTMLElement).getByRole('spinbutton');
         fireEvent.change(startInput, { target: { value: '1.5' } });
 
         const stepInput = await screen.findByDisplayValue('1');
@@ -465,7 +484,8 @@ describe('Contour spec editor commits (TKT-007E)', () => {
         const levelsSelect = await screen.findByDisplayValue('None');
         fireEvent.change(levelsSelect, { target: { value: 'manual' } });
 
-        const levelInput = await screen.findByDisplayValue('0');
+        const levelLabels = await screen.findAllByText('Level:');
+        const levelInput = within(levelLabels[0].closest('label') as HTMLElement).getByRole('spinbutton');
         fireEvent.change(levelInput, { target: { value: '42.75' } });
 
         // No commit yet — only draft changed
@@ -490,7 +510,8 @@ describe('Contour spec editor commits (TKT-007E)', () => {
         const levelsSelect = await screen.findByDisplayValue('None');
         fireEvent.change(levelsSelect, { target: { value: 'manual' } });
 
-        const levelInput = await screen.findByDisplayValue('0');
+        const levelLabels = await screen.findAllByText('Level:');
+        const levelInput = within(levelLabels[0].closest('label') as HTMLElement).getByRole('spinbutton');
         fireEvent.change(levelInput, { target: { value: '77' } });
 
         invokeMock.mockClear();

@@ -85,8 +85,22 @@ interface BackendPlotState {
   contour_attribute: BackendContourAttribute;
   axis_view: BackendAxisView;
   contour_spec: unknown;
+  walls: BackendGridSubset[];
   subsets: BackendGridSubset[];
+  fsurface?: BackendFsurfaceSpec | null;
+  text_annotations: BackendPlotText[];
   viewpoint?: { x: number; y: number; z: number } | null;
+}
+
+interface BackendFsurfaceSpec {
+  value: number;
+  scalar_field: BackendScalarField;
+}
+
+interface BackendPlotText {
+  content: string;
+  x: number;
+  y: number;
 }
 
 interface BackendIndexRange {
@@ -119,6 +133,82 @@ interface ScriptExecutionResult {
   show_output: string[];
   diagnostics: BackendDiagnostic[];
 }
+
+interface ShowStatusResult {
+  status: string;
+  state: BackendPlotState;
+  diagnostics: BackendDiagnostic[];
+}
+
+interface EditableSubset {
+  id: string;
+  subset: BackendGridSubset;
+  editing: boolean;
+}
+
+const cloneSubset = (subset: BackendGridSubset): BackendGridSubset => ({
+  grid: subset.grid,
+  gui_managed: subset.gui_managed,
+  i_range: subset.i_range ? { ...subset.i_range } : null,
+  j_range: subset.j_range ? { ...subset.j_range } : null,
+  k_range: subset.k_range ? { ...subset.k_range } : null,
+});
+
+const editableFromBackend = (items: BackendGridSubset[]): EditableSubset[] =>
+  items.map((subset, idx) => ({
+    id: `range-${subset.grid}-${idx}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    subset: cloneSubset(subset),
+    editing: false,
+  }));
+
+const parseOptionalInt = (value: string): number | null => {
+  const parsed = Number.parseInt(value.trim(), 10);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const rangeStartString = (range?: BackendIndexRange | null): string =>
+  range ? String(range.start) : '';
+
+const rangeEndString = (range?: BackendIndexRange | null): string =>
+  range?.end != null ? String(range.end) : '';
+
+const compactRangeStr = (range?: BackendIndexRange | null, dim?: number): string => {
+  if (!range) {
+    return ':';
+  }
+  const isFull =
+    range.start === 1 &&
+    (range.end == null || range.end === -1 || (dim != null && range.end === dim));
+  if (isFull) {
+    return ':';
+  }
+  return `${range.start}:${range.end ?? ''}`;
+};
+
+const compactSubsetLabel = (
+  subset: BackendGridSubset,
+  dims?: { i: number; j: number; k: number }
+): string =>
+  `G${subset.grid} (${compactRangeStr(subset.i_range, dims?.i)}, ${compactRangeStr(subset.j_range, dims?.j)}, ${compactRangeStr(subset.k_range, dims?.k)})`;
+
+const normalizeAxisRangeForApply = (
+  range?: BackendIndexRange | null
+): BackendIndexRange => {
+  if (!range) {
+    return { start: 1, end: -1 };
+  }
+  if (range.start === 1 && range.end == null) {
+    return { start: 1, end: -1 };
+  }
+  return { ...range };
+};
+
+const normalizeSubsetForApply = (subset: BackendGridSubset): BackendGridSubset => ({
+  ...cloneSubset(subset),
+  i_range: normalizeAxisRangeForApply(subset.i_range),
+  j_range: normalizeAxisRangeForApply(subset.j_range),
+  k_range: normalizeAxisRangeForApply(subset.k_range),
+});
 
 const subsetRangeSig = (range?: BackendIndexRange | null) =>
   range ? `${range.start}:${range.end ?? ''}` : '-';
@@ -326,6 +416,10 @@ const App = () => {
   const [subsetsDirty, setSubsetsDirty] = useState(false);
   const [sliceIndexDrafts, setSliceIndexDrafts] = useState<Record<string, string>>({});
   const [arbitrarySlices, setArbitrarySlices] = useState<ArbitrarySlice[]>([]);
+  const [manualSubsetRows, setManualSubsetRows] = useState<EditableSubset[]>([]);
+  const [manualWallsRows, setManualWallsRows] = useState<EditableSubset[]>([]);
+  const [manualSubsetDirty, setManualSubsetDirty] = useState(false);
+  const [manualWallsDirty, setManualWallsDirty] = useState(false);
 
   // Contour state
   const [plotFamilyState, setPlotFamilyState] = useState<BackendPlotFamily>('contour');
@@ -346,6 +440,13 @@ const App = () => {
   const [commandText, setCommandText] = useState("SHOW\nPLOT/CONTOUR");
   const [comFilePath, setComFilePath] = useState("");
   const [commandWindowOutput, setCommandWindowOutput] = useState("");
+  const [showStatusOutput, setShowStatusOutput] = useState("");
+  const [fsurfaceEnabled, setFsurfaceEnabled] = useState(false);
+  const [fsurfaceValueDraft, setFsurfaceValueDraft] = useState('0');
+  const [fsurfaceField, setFsurfaceField] = useState<BackendScalarField>('pressure');
+  const [textContentDraft, setTextContentDraft] = useState('');
+  const [textXDraft, setTextXDraft] = useState('0.05');
+  const [textYDraft, setTextYDraft] = useState('0.95');
   const backendMappedSlicesSigRef = useRef<string | null>(null);
 
   const syncPlotStateFromBackend = async () => {
@@ -423,6 +524,138 @@ const App = () => {
     } catch (e) {
       logger.error(`Failed to set plot subsets: ${e}`, 'App');
     }
+  };
+
+  const setPlotWalls = async (walls: BackendGridSubset[]) => {
+    try {
+      const result = await invoke<ApplyPlotActionResult>('set_plot_walls', { walls });
+      updateBackendFromResult(result);
+    } catch (e) {
+      logger.error(`Failed to set plot walls: ${e}`, 'App');
+    }
+  };
+
+  const setPlotFsurface = async (fsurface: BackendFsurfaceSpec | null) => {
+    try {
+      const result = await invoke<ApplyPlotActionResult>('set_plot_fsurface', { fsurface });
+      updateBackendFromResult(result);
+    } catch (e) {
+      logger.error(`Failed to set FSURFACE: ${e}`, 'App');
+    }
+  };
+
+  const addPlotTextAnnotation = async (text: BackendPlotText) => {
+    try {
+      const result = await invoke<ApplyPlotActionResult>('add_plot_text_annotation', { text });
+      updateBackendFromResult(result);
+    } catch (e) {
+      logger.error(`Failed to add plot text annotation: ${e}`, 'App');
+    }
+  };
+
+  const clearPlotTextAnnotations = async () => {
+    try {
+      const result = await invoke<ApplyPlotActionResult>('clear_plot_text_annotations');
+      updateBackendFromResult(result);
+    } catch (e) {
+      logger.error(`Failed to clear plot text annotations: ${e}`, 'App');
+    }
+  };
+
+  const refreshShowStatus = async () => {
+    try {
+      const result = await invoke<ShowStatusResult>('show_plot_status');
+      setBackendPlotState(result.state);
+      setBackendDiagnostics(result.diagnostics ?? []);
+      setShowStatusOutput(result.status);
+    } catch (e) {
+      logger.error(`Failed to fetch SHOW status: ${e}`, 'App');
+      setShowStatusOutput(`SHOW failed: ${e}`);
+    }
+  };
+
+  const addManualRangeRow = (kind: 'subset' | 'wall') => {
+    const defaultGrid = grids.length > 0 ? grids[0].gridIndex + 1 : 1;
+    const row: EditableSubset = {
+      id: `manual-${kind}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      subset: {
+        grid: defaultGrid,
+        gui_managed: false,
+        i_range: null,
+        j_range: null,
+        k_range: null,
+      },
+      editing: true,
+    };
+    if (kind === 'subset') {
+      setManualSubsetRows((prev) => [...prev, row]);
+      setManualSubsetDirty(true);
+    } else {
+      setManualWallsRows((prev) => [...prev, row]);
+      setManualWallsDirty(true);
+    }
+  };
+
+  const updateManualRangeRow = (
+    kind: 'subset' | 'wall',
+    rowId: string,
+    updater: (subset: BackendGridSubset) => BackendGridSubset
+  ) => {
+    if (kind === 'subset') {
+      setManualSubsetRows((prev) =>
+        prev.map((row) => (row.id === rowId ? { ...row, subset: updater(row.subset) } : row))
+      );
+      setManualSubsetDirty(true);
+      return;
+    }
+    setManualWallsRows((prev) =>
+      prev.map((row) => (row.id === rowId ? { ...row, subset: updater(row.subset) } : row))
+    );
+    setManualWallsDirty(true);
+  };
+
+  const removeManualRangeRow = (kind: 'subset' | 'wall', rowId: string) => {
+    if (kind === 'subset') {
+      setManualSubsetRows((prev) => prev.filter((row) => row.id !== rowId));
+      setManualSubsetDirty(true);
+      return;
+    }
+    setManualWallsRows((prev) => prev.filter((row) => row.id !== rowId));
+    setManualWallsDirty(true);
+  };
+
+  const setRowEditing = (kind: 'subset' | 'wall', rowId: string, editing: boolean) => {
+    if (kind === 'subset') {
+      setManualSubsetRows((prev) => prev.map((row) => (row.id === rowId ? { ...row, editing } : row)));
+    } else {
+      setManualWallsRows((prev) => prev.map((row) => (row.id === rowId ? { ...row, editing } : row)));
+    }
+  };
+
+  const updateManualAxisRange = (
+    kind: 'subset' | 'wall',
+    rowId: string,
+    axis: 'i_range' | 'j_range' | 'k_range',
+    edge: 'start' | 'end',
+    rawValue: string
+  ) => {
+    const parsed = parseOptionalInt(rawValue);
+    updateManualRangeRow(kind, rowId, (subset) => {
+      const current = subset[axis] ?? { start: 1, end: null };
+      const nextRange: BackendIndexRange = {
+        start: edge === 'start' ? (parsed ?? current.start) : current.start,
+        end: edge === 'end' ? parsed : (current.end ?? null),
+      };
+
+      if (edge === 'start' && parsed == null) {
+        if ((nextRange.end ?? null) == null) {
+          return { ...subset, [axis]: null };
+        }
+        nextRange.start = 1;
+      }
+
+      return { ...subset, [axis]: nextRange };
+    });
   };
 
   const commitPlot = async () => {
@@ -878,6 +1111,56 @@ const App = () => {
     await setPlotViewpoint(vp);
   };
 
+  const applyWallsRanges = async () => {
+    const walls = manualWallsRows.map((row) => ({ ...normalizeSubsetForApply(row.subset), gui_managed: false }));
+    await setPlotWalls(walls);
+    await commitPlot();
+    setManualWallsDirty(false);
+  };
+
+  const applyFsurface = async () => {
+    if (!fsurfaceEnabled) {
+      await setPlotFsurface(null);
+      await commitPlot();
+      return;
+    }
+    const parsedValue = Number.parseFloat(fsurfaceValueDraft);
+    const value = Number.isFinite(parsedValue) ? parsedValue : 0;
+    setFsurfaceValueDraft(String(value));
+    await setPlotFsurface({ value, scalar_field: fsurfaceField });
+    await commitPlot();
+  };
+
+  const toggleFsurfaceEnabled = async (enabled: boolean) => {
+    setFsurfaceEnabled(enabled);
+    if (!enabled) {
+      await setPlotFsurface(null);
+      await commitPlot();
+      return;
+    }
+    const parsedValue = Number.parseFloat(fsurfaceValueDraft);
+    const value = Number.isFinite(parsedValue) ? parsedValue : 0;
+    setFsurfaceValueDraft(String(value));
+    await setPlotFsurface({ value, scalar_field: fsurfaceField });
+    await commitPlot();
+  };
+
+  const applyAddTextAnnotation = async () => {
+    const content = textContentDraft.trim();
+    if (!content) {
+      return;
+    }
+    const parsedX = Number.parseFloat(textXDraft);
+    const parsedY = Number.parseFloat(textYDraft);
+    const x = Number.isFinite(parsedX) ? parsedX : 0.05;
+    const y = Number.isFinite(parsedY) ? parsedY : 0.95;
+    await addPlotTextAnnotation({ content, x, y });
+    await commitPlot();
+    setTextContentDraft('');
+    setTextXDraft(String(x));
+    setTextYDraft(String(y));
+  };
+
   const applyGuiManagedSubsets = async (options?: {
     nextGridSlices?: Record<string, GridSlice[]>;
     nextSliceEnabled?: boolean;
@@ -885,9 +1168,9 @@ const App = () => {
     const effectiveGridSlices = options?.nextGridSlices ?? gridSlices;
     const effectiveSliceEnabled = options?.nextSliceEnabled ?? sliceEnabled;
     const nextSubsets = gridSlicesToBackendSubsets(effectiveGridSlices, grids, effectiveSliceEnabled);
+    const manualSubsets = manualSubsetRows.map((row) => ({ ...normalizeSubsetForApply(row.subset), gui_managed: false }));
     const currentSubsets = backendPlotState?.subsets ?? [];
-    const nonGuiManaged = currentSubsets.filter((s) => !s.gui_managed);
-    const reconciledSubsets = dedupeSubsets([...nonGuiManaged, ...nextSubsets]);
+    const reconciledSubsets = dedupeSubsets([...manualSubsets, ...nextSubsets]);
 
     if (subsetsSignature(reconciledSubsets) === subsetsSignature(currentSubsets)) {
       setSubsetsDirty(false);
@@ -899,6 +1182,7 @@ const App = () => {
       await commitPlot();
       backendMappedSlicesSigRef.current = gridSlicesSignature(effectiveGridSlices);
       setSubsetsDirty(false);
+      setManualSubsetDirty(false);
     } catch (e) {
       logger.error(`Failed to apply GUI-managed subsets: ${e}`, 'App');
     }
@@ -958,7 +1242,28 @@ const App = () => {
         setSliceEnabled(true);
       }
     }
-  }, [backendPlotState, grids, gridSlices, sliceEnabled, subsetsDirty]);
+
+    if (!manualSubsetDirty) {
+      const manual = (backendPlotState.subsets ?? []).filter((subset) => !subset.gui_managed);
+      setManualSubsetRows(editableFromBackend(manual));
+    }
+
+    if (!manualWallsDirty) {
+      setManualWallsRows(editableFromBackend(backendPlotState.walls ?? []));
+    }
+
+    const fs = backendPlotState.fsurface ?? null;
+    if (fs) {
+      setFsurfaceEnabled(true);
+      setFsurfaceValueDraft(String(fs.value));
+      setFsurfaceField(fs.scalar_field);
+    } else {
+      setFsurfaceEnabled(false);
+    }
+  }, [backendPlotState, grids, gridSlices, sliceEnabled, subsetsDirty, manualSubsetDirty, manualWallsDirty]);
+
+  const dimensionsForGridNumber = (gridNumber: number) =>
+    grids.find((grid) => grid.gridIndex + 1 === gridNumber)?.dimensions;
 
   // Callback from Viewer3D when it's done loading meshes
   const handleViewer3DLoadingChange = () => {
@@ -1800,6 +2105,286 @@ const App = () => {
                   >
                     {subsetsDirty ? 'Apply Slicing to PlotState' : 'Slicing in sync'}
                   </button>
+                </div>
+
+                <div style={{ marginTop: '10px', background: '#0b1120', padding: '10px', borderRadius: '8px', fontSize: '11px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  <div style={{ fontWeight: 600 }}>Range-Based SUBSETS</div>
+                  {manualSubsetRows.map((row) => (
+                    <div key={row.id}>
+                      {!row.editing ? (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                          <span style={{ flex: 1, fontFamily: 'monospace', fontSize: '10px', background: '#1e293b', padding: '3px 6px', borderRadius: '4px', border: '1px solid #334155', color: '#cbd5e1', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {compactSubsetLabel(row.subset, dimensionsForGridNumber(row.subset.grid))}
+                          </span>
+                          <button
+                            onClick={() => setRowEditing('subset', row.id, true)}
+                            title="Edit"
+                            style={{ padding: '2px 6px', background: '#1d4ed8', color: 'white', border: 'none', borderRadius: '3px', cursor: 'pointer', fontSize: '11px', flexShrink: 0 }}
+                          >✎</button>
+                          <button
+                            onClick={() => removeManualRangeRow('subset', row.id)}
+                            title="Remove"
+                            style={{ padding: '2px 6px', background: '#7f1d1d', color: 'white', border: 'none', borderRadius: '3px', cursor: 'pointer', fontSize: '11px', flexShrink: 0 }}
+                          >✕</button>
+                        </div>
+                      ) : (
+                        <div style={{ border: '1px solid #334155', borderRadius: '6px', padding: '6px', display: 'grid', gap: '4px', overflow: 'hidden' }}>
+                          <label style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                            <span style={{ minWidth: '30px' }}>Grid</span>
+                            <input
+                              type="number"
+                              min={1}
+                              value={row.subset.grid}
+                              onChange={(e) => {
+                                const next = Math.max(1, Number.parseInt(e.target.value || '1', 10));
+                                updateManualRangeRow('subset', row.id, (subset) => ({ ...subset, grid: next }));
+                              }}
+                              style={{ width: '50px', padding: '2px 4px', background: '#1a2640', color: '#e2e8f0', border: '1px solid #334155', borderRadius: '3px', fontSize: '11px' }}
+                            />
+                          </label>
+                          {(['i_range', 'j_range', 'k_range'] as const).map((axis) => (
+                            <div key={axis} style={{ display: 'grid', gridTemplateColumns: '16px 1fr 1fr', gap: '3px', alignItems: 'center' }}>
+                              <span style={{ fontSize: '10px' }}>{axis[0].toUpperCase()}</span>
+                              <input
+                                type="number"
+                                placeholder="start"
+                                value={rangeStartString(row.subset[axis])}
+                                onChange={(e) => updateManualAxisRange('subset', row.id, axis, 'start', e.target.value)}
+                                style={{ width: '100%', minWidth: 0, padding: '2px 4px', background: '#1a2640', color: '#e2e8f0', border: '1px solid #334155', borderRadius: '3px', fontSize: '11px', boxSizing: 'border-box' }}
+                              />
+                              <input
+                                type="number"
+                                placeholder="end"
+                                value={rangeEndString(row.subset[axis])}
+                                onChange={(e) => updateManualAxisRange('subset', row.id, axis, 'end', e.target.value)}
+                                style={{ width: '100%', minWidth: 0, padding: '2px 4px', background: '#1a2640', color: '#e2e8f0', border: '1px solid #334155', borderRadius: '3px', fontSize: '11px', boxSizing: 'border-box' }}
+                              />
+                            </div>
+                          ))}
+                          <div style={{ display: 'flex', gap: '4px' }}>
+                            <button
+                              onClick={() => setRowEditing('subset', row.id, false)}
+                              style={{ flex: 1, padding: '3px 6px', background: '#374151', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '11px' }}
+                            >Done</button>
+                            <button
+                              onClick={() => removeManualRangeRow('subset', row.id)}
+                              style={{ flex: 1, padding: '3px 6px', background: '#7f1d1d', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '11px' }}
+                            >Remove</button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    <button
+                      onClick={() => addManualRangeRow('subset')}
+                      style={{ flex: 1, padding: '5px 6px', background: '#1d4ed8', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '11px' }}
+                    >
+                      Add Subset Range
+                    </button>
+                    <button
+                      onClick={() => void applyGuiManagedSubsets()}
+                      disabled={!manualSubsetDirty && !subsetsDirty}
+                      style={{ flex: 1, padding: '5px 6px', background: (!manualSubsetDirty && !subsetsDirty) ? '#475569' : '#0284c7', color: 'white', border: 'none', borderRadius: '4px', cursor: (!manualSubsetDirty && !subsetsDirty) ? 'not-allowed' : 'pointer', fontSize: '11px' }}
+                    >
+                      Apply SUBSETS
+                    </button>
+                  </div>
+                </div>
+
+                <div style={{ marginTop: '10px', background: '#0b1120', padding: '10px', borderRadius: '8px', fontSize: '11px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  <div style={{ fontWeight: 600 }}>Range-Based WALLS</div>
+                  {manualWallsRows.map((row) => (
+                    <div key={row.id}>
+                      {!row.editing ? (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                          <span style={{ flex: 1, fontFamily: 'monospace', fontSize: '10px', background: '#1e293b', padding: '3px 6px', borderRadius: '4px', border: '1px solid #334155', color: '#cbd5e1', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {compactSubsetLabel(row.subset, dimensionsForGridNumber(row.subset.grid))}
+                          </span>
+                          <button
+                            onClick={() => setRowEditing('wall', row.id, true)}
+                            title="Edit"
+                            style={{ padding: '2px 6px', background: '#1d4ed8', color: 'white', border: 'none', borderRadius: '3px', cursor: 'pointer', fontSize: '11px', flexShrink: 0 }}
+                          >✎</button>
+                          <button
+                            onClick={() => removeManualRangeRow('wall', row.id)}
+                            title="Remove"
+                            style={{ padding: '2px 6px', background: '#7f1d1d', color: 'white', border: 'none', borderRadius: '3px', cursor: 'pointer', fontSize: '11px', flexShrink: 0 }}
+                          >✕</button>
+                        </div>
+                      ) : (
+                        <div style={{ border: '1px solid #334155', borderRadius: '6px', padding: '6px', display: 'grid', gap: '4px', overflow: 'hidden' }}>
+                          <label style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                            <span style={{ minWidth: '30px' }}>Grid</span>
+                            <input
+                              type="number"
+                              min={1}
+                              value={row.subset.grid}
+                              onChange={(e) => {
+                                const next = Math.max(1, Number.parseInt(e.target.value || '1', 10));
+                                updateManualRangeRow('wall', row.id, (subset) => ({ ...subset, grid: next }));
+                              }}
+                              style={{ width: '50px', padding: '2px 4px', background: '#1a2640', color: '#e2e8f0', border: '1px solid #334155', borderRadius: '3px', fontSize: '11px' }}
+                            />
+                          </label>
+                          {(['i_range', 'j_range', 'k_range'] as const).map((axis) => (
+                            <div key={axis} style={{ display: 'grid', gridTemplateColumns: '16px 1fr 1fr', gap: '3px', alignItems: 'center' }}>
+                              <span style={{ fontSize: '10px' }}>{axis[0].toUpperCase()}</span>
+                              <input
+                                type="number"
+                                placeholder="start"
+                                value={rangeStartString(row.subset[axis])}
+                                onChange={(e) => updateManualAxisRange('wall', row.id, axis, 'start', e.target.value)}
+                                style={{ width: '100%', minWidth: 0, padding: '2px 4px', background: '#1a2640', color: '#e2e8f0', border: '1px solid #334155', borderRadius: '3px', fontSize: '11px', boxSizing: 'border-box' }}
+                              />
+                              <input
+                                type="number"
+                                placeholder="end"
+                                value={rangeEndString(row.subset[axis])}
+                                onChange={(e) => updateManualAxisRange('wall', row.id, axis, 'end', e.target.value)}
+                                style={{ width: '100%', minWidth: 0, padding: '2px 4px', background: '#1a2640', color: '#e2e8f0', border: '1px solid #334155', borderRadius: '3px', fontSize: '11px', boxSizing: 'border-box' }}
+                              />
+                            </div>
+                          ))}
+                          <div style={{ display: 'flex', gap: '4px' }}>
+                            <button
+                              onClick={() => setRowEditing('wall', row.id, false)}
+                              style={{ flex: 1, padding: '3px 6px', background: '#374151', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '11px' }}
+                            >Done</button>
+                            <button
+                              onClick={() => removeManualRangeRow('wall', row.id)}
+                              style={{ flex: 1, padding: '3px 6px', background: '#7f1d1d', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '11px' }}
+                            >Remove</button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    <button
+                      onClick={() => addManualRangeRow('wall')}
+                      style={{ flex: 1, padding: '5px 6px', background: '#1d4ed8', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '11px' }}
+                    >
+                      Add Wall Range
+                    </button>
+                    <button
+                      onClick={() => { void applyWallsRanges(); }}
+                      disabled={!manualWallsDirty}
+                      style={{ flex: 1, padding: '5px 6px', background: manualWallsDirty ? '#0284c7' : '#475569', color: 'white', border: 'none', borderRadius: '4px', cursor: manualWallsDirty ? 'pointer' : 'not-allowed', fontSize: '11px' }}
+                    >
+                      Apply WALLS
+                    </button>
+                  </div>
+                </div>
+
+                {hasSolution && (
+                  <div style={{ marginTop: '10px', background: '#0b1120', padding: '10px', borderRadius: '8px', fontSize: '11px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    <div style={{ fontWeight: 600 }}>FSURFACE</div>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <input
+                        type="checkbox"
+                        checked={fsurfaceEnabled}
+                        onChange={(e) => {
+                          void toggleFsurfaceEnabled(e.target.checked);
+                        }}
+                      />
+                      Enabled
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                      <span style={{ fontSize: '10px', color: '#94a3b8' }}>Level</span>
+                      <input
+                        type="number"
+                        step="any"
+                        value={fsurfaceValueDraft}
+                        onChange={(e) => setFsurfaceValueDraft(e.target.value)}
+                        style={{ padding: '4px 6px', background: '#1a2640', color: '#e2e8f0', border: '1px solid #334155', borderRadius: '3px', fontSize: '11px' }}
+                      />
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                      <span style={{ fontSize: '10px', color: '#94a3b8' }}>Scalar Field</span>
+                      <select
+                        value={fsurfaceField}
+                        onChange={(e) => setFsurfaceField(e.target.value as BackendScalarField)}
+                        style={{ padding: '4px 6px', background: '#1a2640', color: '#e2e8f0', border: '1px solid #334155', borderRadius: '3px', fontSize: '11px' }}
+                      >
+                        <option value="density">Density</option>
+                        <option value="velocity_magnitude">Velocity Magnitude</option>
+                        <option value="momentum_x">Momentum X</option>
+                        <option value="momentum_y">Momentum Y</option>
+                        <option value="momentum_z">Momentum Z</option>
+                        <option value="pressure">Pressure</option>
+                        <option value="energy">Energy</option>
+                      </select>
+                    </label>
+                    <button
+                      onClick={() => { void applyFsurface(); }}
+                      style={{ padding: '5px 6px', background: '#0369a1', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '11px' }}
+                    >
+                      Apply FSURFACE
+                    </button>
+                  </div>
+                )}
+
+                <div style={{ marginTop: '10px', background: '#0b1120', padding: '10px', borderRadius: '8px', fontSize: '11px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                  <div style={{ fontWeight: 600 }}>TEXT Annotations</div>
+                  <input
+                    type="text"
+                    value={textContentDraft}
+                    onChange={(e) => setTextContentDraft(e.target.value)}
+                    placeholder="Annotation text"
+                    style={{ width: '100%', minWidth: 0, boxSizing: 'border-box', minHeight: '34px', lineHeight: 1.35, padding: '6px 8px', background: '#1a2640', color: '#e2e8f0', border: '1px solid #334155', borderRadius: '3px', fontSize: '12px' }}
+                  />
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
+                    <input
+                      type="number"
+                      step="any"
+                      value={textXDraft}
+                      onChange={(e) => setTextXDraft(e.target.value)}
+                      placeholder="X (0..1)"
+                      style={{ width: '100%', minWidth: 0, boxSizing: 'border-box', minHeight: '34px', lineHeight: 1.35, padding: '6px 8px', background: '#1a2640', color: '#e2e8f0', border: '1px solid #334155', borderRadius: '3px', fontSize: '12px' }}
+                    />
+                    <input
+                      type="number"
+                      step="any"
+                      value={textYDraft}
+                      onChange={(e) => setTextYDraft(e.target.value)}
+                      placeholder="Y (0..1)"
+                      style={{ width: '100%', minWidth: 0, boxSizing: 'border-box', minHeight: '34px', lineHeight: 1.35, padding: '6px 8px', background: '#1a2640', color: '#e2e8f0', border: '1px solid #334155', borderRadius: '3px', fontSize: '12px' }}
+                    />
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
+                    <button
+                      onClick={() => { void applyAddTextAnnotation(); }}
+                      style={{ width: '100%', minWidth: 0, minHeight: '34px', padding: '6px 8px', background: '#1d4ed8', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}
+                    >
+                      Add TEXT
+                    </button>
+                    <button
+                      onClick={() => {
+                        void (async () => {
+                          await clearPlotTextAnnotations();
+                          await commitPlot();
+                        })();
+                      }}
+                      disabled={(backendPlotState?.text_annotations?.length ?? 0) === 0}
+                      style={{ width: '100%', minWidth: 0, minHeight: '34px', padding: '6px 8px', background: (backendPlotState?.text_annotations?.length ?? 0) > 0 ? '#7f1d1d' : '#475569', color: 'white', border: 'none', borderRadius: '4px', cursor: (backendPlotState?.text_annotations?.length ?? 0) > 0 ? 'pointer' : 'not-allowed', fontSize: '12px' }}
+                    >
+                      Clear TEXT
+                    </button>
+                  </div>
+                </div>
+
+                <div style={{ marginTop: '10px', background: '#0b1120', padding: '10px', borderRadius: '8px', fontSize: '11px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  <div style={{ fontWeight: 600 }}>SHOW Status</div>
+                  <button
+                    onClick={() => { void refreshShowStatus(); }}
+                    style={{ padding: '5px 6px', background: '#0f766e', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '11px' }}
+                  >
+                    Refresh SHOW
+                  </button>
+                  <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: '#cbd5e1', background: '#020617', border: '1px solid #334155', borderRadius: '6px', padding: '8px' }}>
+                    {showStatusOutput || 'No SHOW snapshot yet.'}
+                  </pre>
                 </div>
 
                 {gridTree.length === 0 ? (

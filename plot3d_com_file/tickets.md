@@ -490,6 +490,13 @@ Current verification baseline (as of 2026-03-17):
 
 ### TKT-008: Close GUI gaps for WALLS, SUBSETS, FSURFACE, TEXT, and SHOW
 
+Completed: 2026-03-20. Added GUI parity controls for range-based `SUBSETS` and `WALLS` (including compact row rendering, edit/remove actions, and full-range `:` semantics backed by explicit full-span normalization), `FSURFACE` controls with immediate enable/disable apply behavior, `TEXT` annotation add/clear controls with sidebar-fit layout fixes, and a `SHOW` status panel with refresh output. Backend Tauri commands added and wired in `src-tauri/src/lib.rs` for `set_plot_walls`, `set_plot_fsurface`, `add_plot_text_annotation`, `clear_plot_text_annotations`, and `show_plot_status`; frontend integration and state synchronization added in `src/App.tsx`; existing integration tests updated for expanded `PlotState` shape and selector disambiguation.
+
+Current verification baseline (as of 2026-03-20):
+
+1. `cargo test plot_state` passes in `src-tauri`.
+2. `npm run test -- src/App.integration.test.tsx` passes in repo root.
+
 Goal:
 Add or refactor GUI affordances so supported script features are also available interactively.
 
