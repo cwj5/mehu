@@ -104,6 +104,16 @@ npm run test:watch
 # Run Rust library tests
 cd src-tauri && cargo test --lib
 
+# Run headless CLI crate tests
+cargo test --manifest-path headless-export/Cargo.toml --bin overview-export
+
+# Smoke-run headless CLI export fixture
+cargo run --manifest-path headless-export/Cargo.toml --bin overview-export -- \
+  --cmd headless-export/fixtures/smoke.com \
+  --out /tmp/overview-cli-smoke/smoke.png \
+  --width 320 \
+  --height 200
+
 # Generate Rust coverage report
 cd src-tauri && cargo tarpaulin --lib --timeout 300
 ```

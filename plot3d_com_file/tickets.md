@@ -633,6 +633,7 @@ Phase 1 status notes:
 Current verification baseline (as of 2026-03-23):
 
 1. `cargo test --manifest-path headless-export/Cargo.toml --bin overview-export` passes.
+2. CI smoke export runs `headless-export/fixtures/smoke.com` and asserts multi-PLOT outputs are generated.
 
 Goal:
 Create a standalone export path for command files without launching the full GUI.
