@@ -3024,18 +3024,99 @@ fn write_text_file(path: String, contents: String) -> Result<(), String> {
     use std::fs;
     use std::io::Write;
 
-    let mut file =
-        fs::File::create(&path).map_err(|e| format!("Failed to create file {}: {}", path, e))?;
+    let normalized_path = normalize_dialog_path(&path);
+
+    let mut file = fs::File::create(&normalized_path)
+        .map_err(|e| format!("Failed to create file {}: {}", normalized_path, e))?;
 
     file.write_all(contents.as_bytes())
-        .map_err(|e| format!("Failed to write to file {}: {}", path, e))?;
+        .map_err(|e| format!("Failed to write to file {}: {}", normalized_path, e))?;
 
     log_info(&format!(
         "Successfully wrote {} bytes to {}",
         contents.len(),
-        path
+        normalized_path
     ));
     Ok(())
+}
+
+/// Open save file dialog for PNG export
+#[tauri::command]
+async fn save_png_file_dialog(
+    app: tauri::AppHandle,
+    default_name: Option<String>,
+) -> Result<Option<String>, String> {
+    let file_name = default_name.unwrap_or_else(|| "plot_output.png".to_string());
+
+    let file_path = app
+        .dialog()
+        .file()
+        .add_filter("PNG Images", &["png"])
+        .add_filter("All Files", &["*"])
+        .set_file_name(&file_name)
+        .blocking_save_file();
+
+    Ok(file_path.map(|f| f.to_string()))
+}
+
+/// Write binary PNG data to a file
+#[tauri::command]
+fn write_png_file(path: String, png_data: Vec<u8>) -> Result<String, String> {
+    use std::fs;
+    use std::io::Write;
+
+    let normalized_path = normalize_dialog_path(&path);
+
+    let mut file = fs::File::create(&normalized_path)
+        .map_err(|e| format!("Failed to create file {}: {}", normalized_path, e))?;
+
+    file.write_all(&png_data)
+        .map_err(|e| format!("Failed to write to file {}: {}", normalized_path, e))?;
+
+    file.flush()
+        .map_err(|e| format!("Failed to flush file {}: {}", normalized_path, e))?;
+
+    let metadata = fs::metadata(&normalized_path)
+        .map_err(|e| format!("Failed to stat file {}: {}", normalized_path, e))?;
+    if metadata.len() == 0 {
+        return Err(format!(
+            "PNG export produced empty file at {}",
+            normalized_path
+        ));
+    }
+
+    log_info(&format!(
+        "Successfully wrote PNG file {} ({} bytes)",
+        normalized_path,
+        png_data.len()
+    ));
+    Ok(normalized_path)
+}
+
+fn normalize_dialog_path(path: &str) -> String {
+    if let Some(without_scheme) = path.strip_prefix("file://") {
+        // Dialog paths can be returned as file URLs; decode common URL escapes.
+        let decoded = without_scheme
+            .replace("%20", " ")
+            .replace("%5B", "[")
+            .replace("%5D", "]")
+            .replace("%28", "(")
+            .replace("%29", ")")
+            .replace("%2C", ",")
+            .replace("%23", "#")
+            .replace("%25", "%");
+
+        #[cfg(target_os = "windows")]
+        {
+            if decoded.starts_with('/') && decoded.chars().nth(2) == Some(':') {
+                return decoded[1..].to_string();
+            }
+        }
+
+        return decoded;
+    }
+
+    path.to_string()
 }
 
 /// Print frontend debug messages to the terminal
@@ -3375,6 +3456,8 @@ pub fn run() {
             export_logs_to_file,
             save_log_file_dialog,
             write_text_file,
+            save_png_file_dialog,
+            write_png_file,
             frontend_log,
             open_about_window,
             get_plot_state,

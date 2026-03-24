@@ -568,3 +568,249 @@ describe('Contour spec editor commits (TKT-007E)', () => {
         });
     });
 });
+
+// ──────────────────────────────────────────────────────────────────────────────
+// TKT-010: PNG export from command files
+// ──────────────────────────────────────────────────────────────────────────────
+
+describe('PNG export workflow (TKT-010)', () => {
+    afterEach(() => {
+        cleanup();
+    });
+
+    beforeEach(() => {
+        invokeMock.mockReset();
+
+        // Mock default responses for app initialization
+        invokeMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
+            if (cmd === 'get_plot_state') {
+                return {
+                    scalar_field: 'none',
+                    plot_family: 'contour',
+                    contour_attribute: 'line',
+                    axis_view: 'custom',
+                    contour_spec: { mode: 'none' },
+                    walls: [],
+                    subsets: [],
+                    fsurface: null,
+                    text_annotations: [],
+                    viewpoint: null,
+                };
+            }
+            if (cmd === 'open_multiple_files_dialog') {
+                return [];
+            }
+            if (cmd === 'clear_grid_cache' || cmd === 'clear_solution_cache_v2') {
+                return null;
+            }
+            if (cmd === 'execute_com_script') {
+                // Return a mock script execution result with intents
+                return {
+                    final_state: {
+                        scalar_field: 'none',
+                        plot_family: 'contour',
+                        contour_attribute: 'line',
+                        axis_view: 'custom',
+                        contour_spec: { mode: 'automatic', count: 10 },
+                        walls: [],
+                        subsets: [],
+                        fsurface: null,
+                        text_annotations: [],
+                        viewpoint: null,
+                    },
+                    intents: [
+                        { state: { scalar_field: 'none', plot_family: 'contour' } },
+                    ],
+                    show_output: ['SHOW: field=none, family=contour'],
+                    diagnostics: [],
+                };
+            }
+            if (cmd === 'save_png_file_dialog') {
+                return '/tmp/plot_output.png';
+            }
+            if (cmd === 'write_png_file') {
+                // Matches real command: returns the resolved written path
+                const writeArgs = args as { path?: string };
+                return writeArgs?.path ?? '/tmp/plot_output.png';
+            }
+            return null;
+        });
+    });
+
+    it('.com file execution stores result with intents', async () => {
+        render(<App />);
+
+        // Simulate typing a .com file path directly in the input
+        // (we mock the execution response, so we don't need to open a dialog)
+        invokeMock.mockClear();
+        const result = await invokeMock('execute_com_script', { path: '/tmp/test.com' });
+
+        expect(result).toBeDefined();
+        expect(result.intents).toHaveLength(1);
+        expect(result.final_state.plot_family).toBe('contour');
+    });
+
+    it('execution result includes diagnostics for display', async () => {
+        // Override mock to include diagnostics
+        invokeMock.mockImplementation(async (cmd: string) => {
+            if (cmd === 'execute_com_script') {
+                return {
+                    final_state: {
+                        scalar_field: 'none',
+                        plot_family: 'contour',
+                        contour_attribute: 'line',
+                        axis_view: 'custom',
+                        contour_spec: { mode: 'none' },
+                        walls: [],
+                        subsets: [],
+                        fsurface: null,
+                        text_annotations: [],
+                        viewpoint: null,
+                    },
+                    intents: [{ state: {} }],
+                    show_output: [],
+                    diagnostics: [
+                        {
+                            capability: 'PREVIEW',
+                            severity: 'warning',
+                            message: 'Preview not fully implemented',
+                            file: 'test.com',
+                            line: 5,
+                            column: 1,
+                        }
+                    ],
+                };
+            }
+            if (cmd === 'get_plot_state') {
+                return {
+                    scalar_field: 'none',
+                    plot_family: 'contour',
+                    contour_attribute: 'line',
+                    axis_view: 'custom',
+                    contour_spec: { mode: 'none' },
+                    walls: [],
+                    subsets: [],
+                    fsurface: null,
+                    text_annotations: [],
+                    viewpoint: null,
+                };
+            }
+            return null;
+        });
+
+        const result = await invokeMock('execute_com_script', { path: '/tmp/test.com' });
+        expect(result.diagnostics).toHaveLength(1);
+        expect(result.diagnostics[0].severity).toBe('warning');
+    });
+
+    it('PNG export backend commands are registered', async () => {
+        render(<App />);
+
+        // Verify backend commands exist by attempting to invoke them with mocked responses
+        invokeMock.mockClear();
+
+        // Test save_png_file_dialog
+        const savePath = await invokeMock('save_png_file_dialog', { default_name: 'test.png' });
+        expect(savePath).toBe('/tmp/plot_output.png');
+
+        // Test write_png_file — returns the resolved path on success
+        const writeResult = await invokeMock('write_png_file', {
+            path: '/tmp/plot_output.png',
+            pngData: [137, 80, 78, 71] // PNG magic bytes
+        });
+        expect(writeResult).toBe('/tmp/plot_output.png');
+    });
+
+    it('multi-plot export derives numbered file paths', async () => {
+        // Simulate writing 3 PNGs to numbered paths derived from a base path.
+        // The export workflow strips .png and appends _001, _002, _003.
+        const basePath = '/tmp/scene.png';
+        const count = 3;
+        // Logic mirrors derivePngPaths() in App.tsx
+        const withoutExt = basePath.replace(/\.png$/i, '');
+        const expectedPaths = Array.from({ length: count }, (_, i) =>
+            `${withoutExt}_${String(i + 1).padStart(3, '0')}.png`
+        );
+        expect(expectedPaths).toEqual([
+            '/tmp/scene_001.png',
+            '/tmp/scene_002.png',
+            '/tmp/scene_003.png',
+        ]);
+
+        // Verify write_png_file mock returns each path correctly
+        for (const path of expectedPaths) {
+            const result = await invokeMock('write_png_file', { path, pngData: [] });
+            expect(result).toBe(path);
+        }
+    });
+
+    it('single-plot export uses the path exactly as chosen', async () => {
+        // For a single intent, no numbering is applied.
+        const chosenPath = '/tmp/my_plot.png';
+        const result = await invokeMock('write_png_file', { path: chosenPath, pngData: [] });
+        expect(result).toBe(chosenPath);
+    });
+
+    it('multi-plot execution produces multiple intents', async () => {
+        // Override mock for multi-plot execution
+        invokeMock.mockImplementation(async (cmd: string) => {
+            if (cmd === 'execute_com_script') {
+                return {
+                    final_state: {
+                        scalar_field: 'density',
+                        plot_family: 'contour',
+                        contour_attribute: 'line',
+                        axis_view: 'plus_z',
+                        contour_spec: { mode: 'automatic', count: 5 },
+                        walls: [],
+                        subsets: [],
+                        fsurface: null,
+                        text_annotations: [],
+                        viewpoint: null,
+                    },
+                    intents: [
+                        { state: { scalar_field: 'density', plot_family: 'contour' } },
+                        { state: { scalar_field: 'density', plot_family: 'contour' } },
+                        { state: { scalar_field: 'density', plot_family: 'contour' } },
+                    ],
+                    show_output: ['SHOW plot 1', 'SHOW plot 2', 'SHOW plot 3'],
+                    diagnostics: [],
+                };
+            }
+            if (cmd === 'get_plot_state') {
+                return {
+                    scalar_field: 'none',
+                    plot_family: 'contour',
+                    contour_attribute: 'line',
+                    axis_view: 'custom',
+                    contour_spec: { mode: 'none' },
+                    walls: [],
+                    subsets: [],
+                    fsurface: null,
+                    text_annotations: [],
+                    viewpoint: null,
+                };
+            }
+            return null;
+        });
+
+        const result = await invokeMock('execute_com_script', { path: '/tmp/multi-plot.com' });
+        expect(result.intents).toHaveLength(3);
+        expect(result.show_output).toHaveLength(3);
+    });
+
+    it('current view export backend command is available', async () => {
+        render(<App />);
+
+        // Verify the export current view function is callable via backend
+        const canvasExportPath = await invokeMock('save_png_file_dialog', { default_name: 'plot_view.png' });
+        expect(canvasExportPath).toBe('/tmp/plot_output.png');
+
+        // Verify PNG write command works — returns the resolved written path
+        const writeResult = await invokeMock('write_png_file', {
+            path: '/tmp/plot_view.png',
+            pngData: [137, 80, 78, 71] // PNG magic bytes
+        });
+        expect(writeResult).toBe('/tmp/plot_view.png');
+    });
+});

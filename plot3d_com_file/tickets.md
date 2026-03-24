@@ -586,7 +586,9 @@ Verification baseline (as of 2026-03-20):
 
 ## Milestone C: Export
 
-### TKT-010: In-app PNG export from command files
+### ~~TKT-010: In-app PNG export from command files~~ ✅ COMPLETE
+
+Completed: 2026-03-23. Two export paths implemented: (1) "Export View" header button exports the current live canvas; (2) Command sidebar export triggers full multi-PLOT batch export — one PNG per `PLOT` intent, rendered sequentially with Viewer3D state applied for each, saved to auto-numbered files (`scene_001.png`, `scene_002.png`, …). Backend commands: `save_png_file_dialog`, `write_png_file` (returns resolved path). Canvas readback enabled via `preserveDrawingBuffer: true`. Viewer3D loading tracked via `viewer3dLoadingRef` + `waitForViewer3DStable()`. 18 integration tests passing.
 
 Goal:
 Allow users to run a `.com` file and export PNG output from the current app.

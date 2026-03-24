@@ -127,9 +127,13 @@ interface ApplyPlotActionResult {
   diagnostics: BackendDiagnostic[];
 }
 
+interface RenderIntent {
+  state: BackendPlotState;
+}
+
 interface ScriptExecutionResult {
   final_state: BackendPlotState;
-  intents: unknown[];
+  intents: RenderIntent[];
   show_output: string[];
   diagnostics: BackendDiagnostic[];
 }
@@ -447,7 +451,15 @@ const App = () => {
   const [textContentDraft, setTextContentDraft] = useState('');
   const [textXDraft, setTextXDraft] = useState('0.05');
   const [textYDraft, setTextYDraft] = useState('0.95');
+
+  // Export workflow state
+  const [lastExecutionResult, setLastExecutionResult] = useState<ScriptExecutionResult | null>(null);
+  const [exportInProgress, setExportInProgress] = useState(false);
+  const [exportStatus, setExportStatus] = useState('');
+
   const backendMappedSlicesSigRef = useRef<string | null>(null);
+  const viewer3dLoadingRef = useRef(false);
+  const viewer3dLoadingResolversRef = useRef<Array<() => void>>([]);
 
   const syncPlotStateFromBackend = async () => {
     try {
@@ -716,10 +728,145 @@ const App = () => {
       const result = await invoke<ScriptExecutionResult>('execute_com_script', { path });
       setBackendPlotState(result.final_state);
       setBackendDiagnostics(result.diagnostics ?? []);
+      setLastExecutionResult(result);
       setCommandWindowOutput(formatExecutionResult(result));
+      setExportStatus('');
     } catch (e) {
       setCommandWindowOutput(`Failed to execute .com file:\n${e}`);
       logger.error(`.com execute error: ${e}`, 'App');
+      setLastExecutionResult(null);
+    }
+  };
+
+  const canvasToPngBytes = async (canvas: HTMLCanvasElement): Promise<number[]> => {
+    const blob = await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob((nextBlob) => {
+        if (!nextBlob) {
+          reject(new Error('Failed to create PNG blob from canvas'));
+          return;
+        }
+        resolve(nextBlob);
+      }, 'image/png');
+    });
+
+    const arrayBuffer = await blob.arrayBuffer();
+    return Array.from(new Uint8Array(arrayBuffer));
+  };
+
+  // Export current canvas view as PNG
+  const exportCurrentViewAsPNG = async () => {
+    setExportInProgress(true);
+    try {
+      const canvas = document.querySelector('canvas') as HTMLCanvasElement;
+      if (!canvas) {
+        throw new Error('No canvas found. Render a visualization first.');
+      }
+
+      const filePath = await invoke<string | null>('save_png_file_dialog', {
+        default_name: 'plot_view.png'
+      });
+
+      if (!filePath) {
+        setExportStatus('Export cancelled');
+        return;
+      }
+
+      const pngData = await canvasToPngBytes(canvas);
+
+      const writtenPath = await invoke<string>('write_png_file', {
+        path: filePath,
+        pngData: pngData
+      });
+
+      setExportStatus(`Current view exported to ${writtenPath}`);
+      logger.info(`Exported current view to ${writtenPath}`, 'App');
+    } catch (e) {
+      const errorMsg = `Failed to export current view: ${e}`;
+      setExportStatus(errorMsg);
+      logger.error(errorMsg, 'App');
+    } finally {
+      setExportInProgress(false);
+    }
+  };
+
+  // Export one PNG per render intent from the last .com execution.
+  // For multi-PLOT scripts each intent gets its own sequentially numbered file.
+  const exportPNGsFromExecution = async () => {
+    if (!lastExecutionResult || !lastExecutionResult.intents || lastExecutionResult.intents.length === 0) {
+      setExportStatus('No render intents to export. Execute a .com file first.');
+      return;
+    }
+
+    setExportInProgress(true);
+    const intents = lastExecutionResult.intents;
+    const intentCount = intents.length;
+
+    try {
+      const canvas = document.querySelector('canvas') as HTMLCanvasElement;
+      if (!canvas) throw new Error('No canvas found. Render the plots first.');
+
+      // Ask the user for the first (or only) output file path.
+      const baseName = intentCount > 1 ? 'plot_output_001.png' : 'plot_output.png';
+      const firstPath = await invoke<string | null>('save_png_file_dialog', {
+        default_name: baseName
+      });
+
+      if (!firstPath) {
+        setExportStatus('Export cancelled');
+        return;
+      }
+
+      const paths = derivePngPaths(firstPath, intentCount);
+      const savedPaths: string[] = [];
+      const failures: string[] = [];
+
+      // Remember the state before export so we can restore it afterwards.
+      const preExportState = backendPlotState;
+
+      for (let i = 0; i < intentCount; i++) {
+        setExportStatus(`Rendering plot ${i + 1}/${intentCount}…`);
+
+        // Apply this intent's PlotState to drive the renderer.
+        setBackendPlotState(intents[i].state);
+
+        // Give React a tick to propagate the state through the sync effect,
+        // then wait for Viewer3D computations to finish and Three.js to draw.
+        await waitForViewer3DStable();
+
+        try {
+          const pngData = await canvasToPngBytes(canvas);
+          const writtenPath = await invoke<string>('write_png_file', {
+            path: paths[i],
+            pngData,
+          });
+          savedPaths.push(writtenPath);
+          logger.info(`Exported PNG ${i + 1}/${intentCount} to ${writtenPath}`, 'App');
+        } catch (e) {
+          failures.push(`Plot ${i + 1}: ${e}`);
+          logger.error(`Failed to export plot ${i + 1}: ${e}`, 'App');
+        }
+      }
+
+      // Restore the state that was active before export.
+      setBackendPlotState(preExportState);
+
+      if (failures.length > 0 && savedPaths.length === 0) {
+        setExportStatus(`Export failed:\n${failures.join('\n')}`);
+      } else if (failures.length > 0) {
+        setExportStatus(
+          `Exported ${savedPaths.length}/${intentCount} PNGs.\nFailed:\n${failures.join('\n')}\nSaved:\n${savedPaths.join('\n')}`
+        );
+      } else {
+        setExportStatus(
+          `Successfully exported ${intentCount} PNG${intentCount > 1 ? 's' : ''}:\n${savedPaths.join('\n')}`
+        );
+      }
+    } catch (e) {
+      const errorMsg = `Failed to export PNG: ${e}`;
+      setExportStatus(errorMsg);
+      logger.error(errorMsg, 'App');
+    } finally {
+      setExportInProgress(false);
     }
   };
 
@@ -1265,10 +1412,41 @@ const App = () => {
   const dimensionsForGridNumber = (gridNumber: number) =>
     grids.find((grid) => grid.gridIndex + 1 === gridNumber)?.dimensions;
 
-  // Callback from Viewer3D when it's done loading meshes
-  const handleViewer3DLoadingChange = () => {
-    // Viewer3D loading is now controlled by Rust events, ignore this callback
-    logger.debug('Ignoring Viewer3D loading change (controlled by Rust)', 'App');
+  // Callback from Viewer3D when its loading state changes.
+  // Used by batch PNG export to wait for each render to settle.
+  const handleViewer3DLoadingChange = (isLoading: boolean) => {
+    viewer3dLoadingRef.current = isLoading;
+    if (!isLoading) {
+      const resolvers = viewer3dLoadingResolversRef.current.splice(0);
+      resolvers.forEach(r => r());
+    }
+  };
+
+  // Wait for Viewer3D to finish loading, then wait 3 animation frames for
+  // Three.js to produce a stable rendered frame.
+  const waitForViewer3DStable = (): Promise<void> => {
+    const waitFrames = (n: number): Promise<void> =>
+      new Promise(resolve => n <= 0 ? resolve() : requestAnimationFrame(() => void waitFrames(n - 1).then(resolve)));
+
+    return new Promise<void>((resolve) => {
+      const timeoutId = setTimeout(() => resolve(), 5000);
+      const settle = () => { clearTimeout(timeoutId); void waitFrames(3).then(resolve); };
+      if (!viewer3dLoadingRef.current) {
+        settle();
+      } else {
+        viewer3dLoadingResolversRef.current.push(settle);
+      }
+    });
+  };
+
+  // Derive numbered PNG file paths from a base path chosen by the user.
+  // e.g. "/out/scene.png" + 3 intents → ["/out/scene_001.png", "_002", "_003"]
+  const derivePngPaths = (basePath: string, count: number): string[] => {
+    if (count === 1) return [basePath];
+    const withoutExt = basePath.replace(/\.png$/i, '');
+    return Array.from({ length: count }, (_, i) =>
+      `${withoutExt}_${String(i + 1).padStart(3, '0')}.png`
+    );
   };
 
   async function loadFiles() {
@@ -1489,6 +1667,22 @@ const App = () => {
             }}
           >
             {showCommandWindow ? 'Hide Command Sidebar' : 'Show Command Sidebar'}
+          </button>
+          <button
+            onClick={() => void exportCurrentViewAsPNG()}
+            disabled={loading || exportInProgress}
+            style={{
+              padding: '8px 16px',
+              cursor: (loading || exportInProgress) ? 'not-allowed' : 'pointer',
+              background: '#f97316',
+              border: 'none',
+              borderRadius: '4px',
+              color: 'white',
+              opacity: (loading || exportInProgress) ? 0.6 : 1,
+            }}
+            title="Export current view as PNG"
+          >
+            {exportInProgress ? 'Exporting...' : 'Export View'}
           </button>
           {hasSolution && (
             <span style={{
@@ -2869,6 +3063,49 @@ const App = () => {
                 >
                   Execute .com File
                 </button>
+              </div>
+
+              <div style={{ borderTop: '1px solid #334155', paddingTop: '10px' }}>
+                <div style={{ fontSize: '12px', marginBottom: '6px', color: '#93c5fd' }}>Export PNGs:</div>
+                {lastExecutionResult && lastExecutionResult.intents && lastExecutionResult.intents.length > 0 ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <div style={{ fontSize: '11px', color: '#cbd5e1' }}>
+                      Ready to export {lastExecutionResult.intents.length} plot(s)
+                    </div>
+                    <button
+                      onClick={() => void exportPNGsFromExecution()}
+                      disabled={exportInProgress}
+                      style={{
+                        padding: '7px 12px',
+                        background: exportInProgress ? '#475569' : '#7c2d12',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '4px',
+                        cursor: exportInProgress ? 'not-allowed' : 'pointer',
+                        fontSize: '12px',
+                      }}
+                    >
+                      {exportInProgress ? 'Exporting...' : 'Export to PNG'}
+                    </button>
+                    {exportStatus && (
+                      <div style={{
+                        fontSize: '11px',
+                        color: exportStatus.startsWith('Failed') ? '#ef4444' : '#86efac',
+                        background: '#0a0a0a',
+                        padding: '6px',
+                        borderRadius: '4px',
+                        border: '1px solid #334155',
+                        wordBreak: 'break-word'
+                      }}>
+                        {exportStatus}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: '11px', color: '#94a3b8' }}>
+                    Execute a .com file to enable PNG export
+                  </div>
+                )}
               </div>
 
               <div style={{ borderTop: '1px solid #334155', paddingTop: '10px' }}>

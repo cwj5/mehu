@@ -1687,7 +1687,7 @@ export default function Viewer3D({
 
     return (
         <div style={{ width: '100%', height: '100%', position: 'relative' }}>
-            <Canvas camera={{ position: [5, 5, 5], fov: 50 }}>
+            <Canvas camera={{ position: [5, 5, 5], fov: 50 }} gl={{ preserveDrawingBuffer: true }}>
                 <ambientLight intensity={0.5} />
                 <directionalLight position={[10, 10, 5]} intensity={1} />
                 <CameraViewpointSync
