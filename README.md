@@ -61,6 +61,30 @@ npm run tauri dev
 npm run tauri build
 ```
 
+## Headless CLI Export (TKT-011 Phase 1)
+
+For backnode and automation workflows, a standalone Rust CLI exporter is now available.
+
+Key properties:
+
+- No browser, WebGL, or desktop window is required.
+- Rendering uses pure Rust crates (`clap` and `image`) to avoid unusual system-library requirements.
+- Multi-`PLOT` scripts emit numbered outputs (`_001`, `_002`, ...).
+
+Run from repo root:
+
+```bash
+cargo run --manifest-path headless-export/Cargo.toml --bin overview-export -- \
+	--cmd path/to/script.com \
+	--out path/to/output.png
+```
+
+Notes:
+
+- If the script emits one `PLOT`, `--out` is used exactly.
+- If the script emits multiple `PLOT` intents, output files are suffixed automatically.
+- This is a bootstrap headless renderer for deterministic automation. Visual output is not yet fully equivalent to the in-app Three.js export path and is tracked under TKT-011.
+
 ## Testing
 
 This project maintains high code quality with comprehensive automated tests:

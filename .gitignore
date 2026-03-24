@@ -31,3 +31,6 @@ coverage/
 
 # Tauri
 src-tauri/target/
+
+# Headless exporter crate
+headless-export/target/

@@ -51,7 +51,9 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: |
+            src-tauri
+            headless-export
 
       - name: Run TypeScript tests
         run: npm test
@@ -67,6 +69,9 @@ jobs:
           cargo test --lib logger_tests -- --test-threads=1
           echo "Running other tests in parallel..."
           cargo test --lib -- --skip logger_tests
+
+      - name: Run headless CLI crate tests
+        run: cargo test --manifest-path headless-export/Cargo.toml --bin overview-export
 
       - name: Generate Rust coverage
         working-directory: src-tauri

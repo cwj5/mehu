@@ -620,6 +620,20 @@ Relevant decisions:
 
 ### TKT-011: Headless CLI PNG export
 
+Started: 2026-03-23. Phase 1 bootstrap implementation landed and was then split into a dedicated crate at `headless-export/` with binary target `overview-export`.
+
+Phase 1 status notes:
+
+1. `.com` parsing and execution are reused directly via existing `com_parser` and `script_executor` modules.
+2. CLI contract now works: `overview-export --cmd file.com --out out.png`.
+3. Multi-`PLOT` scripts export one file per render intent with `_001`, `_002`, ... suffixing.
+4. PNG generation is intentionally dependency-light (pure Rust crates only) to keep backnode deployment simple and avoid unusual system libraries.
+5. Visual output is deterministic but currently a headless fallback renderer, not full Three.js-equivalent rendering yet.
+
+Current verification baseline (as of 2026-03-23):
+
+1. `cargo test --manifest-path headless-export/Cargo.toml --bin overview-export` passes.
+
 Goal:
 Create a standalone export path for command files without launching the full GUI.
 
@@ -635,9 +649,9 @@ Scope:
 
 Acceptance criteria:
 
-1. `overview-export --cmd file.com --out out.png` works.
-2. Output is visually equivalent to the same render intent in-app.
-3. Any divergence from in-app export is documented.
+1. `overview-export --cmd file.com --out out.png` works. ✅ (Phase 1)
+2. Output is visually equivalent to the same render intent in-app. ⏳ (remaining work)
+3. Any divergence from in-app export is documented. ✅ (Phase 1)
 
 Dependencies:
 
