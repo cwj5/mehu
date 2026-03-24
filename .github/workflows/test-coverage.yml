@@ -73,6 +73,17 @@ jobs:
       - name: Run headless CLI crate tests
         run: cargo test --manifest-path headless-export/Cargo.toml --bin overview-export
 
+      - name: Run headless CLI smoke export
+        run: |
+          mkdir -p /tmp/overview-cli-smoke
+          cargo run --manifest-path headless-export/Cargo.toml --bin overview-export -- \
+            --cmd headless-export/fixtures/smoke.com \
+            --out /tmp/overview-cli-smoke/smoke.png \
+            --width 320 \
+            --height 200
+          test -s /tmp/overview-cli-smoke/smoke_001.png
+          test -s /tmp/overview-cli-smoke/smoke_002.png
+
       - name: Generate Rust coverage
         working-directory: src-tauri
         run: cargo tarpaulin --lib --timeout 300 --out Xml
