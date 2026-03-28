@@ -18,7 +18,8 @@
             "id": "FUNCTION",
             "status": "script-only",
             "ticket": "TKT-003",
-            "notes": "Legacy function-number mapping implemented in script executor"
+            "notes": "Legacy function-number mapping implemented in script executor",
+            "rationale": "GUI scalar-field selector still uses ScalarField enum variants; FUNCTION number-to-enum translation is complete in the script executor path but the inverse mapping for GUI controls is not yet wired."
         },
         {
             "id": "VIEW",
@@ -48,7 +49,8 @@
             "id": "PLOT",
             "status": "script-only",
             "ticket": "TKT-005",
-            "notes": "RenderIntent emitted on CommitPlot; GUI integration pending"
+            "notes": "RenderIntent emitted on CommitPlot; GUI integration pending",
+            "rationale": "Script-path PLOT command correctly emits a RenderIntent boundary and commits PlotState; the GUI Apply button does not yet route through the same commit pipeline, which will be addressed in a follow-on ticket."
         },
         {
             "id": "WALLS",
