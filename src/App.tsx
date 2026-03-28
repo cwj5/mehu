@@ -2967,6 +2967,7 @@ const App = () => {
               isoSurfaceOpacity={isoSurfaceOpacity}
               cameraAxisView={backendPlotState?.axis_view ?? 'custom'}
               cameraViewpoint={backendPlotState?.viewpoint ?? null}
+              cameraPlotUp={backendPlotState?.plot_up ?? null}
               onCameraCommit={handleCameraCommit}
               onLoadingChange={handleViewer3DLoadingChange}
             />

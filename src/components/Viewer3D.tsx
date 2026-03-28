@@ -78,6 +78,14 @@ interface Viewer3DProps {
     | 'plane_zy'
     | 'custom';
     cameraViewpoint?: { x: number; y: number; z: number } | null;
+    cameraPlotUp?:
+    | 'positive_x'
+    | 'positive_y'
+    | 'positive_z'
+    | 'negative_x'
+    | 'negative_y'
+    | 'negative_z'
+    | null;
     onCameraCommit?: (vp: { x: number; y: number; z: number }) => void;
     onLoadingChange?: (isLoading: boolean) => void;
 }
@@ -85,6 +93,7 @@ interface Viewer3DProps {
 function CameraViewpointSync({
     cameraAxisView,
     cameraViewpoint,
+    cameraPlotUp,
     isUserNavigatingRef,
     controlsRef,
 }: {
@@ -103,6 +112,14 @@ function CameraViewpointSync({
     | 'plane_zy'
     | 'custom';
     cameraViewpoint?: { x: number; y: number; z: number } | null;
+    cameraPlotUp?:
+    | 'positive_x'
+    | 'positive_y'
+    | 'positive_z'
+    | 'negative_x'
+    | 'negative_y'
+    | 'negative_z'
+    | null;
     isUserNavigatingRef: MutableRefObject<boolean>;
     controlsRef: MutableRefObject<any>;
 }) {
@@ -140,6 +157,39 @@ function CameraViewpointSync({
         }
     };
 
+    const plotUpDirection = (plotUp: NonNullable<typeof cameraPlotUp> | null): THREE.Vector3 | null => {
+        switch (plotUp) {
+            case 'positive_x':
+                return new THREE.Vector3(1, 0, 0);
+            case 'positive_y':
+                return new THREE.Vector3(0, 1, 0);
+            case 'positive_z':
+                return new THREE.Vector3(0, 0, 1);
+            case 'negative_x':
+                return new THREE.Vector3(-1, 0, 0);
+            case 'negative_y':
+                return new THREE.Vector3(0, -1, 0);
+            case 'negative_z':
+                return new THREE.Vector3(0, 0, -1);
+            default:
+                return null;
+        }
+    };
+
+    useEffect(() => {
+        const nextUp = plotUpDirection(cameraPlotUp ?? null) ?? new THREE.Vector3(0, 1, 0);
+        if (camera.up.distanceToSquared(nextUp) < 1e-8) {
+            return;
+        }
+
+        camera.up.copy(nextUp);
+        if (controlsRef.current) {
+            controlsRef.current.update();
+        } else {
+            camera.lookAt(0, 0, 0);
+        }
+    }, [camera, cameraPlotUp, controlsRef]);
+
     useEffect(() => {
         if (!cameraViewpoint) {
             return;
@@ -166,7 +216,7 @@ function CameraViewpointSync({
             camera.lookAt(0, 0, 0);
         }
         lastAppliedAxisViewRef.current = null;
-    }, [camera, cameraViewpoint, controlsRef, isUserNavigatingRef]);
+    }, [camera, cameraViewpoint, cameraPlotUp, controlsRef, isUserNavigatingRef]);
 
     useEffect(() => {
         if (!cameraAxisView || cameraAxisView === 'custom') {
@@ -195,7 +245,7 @@ function CameraViewpointSync({
             camera.lookAt(0, 0, 0);
         }
         lastAppliedAxisViewRef.current = cameraAxisView;
-    }, [camera, cameraAxisView, cameraViewpoint, controlsRef, isUserNavigatingRef]);
+    }, [camera, cameraAxisView, cameraViewpoint, cameraPlotUp, controlsRef, isUserNavigatingRef]);
 
     return null;
 }
@@ -678,6 +728,7 @@ export default function Viewer3D({
     isoSurfaceOpacity = 1.0,
     cameraAxisView = 'custom',
     cameraViewpoint,
+    cameraPlotUp,
     onCameraCommit,
     onLoadingChange
 }: Viewer3DProps) {
@@ -1693,6 +1744,7 @@ export default function Viewer3D({
                 <CameraViewpointSync
                     cameraAxisView={cameraAxisView}
                     cameraViewpoint={cameraViewpoint}
+                    cameraPlotUp={cameraPlotUp}
                     isUserNavigatingRef={isUserNavigatingRef}
                     controlsRef={controlsRef}
                 />
