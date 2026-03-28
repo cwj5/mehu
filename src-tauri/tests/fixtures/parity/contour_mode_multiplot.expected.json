@@ -1,0 +1,138 @@
+{
+    "final_state": {
+        "dataset": {
+            "grid_id": null,
+            "solution_id": null
+        },
+        "scalar_field": "none",
+        "axis_view": "custom",
+        "viewpoint": null,
+        "plot_up": null,
+        "minmax": {
+            "x": null,
+            "y": null,
+            "z": null
+        },
+        "contour_spec": {
+            "mode": "manual",
+            "entries": [
+                {
+                    "value": 0.1,
+                    "color": null
+                },
+                {
+                    "value": 0.2,
+                    "color": null
+                },
+                {
+                    "value": 0.3,
+                    "color": null
+                }
+            ]
+        },
+        "contour_attribute": "surface",
+        "walls": [],
+        "subsets": [],
+        "fsurface": null,
+        "text_annotations": [],
+        "plot_family": "contour"
+    },
+    "intents": [
+        {
+            "state": {
+                "dataset": {
+                    "grid_id": null,
+                    "solution_id": null
+                },
+                "scalar_field": "none",
+                "axis_view": "custom",
+                "viewpoint": null,
+                "plot_up": null,
+                "minmax": {
+                    "x": null,
+                    "y": null,
+                    "z": null
+                },
+                "contour_spec": {
+                    "mode": "automatic",
+                    "count": 8
+                },
+                "contour_attribute": "surface",
+                "walls": [],
+                "subsets": [],
+                "fsurface": null,
+                "text_annotations": [],
+                "plot_family": "contour"
+            }
+        },
+        {
+            "state": {
+                "dataset": {
+                    "grid_id": null,
+                    "solution_id": null
+                },
+                "scalar_field": "none",
+                "axis_view": "custom",
+                "viewpoint": null,
+                "plot_up": null,
+                "minmax": {
+                    "x": null,
+                    "y": null,
+                    "z": null
+                },
+                "contour_spec": {
+                    "mode": "increment",
+                    "start": 0,
+                    "increment": 0.25
+                },
+                "contour_attribute": "surface",
+                "walls": [],
+                "subsets": [],
+                "fsurface": null,
+                "text_annotations": [],
+                "plot_family": "contour"
+            }
+        },
+        {
+            "state": {
+                "dataset": {
+                    "grid_id": null,
+                    "solution_id": null
+                },
+                "scalar_field": "none",
+                "axis_view": "custom",
+                "viewpoint": null,
+                "plot_up": null,
+                "minmax": {
+                    "x": null,
+                    "y": null,
+                    "z": null
+                },
+                "contour_spec": {
+                    "mode": "manual",
+                    "entries": [
+                        {
+                            "value": 0.1,
+                            "color": null
+                        },
+                        {
+                            "value": 0.2,
+                            "color": null
+                        },
+                        {
+                            "value": 0.3,
+                            "color": null
+                        }
+                    ]
+                },
+                "contour_attribute": "surface",
+                "walls": [],
+                "subsets": [],
+                "fsurface": null,
+                "text_annotations": [],
+                "plot_family": "contour"
+            }
+        }
+    ],
+    "show_output": []
+}

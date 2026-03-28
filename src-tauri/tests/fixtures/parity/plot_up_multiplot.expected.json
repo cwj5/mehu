@@ -1,0 +1,93 @@
+{
+    "final_state": {
+        "dataset": {
+            "grid_id": null,
+            "solution_id": null
+        },
+        "scalar_field": "none",
+        "axis_view": "custom",
+        "viewpoint": {
+            "x": 5,
+            "y": 6,
+            "z": 7
+        },
+        "plot_up": "positive_z",
+        "minmax": {
+            "x": null,
+            "y": null,
+            "z": null
+        },
+        "contour_spec": {
+            "mode": "none"
+        },
+        "contour_attribute": "line",
+        "walls": [],
+        "subsets": [],
+        "fsurface": null,
+        "text_annotations": [],
+        "plot_family": "function_surface"
+    },
+    "intents": [
+        {
+            "state": {
+                "dataset": {
+                    "grid_id": null,
+                    "solution_id": null
+                },
+                "scalar_field": "none",
+                "axis_view": "plane_xy",
+                "viewpoint": {
+                    "x": 0,
+                    "y": 0,
+                    "z": 8.660254037844387
+                },
+                "plot_up": "negative_y",
+                "minmax": {
+                    "x": null,
+                    "y": null,
+                    "z": null
+                },
+                "contour_spec": {
+                    "mode": "none"
+                },
+                "contour_attribute": "line",
+                "walls": [],
+                "subsets": [],
+                "fsurface": null,
+                "text_annotations": [],
+                "plot_family": "contour"
+            }
+        },
+        {
+            "state": {
+                "dataset": {
+                    "grid_id": null,
+                    "solution_id": null
+                },
+                "scalar_field": "none",
+                "axis_view": "custom",
+                "viewpoint": {
+                    "x": 5,
+                    "y": 6,
+                    "z": 7
+                },
+                "plot_up": "positive_z",
+                "minmax": {
+                    "x": null,
+                    "y": null,
+                    "z": null
+                },
+                "contour_spec": {
+                    "mode": "none"
+                },
+                "contour_attribute": "line",
+                "walls": [],
+                "subsets": [],
+                "fsurface": null,
+                "text_annotations": [],
+                "plot_family": "function_surface"
+            }
+        }
+    ],
+    "show_output": []
+}

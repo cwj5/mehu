@@ -119,8 +119,147 @@ fn format_show_output(state: &PlotState) -> String {
 mod tests {
     use super::*;
     use crate::com_parser::parse_com_file;
-    use crate::plot_state::{AxisView, PlotFamily, PlotText, ScalarField};
+    use crate::plot_state::{
+        AxisView, DiagnosticSeverity, PlotFamily, PlotState, PlotText, ScalarField,
+    };
+    use serde::Deserialize;
+    use std::collections::BTreeSet;
     use std::fs;
+    use std::path::PathBuf;
+
+    #[derive(Debug, Deserialize)]
+    struct ExpectedParityFixture {
+        final_state: PlotState,
+        intents: Vec<RenderIntent>,
+        show_output: Vec<String>,
+    }
+
+    struct ParityFixtureCase {
+        name: &'static str,
+        capabilities: &'static [&'static str],
+    }
+
+    const REQUIRED_CAPABILITIES: &[&str] = &[
+        "FUNCTION", "VIEW", "VPOINT", "MINMAX", "CONTOURS", "PLOT", "WALLS", "SUBSETS", "FSURFACE",
+        "TEXT", "SHOW",
+    ];
+
+    const PARITY_FIXTURES: &[ParityFixtureCase] = &[
+        ParityFixtureCase {
+            name: "full_parity_session",
+            capabilities: &[
+                "READ", "FUNCTION", "VIEW", "VPOINT", "MINMAX", "CONTOURS", "PLOT", "WALLS",
+                "SUBSETS", "FSURFACE", "TEXT", "SHOW",
+            ],
+        },
+        ParityFixtureCase {
+            name: "contour_mode_multiplot",
+            capabilities: &["CONTOURS", "PLOT"],
+        },
+        ParityFixtureCase {
+            name: "plot_up_multiplot",
+            capabilities: &["VIEW", "VPOINT", "PLOT"],
+        },
+        ParityFixtureCase {
+            name: "function_surface_line_family",
+            capabilities: &["FUNCTION", "VIEW", "MINMAX", "FSURFACE", "PLOT"],
+        },
+    ];
+
+    fn parity_fixture_dir() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/parity")
+    }
+
+    fn load_expected_fixture(case_name: &str) -> ExpectedParityFixture {
+        let path = parity_fixture_dir().join(format!("{case_name}.expected.json"));
+        let raw = fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()));
+        serde_json::from_str(&raw)
+            .unwrap_or_else(|error| panic!("failed to parse {}: {error}", path.display()))
+    }
+
+    #[test]
+    fn backend_parity_fixtures_match_expected_outputs() {
+        let mut covered_capabilities = BTreeSet::new();
+
+        for case in PARITY_FIXTURES {
+            covered_capabilities.extend(case.capabilities.iter().copied());
+
+            let script_path = parity_fixture_dir().join(format!("{}.com", case.name));
+            let parsed = parse_com_file(&script_path).unwrap_or_else(|error| {
+                panic!("failed to parse {}: {error}", script_path.display())
+            });
+            let expected = load_expected_fixture(case.name);
+
+            let first = execute_parsed_script(PlotState::default(), &parsed);
+            let second = execute_parsed_script(PlotState::default(), &parsed);
+
+            let errors: Vec<_> = first
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.severity == DiagnosticSeverity::Error)
+                .collect();
+            assert!(
+                errors.is_empty(),
+                "fixture '{}' should not emit errors: {:?}",
+                case.name,
+                errors
+            );
+
+            let warnings: Vec<_> = first
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.severity == DiagnosticSeverity::Warning)
+                .collect();
+            assert!(
+                warnings.is_empty(),
+                "fixture '{}' should not emit warnings: {:?}",
+                case.name,
+                warnings
+            );
+
+            assert_eq!(
+                first.final_state, expected.final_state,
+                "fixture '{}' final PlotState drifted",
+                case.name
+            );
+            assert_eq!(
+                first.intents, expected.intents,
+                "fixture '{}' RenderIntent output drifted",
+                case.name
+            );
+            assert_eq!(
+                first.show_output, expected.show_output,
+                "fixture '{}' SHOW output drifted",
+                case.name
+            );
+
+            assert_eq!(
+                first.final_state, second.final_state,
+                "fixture '{}' final PlotState is not deterministic across repeated executions",
+                case.name
+            );
+            assert_eq!(
+                first.intents, second.intents,
+                "fixture '{}' RenderIntent output is not deterministic across repeated executions",
+                case.name
+            );
+            assert_eq!(
+                first.show_output, second.show_output,
+                "fixture '{}' SHOW output is not deterministic across repeated executions",
+                case.name
+            );
+        }
+
+        let required_capabilities = REQUIRED_CAPABILITIES
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        assert!(
+            required_capabilities.is_subset(&covered_capabilities),
+            "parity fixtures must cover every required TKT-012B capability family"
+        );
+    }
 
     #[test]
     fn plot_is_only_render_intent_boundary() {

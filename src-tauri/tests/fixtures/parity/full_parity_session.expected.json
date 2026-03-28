@@ -1,0 +1,171 @@
+{
+    "final_state": {
+        "dataset": {
+            "grid_id": "grid.p3d",
+            "solution_id": "solution.q"
+        },
+        "scalar_field": "pressure",
+        "axis_view": "custom",
+        "viewpoint": {
+            "x": 1,
+            "y": 2,
+            "z": 3
+        },
+        "plot_up": "negative_y",
+        "minmax": {
+            "x": {
+                "min": -1,
+                "max": 1
+            },
+            "y": {
+                "min": -2,
+                "max": 2
+            },
+            "z": {
+                "min": -3,
+                "max": 3
+            }
+        },
+        "contour_spec": {
+            "mode": "automatic",
+            "count": 12
+        },
+        "contour_attribute": "color_contours",
+        "walls": [
+            {
+                "grid": 3,
+                "gui_managed": false,
+                "i_range": {
+                    "start": 1,
+                    "end": 10
+                },
+                "j_range": {
+                    "start": 2,
+                    "end": 20
+                },
+                "k_range": {
+                    "start": 3,
+                    "end": 30
+                }
+            }
+        ],
+        "subsets": [
+            {
+                "grid": 2,
+                "gui_managed": false,
+                "i_range": {
+                    "start": 5,
+                    "end": 15
+                },
+                "j_range": {
+                    "start": 6,
+                    "end": 16
+                },
+                "k_range": {
+                    "start": 7,
+                    "end": 17
+                }
+            }
+        ],
+        "fsurface": {
+            "value": 0.75,
+            "scalar_field": "pressure"
+        },
+        "text_annotations": [
+            {
+                "content": "Pressure",
+                "x": 0.1,
+                "y": 0.9
+            }
+        ],
+        "plot_family": "contour"
+    },
+    "intents": [
+        {
+            "state": {
+                "dataset": {
+                    "grid_id": "grid.p3d",
+                    "solution_id": "solution.q"
+                },
+                "scalar_field": "pressure",
+                "axis_view": "custom",
+                "viewpoint": {
+                    "x": 1,
+                    "y": 2,
+                    "z": 3
+                },
+                "plot_up": "negative_y",
+                "minmax": {
+                    "x": {
+                        "min": -1,
+                        "max": 1
+                    },
+                    "y": {
+                        "min": -2,
+                        "max": 2
+                    },
+                    "z": {
+                        "min": -3,
+                        "max": 3
+                    }
+                },
+                "contour_spec": {
+                    "mode": "automatic",
+                    "count": 12
+                },
+                "contour_attribute": "color_contours",
+                "walls": [
+                    {
+                        "grid": 3,
+                        "gui_managed": false,
+                        "i_range": {
+                            "start": 1,
+                            "end": 10
+                        },
+                        "j_range": {
+                            "start": 2,
+                            "end": 20
+                        },
+                        "k_range": {
+                            "start": 3,
+                            "end": 30
+                        }
+                    }
+                ],
+                "subsets": [
+                    {
+                        "grid": 2,
+                        "gui_managed": false,
+                        "i_range": {
+                            "start": 5,
+                            "end": 15
+                        },
+                        "j_range": {
+                            "start": 6,
+                            "end": 16
+                        },
+                        "k_range": {
+                            "start": 7,
+                            "end": 17
+                        }
+                    }
+                ],
+                "fsurface": {
+                    "value": 0.75,
+                    "scalar_field": "pressure"
+                },
+                "text_annotations": [
+                    {
+                        "content": "Pressure",
+                        "x": 0.1,
+                        "y": 0.9
+                    }
+                ],
+                "plot_family": "contour"
+            }
+        }
+    ],
+    "show_output": [
+        "SHOW: field=Pressure, family=Contour, axis_view=Custom, plot_up=None, text_annotations=1, walls=1, subsets=1"
+    ]
+}
