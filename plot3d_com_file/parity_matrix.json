@@ -10,77 +10,75 @@
     "capabilities": [
         {
             "id": "READ",
-            "status": "not-supported",
+            "status": "supported",
             "ticket": "TKT-004",
-            "notes": "Parser/executor implementation pending"
+            "notes": "Parser and executor support READ command semantics with script-relative path resolution and diagnostics."
         },
         {
             "id": "FUNCTION",
-            "status": "script-only",
+            "status": "supported",
             "ticket": "TKT-003",
-            "notes": "Legacy function-number mapping implemented in script executor",
-            "rationale": "GUI scalar-field selector still uses ScalarField enum variants; FUNCTION number-to-enum translation is complete in the script executor path but the inverse mapping for GUI controls is not yet wired."
+            "notes": "Legacy FUNCTION numbers map deterministically into canonical ScalarField selections shared by script and GUI flows; known unimplemented equations emit soft-fail diagnostics."
         },
         {
             "id": "VIEW",
-            "status": "not-supported",
+            "status": "supported",
             "ticket": "TKT-009",
-            "notes": "Legacy-to-Three.js translation layer pending"
+            "notes": "VIEW semantics are implemented through the deterministic legacy-to-Three.js translation layer."
         },
         {
             "id": "VPOINT",
-            "status": "not-supported",
+            "status": "supported",
             "ticket": "TKT-009",
-            "notes": "Legacy-to-Three.js translation layer pending"
+            "notes": "VPOINT camera behavior is implemented and covered by translation-layer and parity regression tests."
         },
         {
             "id": "MINMAX",
-            "status": "not-supported",
+            "status": "supported",
             "ticket": "TKT-002",
-            "notes": "Shared PlotState model pending"
+            "notes": "MINMAX is represented in shared PlotState and exercised through parser/executor and GUI parity flows."
         },
         {
             "id": "CONTOURS",
-            "status": "not-supported",
+            "status": "supported",
             "ticket": "TKT-007",
-            "notes": "Absolute multi-level contour model pending"
+            "notes": "Absolute multi-level contour model (AUTOMATIC/INCREMENT/MANUAL) is implemented with deterministic renderer semantics."
         },
         {
             "id": "PLOT",
-            "status": "script-only",
+            "status": "supported",
             "ticket": "TKT-005",
-            "notes": "RenderIntent emitted on CommitPlot; GUI integration pending",
-            "rationale": "Script-path PLOT command correctly emits a RenderIntent boundary and commits PlotState; the GUI Apply button does not yet route through the same commit pipeline, which will be addressed in a follow-on ticket."
+            "notes": "PLOT is the shared commit boundary for deterministic RenderIntent generation across script execution and GUI apply flows."
         },
         {
             "id": "WALLS",
-            "status": "not-supported",
+            "status": "supported",
             "ticket": "TKT-008",
-            "notes": "Range-based WALLS GUI and state model pending"
+            "notes": "Range-based WALLS model and GUI controls are implemented with shared PlotState integration."
         },
         {
             "id": "SUBSETS",
-            "status": "not-supported",
+            "status": "supported",
             "ticket": "TKT-008",
-            "notes": "Range-based SUBSETS GUI and state model pending"
+            "notes": "Range-based SUBSETS model and GUI controls are implemented with shared PlotState integration."
         },
         {
             "id": "FSURFACE",
-            "status": "not-supported",
+            "status": "supported",
             "ticket": "TKT-008",
-            "notes": "FSURFACE controls and execution semantics pending"
+            "notes": "FSURFACE controls and execution semantics are available in script and GUI paths with bounded MVP behavior documented."
         },
         {
             "id": "TEXT",
-            "status": "not-supported",
+            "status": "supported",
             "ticket": "TKT-008",
-            "notes": "Plot text state and GUI controls pending"
+            "notes": "TEXT annotations are supported through shared state, parser/executor flow, and GUI controls."
         },
         {
             "id": "SHOW",
-            "status": "not-supported",
+            "status": "supported",
             "ticket": "TKT-008",
-            "notes": "SHOW status output and GUI display pending"
+            "notes": "SHOW status output is supported with backend status generation and GUI visibility."
         }
     ],
     "outOfScopeCommands": [

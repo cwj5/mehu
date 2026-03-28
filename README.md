@@ -29,18 +29,18 @@ Current capability status snapshot:
 
 | Capability | Status | Tracking Ticket | Notes |
 |---|---|---|---|
-| READ | not-supported | TKT-004 | Parser/executor implementation pending |
-| FUNCTION | not-supported | TKT-003 | Legacy function-number mapping not implemented |
-| VIEW | not-supported | TKT-009 | Legacy-to-Three.js translation layer pending |
-| VPOINT | not-supported | TKT-009 | Legacy-to-Three.js translation layer pending |
-| MINMAX | not-supported | TKT-002 | Shared PlotState model pending |
-| CONTOURS | not-supported | TKT-007 | Absolute multi-level contour model pending |
-| PLOT | not-supported | TKT-005 | RenderIntent commit pipeline pending |
-| WALLS | not-supported | TKT-008 | Range-based WALLS GUI and state model pending |
-| SUBSETS | not-supported | TKT-008 | Range-based SUBSETS GUI and state model pending |
-| FSURFACE | not-supported | TKT-008 | FSURFACE controls and execution semantics pending |
-| TEXT | not-supported | TKT-008 | Plot text state and GUI controls pending |
-| SHOW | not-supported | TKT-008 | SHOW status output and GUI display pending |
+| READ | supported | TKT-004 | Parser/executor support with script-relative path handling and diagnostics |
+| FUNCTION | supported | TKT-003 | Legacy function-number mapping is integrated into canonical scalar-field flows; unsupported equations soft-fail with diagnostics |
+| VIEW | supported | TKT-009 | Deterministic legacy-to-Three.js view translation implemented |
+| VPOINT | supported | TKT-009 | Deterministic legacy viewpoint translation and parity regression coverage implemented |
+| MINMAX | supported | TKT-002 | Shared PlotState representation and parity flow support implemented |
+| CONTOURS | supported | TKT-007 | Absolute multi-level contour model (AUTOMATIC/INCREMENT/MANUAL) implemented |
+| PLOT | supported | TKT-005 | Shared commit-boundary RenderIntent behavior implemented across script and GUI flows |
+| WALLS | supported | TKT-008 | Range-based WALLS state model and GUI controls implemented |
+| SUBSETS | supported | TKT-008 | Range-based SUBSETS state model and GUI controls implemented |
+| FSURFACE | supported | TKT-008 | FSURFACE controls and execution semantics implemented (bounded MVP behavior documented) |
+| TEXT | supported | TKT-008 | Plot text state and GUI controls implemented |
+| SHOW | supported | TKT-008 | SHOW status output and GUI display implemented |
 
 Commands currently out of scope:
 
