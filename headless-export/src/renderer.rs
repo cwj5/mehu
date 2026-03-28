@@ -101,27 +101,27 @@ fn render_function_surface(
     let ni = snap.ni as usize;
     let nj = snap.nj as usize;
     let nk = snap.nk as usize;
-    if ni < 2 || nj < 2 || nk == 0 {
-        warnings.push("Renderer: Function Surface requires at least a 2x2 face".to_string());
+    let orientation = function_surface_orientation(snap);
+    let (u_dim, v_dim) = function_surface_dims(orientation, ni, nj, nk);
+    if u_dim < 2 || v_dim < 2 {
+        warnings
+            .push("Renderer: Function Surface requires at least a 2x2 projected slab".to_string());
         return;
     }
 
-    let k = nk - 1;
-    let domain_scale = xy_extent(snap).max(1e-3) * 0.75;
+    let domain_scale = function_surface_extent(snap, orientation).max(1e-3) * 0.75;
     let field_span = (field_max - field_min).max(1e-20);
 
-    let oblique_fallback = matches!(
-        state.axis_view,
-        AxisView::PlusZ
-            | AxisView::MinusZ
-            | AxisView::PlaneXY
-            | AxisView::PlaneYX
-            | AxisView::Custom
-    ) && state.viewpoint.is_none();
+    let oblique_fallback = state.viewpoint.is_none()
+        && (matches!(state.axis_view, AxisView::Custom)
+            || axis_view_aligns_with_function_height(
+                state.axis_view,
+                function_surface_height_axis(orientation),
+            ));
 
     if oblique_fallback {
         warnings.push(
-            "Renderer: using oblique fallback camera for Function Surface top/custom view"
+            "Renderer: using oblique fallback camera for Function Surface height-aligned view"
                 .to_string(),
         );
     }
@@ -136,16 +136,16 @@ fn render_function_surface(
         camera_basis_for_state(state)
     };
 
-    let mut world_points = Vec::with_capacity(ni * nj);
-    let mut projected = Vec::with_capacity(ni * nj);
-    let mut scalars = Vec::with_capacity(ni * nj);
+    let mut world_points = Vec::with_capacity(u_dim * v_dim);
+    let mut projected = Vec::with_capacity(u_dim * v_dim);
+    let mut scalars = Vec::with_capacity(u_dim * v_dim);
 
-    for j in 0..nj {
-        for i in 0..ni {
-            let idx = i + j * ni + k * ni * nj;
+    for v in 0..v_dim {
+        for u in 0..u_dim {
+            let idx = function_surface_index(orientation, u, v, ni, nj, nk);
             let t = ((snap.scalar[idx] - field_min) / field_span).clamp(0.0, 1.0);
             let height = (t - 0.5) * 2.0 * domain_scale;
-            let point = (snap.x[idx], snap.y[idx], height);
+            let point = function_surface_world_point(snap, orientation, idx, height);
             world_points.push(point);
             let mut p = project_point(point, camera);
             if is_swapped_plane_view(state.axis_view) {
@@ -174,8 +174,8 @@ fn render_function_surface(
         (sx, sy)
     };
 
-    let mut screen_verts = Vec::with_capacity(ni * nj);
-    for idx in 0..(ni * nj) {
+    let mut screen_verts = Vec::with_capacity(u_dim * v_dim);
+    for idx in 0..(u_dim * v_dim) {
         let (sx, sy) = uv_to_screen(projected[idx].0, projected[idx].1);
         screen_verts.push(SurfaceVertex {
             x: sx,
@@ -188,12 +188,12 @@ fn render_function_surface(
     // Filled rasterization with hidden-surface handling via z-buffer.
     let mut zbuf = vec![f32::INFINITY; (img.width() as usize) * (img.height() as usize)];
 
-    for j in 0..(nj - 1) {
-        for i in 0..(ni - 1) {
-            let a = i + j * ni;
-            let b = (i + 1) + j * ni;
-            let c = i + (j + 1) * ni;
-            let d = (i + 1) + (j + 1) * ni;
+    for v in 0..(v_dim - 1) {
+        for u in 0..(u_dim - 1) {
+            let a = u + v * u_dim;
+            let b = (u + 1) + v * u_dim;
+            let c = u + (v + 1) * u_dim;
+            let d = (u + 1) + (v + 1) * u_dim;
 
             let i0 = face_intensity(world_points[a], world_points[b], world_points[d], camera.2);
             rasterize_triangle_z(
@@ -228,10 +228,10 @@ fn render_function_surface(
         state.contour_attribute,
         ContourAttribute::Line | ContourAttribute::Grid
     ) {
-        for j in 0..nj {
-            for i in 0..(ni - 1) {
-                let a = i + j * ni;
-                let b = (i + 1) + j * ni;
+        for v in 0..v_dim {
+            for u in 0..(u_dim - 1) {
+                let a = u + v * u_dim;
+                let b = (u + 1) + v * u_dim;
                 let color = surface_segment_color(
                     &state.contour_attribute,
                     0.5 * (scalars[a] + scalars[b]),
@@ -248,10 +248,10 @@ fn render_function_surface(
                 );
             }
         }
-        for j in 0..(nj - 1) {
-            for i in 0..ni {
-                let a = i + j * ni;
-                let b = i + (j + 1) * ni;
+        for v in 0..(v_dim - 1) {
+            for u in 0..u_dim {
+                let a = u + v * u_dim;
+                let b = u + (v + 1) * u_dim;
                 let color = surface_segment_color(
                     &state.contour_attribute,
                     0.5 * (scalars[a] + scalars[b]),
@@ -285,6 +285,132 @@ fn xy_extent(snap: &SolutionSnapshot) -> f32 {
     let min_y = snap.y.iter().copied().fold(f32::INFINITY, f32::min);
     let max_y = snap.y.iter().copied().fold(f32::NEG_INFINITY, f32::max);
     (max_x - min_x).abs().max((max_y - min_y).abs())
+}
+
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum FunctionSurfaceOrientation {
+    KPlane,
+    IPlane,
+    JPlane,
+}
+
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum SpatialAxis {
+    X,
+    Y,
+    Z,
+}
+
+fn function_surface_orientation(snap: &SolutionSnapshot) -> FunctionSurfaceOrientation {
+    let ni = snap.ni as usize;
+    let nj = snap.nj as usize;
+    let nk = snap.nk as usize;
+
+    if nk == 1 {
+        FunctionSurfaceOrientation::KPlane
+    } else if ni == 1 {
+        FunctionSurfaceOrientation::IPlane
+    } else if nj == 1 {
+        FunctionSurfaceOrientation::JPlane
+    } else {
+        FunctionSurfaceOrientation::KPlane
+    }
+}
+
+fn function_surface_dims(
+    orientation: FunctionSurfaceOrientation,
+    ni: usize,
+    nj: usize,
+    nk: usize,
+) -> (usize, usize) {
+    match orientation {
+        FunctionSurfaceOrientation::KPlane => (ni, nj),
+        FunctionSurfaceOrientation::IPlane => (nj, nk),
+        FunctionSurfaceOrientation::JPlane => (ni, nk),
+    }
+}
+
+fn function_surface_index(
+    orientation: FunctionSurfaceOrientation,
+    u: usize,
+    v: usize,
+    ni: usize,
+    nj: usize,
+    nk: usize,
+) -> usize {
+    match orientation {
+        FunctionSurfaceOrientation::KPlane => {
+            let k = nk.saturating_sub(1);
+            u + v * ni + k * ni * nj
+        }
+        FunctionSurfaceOrientation::IPlane => {
+            let i = 0;
+            let j = u;
+            let k = v;
+            i + j * ni + k * ni * nj
+        }
+        FunctionSurfaceOrientation::JPlane => {
+            let i = u;
+            let j = 0;
+            let k = v;
+            i + j * ni + k * ni * nj
+        }
+    }
+}
+
+fn function_surface_world_point(
+    snap: &SolutionSnapshot,
+    orientation: FunctionSurfaceOrientation,
+    idx: usize,
+    height: f32,
+) -> (f32, f32, f32) {
+    match orientation {
+        FunctionSurfaceOrientation::KPlane => (snap.x[idx], snap.y[idx], height),
+        FunctionSurfaceOrientation::IPlane => (height, snap.y[idx], snap.z[idx]),
+        FunctionSurfaceOrientation::JPlane => (snap.x[idx], height, snap.z[idx]),
+    }
+}
+
+fn function_surface_height_axis(orientation: FunctionSurfaceOrientation) -> SpatialAxis {
+    match orientation {
+        FunctionSurfaceOrientation::KPlane => SpatialAxis::Z,
+        FunctionSurfaceOrientation::IPlane => SpatialAxis::X,
+        FunctionSurfaceOrientation::JPlane => SpatialAxis::Y,
+    }
+}
+
+fn axis_view_aligns_with_function_height(view: AxisView, axis: SpatialAxis) -> bool {
+    match axis {
+        SpatialAxis::X => matches!(
+            view,
+            AxisView::PlusX | AxisView::MinusX | AxisView::PlaneYZ | AxisView::PlaneZY
+        ),
+        SpatialAxis::Y => matches!(
+            view,
+            AxisView::PlusY | AxisView::MinusY | AxisView::PlaneXZ | AxisView::PlaneZX
+        ),
+        SpatialAxis::Z => matches!(
+            view,
+            AxisView::PlusZ | AxisView::MinusZ | AxisView::PlaneXY | AxisView::PlaneYX
+        ),
+    }
+}
+
+fn axis_extent(values: &[f32]) -> f32 {
+    let min_value = values.iter().copied().fold(f32::INFINITY, f32::min);
+    let max_value = values.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    (max_value - min_value).abs()
+}
+
+fn function_surface_extent(
+    snap: &SolutionSnapshot,
+    orientation: FunctionSurfaceOrientation,
+) -> f32 {
+    match orientation {
+        FunctionSurfaceOrientation::KPlane => xy_extent(snap),
+        FunctionSurfaceOrientation::IPlane => axis_extent(&snap.y).max(axis_extent(&snap.z)),
+        FunctionSurfaceOrientation::JPlane => axis_extent(&snap.x).max(axis_extent(&snap.z)),
+    }
 }
 
 type CameraBasis = ((f32, f32, f32), (f32, f32, f32), (f32, f32, f32));
@@ -1071,9 +1197,10 @@ mod tests {
 
     /// Build a synthetic 4×4×1 snapshot with a simple gradient scalar field.
     fn synthetic_snapshot() -> SolutionSnapshot {
-        let ni = 4u32;
-        let nj = 4u32;
-        let nk = 1u32;
+        synthetic_snapshot_with_dims(4, 4, 1)
+    }
+
+    fn synthetic_snapshot_with_dims(ni: u32, nj: u32, nk: u32) -> SolutionSnapshot {
         let n = (ni * nj * nk) as usize;
         let mut x = Vec::with_capacity(n);
         let mut y = Vec::with_capacity(n);
@@ -1088,7 +1215,7 @@ mod tests {
                     x.push(i as f32);
                     y.push(j as f32);
                     z.push(k as f32);
-                    let s = (i + j * 4) as f32;
+                    let s = (i + j * ni as usize + k * (ni as usize + nj as usize + 1)) as f32;
                     scalar.push(s);
                     mn = mn.min(s);
                     mx = mx.max(s);
@@ -1307,6 +1434,50 @@ mod tests {
         let mut warnings = Vec::new();
         render_snapshot(&mut img, &snap, &state, &mut warnings);
 
+        assert!(warnings
+            .iter()
+            .any(|w| w.contains("oblique fallback camera")));
+    }
+
+    #[test]
+    fn function_surface_i_plane_supports_thin_yz_slab() {
+        let snap = synthetic_snapshot_with_dims(1, 4, 4);
+        let state = PlotState {
+            plot_family: PlotFamily::FunctionSurface,
+            axis_view: AxisView::PlaneYZ,
+            ..PlotState::default()
+        };
+        let mut img = RgbaImage::new(120, 80);
+        let mut warnings = Vec::new();
+        render_snapshot(&mut img, &snap, &state, &mut warnings);
+
+        let any_colored = img.pixels().any(|p| p[0] > 0 || p[1] > 0 || p[2] > 0);
+        assert!(
+            any_colored,
+            "thin i-plane function-surface render produced no pixels"
+        );
+        assert!(warnings
+            .iter()
+            .any(|w| w.contains("oblique fallback camera")));
+    }
+
+    #[test]
+    fn function_surface_j_plane_supports_thin_xz_slab() {
+        let snap = synthetic_snapshot_with_dims(4, 1, 4);
+        let state = PlotState {
+            plot_family: PlotFamily::FunctionSurface,
+            axis_view: AxisView::PlaneXZ,
+            ..PlotState::default()
+        };
+        let mut img = RgbaImage::new(120, 80);
+        let mut warnings = Vec::new();
+        render_snapshot(&mut img, &snap, &state, &mut warnings);
+
+        let any_colored = img.pixels().any(|p| p[0] > 0 || p[1] > 0 || p[2] > 0);
+        assert!(
+            any_colored,
+            "thin j-plane function-surface render produced no pixels"
+        );
         assert!(warnings
             .iter()
             .any(|w| w.contains("oblique fallback camera")));

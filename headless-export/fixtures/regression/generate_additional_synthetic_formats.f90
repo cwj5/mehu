@@ -9,6 +9,14 @@ program generate_additional_synthetic_formats
                             'headless-export/fixtures/regression/synthetic_4x4x2.q', &
                             4_int32, 4_int32, 2_int32, .true., .false.)
 
+  call write_case_with_dims('headless-export/fixtures/regression/synthetic_1x4x4.xyz', &
+                            'headless-export/fixtures/regression/synthetic_1x4x4.q', &
+                            1_int32, 4_int32, 4_int32, .true., .false.)
+
+  call write_case_with_dims('headless-export/fixtures/regression/synthetic_4x1x4.xyz', &
+                            'headless-export/fixtures/regression/synthetic_4x1x4.q', &
+                            4_int32, 1_int32, 4_int32, .true., .false.)
+
   call write_case('headless-export/fixtures/regression/synthetic_4x4_le_f64.xyz', &
                   'headless-export/fixtures/regression/synthetic_4x4_le_f64.q', .true., .true.)
 

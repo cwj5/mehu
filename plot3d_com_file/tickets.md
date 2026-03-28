@@ -685,11 +685,17 @@ Update: 2026-03-27 (multi-layer custom VPOINT regression increment)
 3. These cases exercise non-degenerate dominant-face selection directly in image regression for both contour and function-surface output paths.
 4. Regression references and hashes were added and the local regression script now covers the multi-layer custom-view cases too.
 
+Update: 2026-03-27 (thin-slab function-surface parity increment)
+
+1. The headless function-surface renderer no longer rejects `1xNxN` or `Nx1xN` slices outright; it now follows the same collapsed-axis orientation rule as the backend surface mesh path.
+2. Height-axis placement now depends on the collapsed dimension (`k -> z`, `i -> x`, `j -> y`), and the oblique fallback camera is triggered whenever the requested view would otherwise look straight down that height axis.
+3. Added thin-slab synthetic regression fixtures: `synthetic_1x4x4_surface.com` and `synthetic_4x1x4_surface.com`, with corresponding generated datasets and reference PNG/hash baselines.
+
 Current verification baseline (as of 2026-03-27):
 
 1. `cargo test --manifest-path headless-export/Cargo.toml --bin overview-export` passes.
 2. CI smoke export runs `headless-export/fixtures/smoke.com` and asserts multi-PLOT outputs are generated.
-3. Temporary regression hash checks pass for twelve synthetic cases, including format variants, oblique custom-view fixtures, and multi-layer custom-view fixtures.
+3. Temporary regression hash checks pass for twelve synthetic cases, including format variants, oblique custom-view fixtures, multi-layer custom-view fixtures, and thin-slab function-surface fixtures.
 
 Phase 2 plan (original):
 
