@@ -678,11 +678,18 @@ Update: 2026-03-27 (custom VPOINT contour projection increment)
 3. Added renderer unit coverage for custom-viewpoint dominant-face selection, oblique-view warning behavior, and degenerate-face fallback behavior.
 4. Added non-axis-aligned custom-view regression fixtures: `synthetic_4x4_vpoint_oblique.com` and `synthetic_4x4_vpoint_oblique_surface.com`, with corresponding reference PNG/hash baselines and regression-script coverage.
 
+Update: 2026-03-27 (multi-layer custom VPOINT regression increment)
+
+1. Extended the unified Fortran fixture generator with a true multi-layer synthetic dataset: `synthetic_4x4x2.xyz` and `synthetic_4x4x2.q`.
+2. Added custom `VPOINT` regression fixtures on the multi-layer dataset: `synthetic_4x4x2_vpoint_plusx.com` and `synthetic_4x4x2_vpoint_plusx_surface.com`.
+3. These cases exercise non-degenerate dominant-face selection directly in image regression for both contour and function-surface output paths.
+4. Regression references and hashes were added and the local regression script now covers the multi-layer custom-view cases too.
+
 Current verification baseline (as of 2026-03-27):
 
 1. `cargo test --manifest-path headless-export/Cargo.toml --bin overview-export` passes.
 2. CI smoke export runs `headless-export/fixtures/smoke.com` and asserts multi-PLOT outputs are generated.
-3. Temporary regression hash checks pass for six synthetic cases (contour + function-surface across LE-f32, LE-f64, and BE-f32 fixtures).
+3. Temporary regression hash checks pass for twelve synthetic cases, including format variants, oblique custom-view fixtures, and multi-layer custom-view fixtures.
 
 Phase 2 plan (original):
 

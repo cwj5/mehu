@@ -5,6 +5,10 @@ program generate_additional_synthetic_formats
   call write_case('headless-export/fixtures/regression/synthetic_4x4.xyz', &
                   'headless-export/fixtures/regression/synthetic_4x4.q', .true., .false.)
 
+  call write_case_with_dims('headless-export/fixtures/regression/synthetic_4x4x2.xyz', &
+                            'headless-export/fixtures/regression/synthetic_4x4x2.q', &
+                            4_int32, 4_int32, 2_int32, .true., .false.)
+
   call write_case('headless-export/fixtures/regression/synthetic_4x4_le_f64.xyz', &
                   'headless-export/fixtures/regression/synthetic_4x4_le_f64.q', .true., .true.)
 
@@ -17,9 +21,16 @@ contains
     character(len=*), intent(in) :: xyz_path, q_path
     logical, intent(in) :: little_endian, use_f64
 
-    integer(int32), parameter :: ni = 4, nj = 4, nk = 1
+    call write_case_with_dims(xyz_path, q_path, 4_int32, 4_int32, 1_int32, little_endian, use_f64)
+  end subroutine write_case
+
+  subroutine write_case_with_dims(xyz_path, q_path, ni, nj, nk, little_endian, use_f64)
+    character(len=*), intent(in) :: xyz_path, q_path
+    integer(int32), intent(in) :: ni, nj, nk
+    logical, intent(in) :: little_endian, use_f64
+
     integer(int32), parameter :: ngrids = 1, nq = 5, nqc = 0
-    integer :: i, j, idx, total
+    integer :: i, j, k, idx, total
     real(real32), dimension(4) :: meta
     real(real32), allocatable :: rho32(:), rhou32(:), rhov32(:), rhow32(:), rhoe32(:)
     real(real32), allocatable :: x32(:), y32(:), z32(:)
@@ -34,19 +45,21 @@ contains
     meta = [0.8_real32, 0.0_real32, 1.0e6_real32, 0.0_real32]
 
     idx = 0
-    do j = 1, nj
-      do i = 1, ni
-        idx = idx + 1
+    do k = 1, nk
+      do j = 1, nj
+        do i = 1, ni
+          idx = idx + 1
 
-        x32(idx) = real(i - 1, real32) / real(ni - 1, real32)
-        y32(idx) = real(j - 1, real32) / real(nj - 1, real32)
-        z32(idx) = 0.0_real32
+          x32(idx) = real(i - 1, real32) / real(max(ni - 1, 1_int32), real32)
+          y32(idx) = real(j - 1, real32) / real(max(nj - 1, 1_int32), real32)
+          z32(idx) = real(k - 1, real32) / real(max(nk - 1, 1_int32), real32)
 
-        rho32(idx) = 1.0_real32 + 0.05_real32 * real(i - 1, real32) + 0.07_real32 * real(j - 1, real32)
-        rhou32(idx) = 0.12_real32 * real(i - 1, real32)
-        rhov32(idx) = 0.10_real32 * real(j - 1, real32)
-        rhow32(idx) = 0.02_real32 * real(i - j, real32)
-        rhoe32(idx) = 2.6_real32 + 0.03_real32 * real(i + j - 2, real32)
+          rho32(idx) = 1.0_real32 + 0.05_real32 * real(i - 1, real32) + 0.07_real32 * real(j - 1, real32) + 0.09_real32 * real(k - 1, real32)
+          rhou32(idx) = 0.12_real32 * real(i - 1, real32)
+          rhov32(idx) = 0.10_real32 * real(j - 1, real32)
+          rhow32(idx) = 0.08_real32 * real(k - 1, real32) + 0.02_real32 * real(i - j, real32)
+          rhoe32(idx) = 2.6_real32 + 0.03_real32 * real(i + j - 2, real32) + 0.06_real32 * real(k - 1, real32)
+        end do
       end do
     end do
 
@@ -103,6 +116,6 @@ contains
 
     deallocate(rho32, rhou32, rhov32, rhow32, rhoe32)
     deallocate(x32, y32, z32)
-  end subroutine write_case
+  end subroutine write_case_with_dims
 
 end program generate_additional_synthetic_formats
