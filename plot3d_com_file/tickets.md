@@ -969,6 +969,10 @@ Scope:
 2. Add ADRs for: shared `PlotState` authority, `PLOT` commit boundary semantics, unsupported-command soft-fail policy, absolute contour model, legacy-to-modern translation determinism, and export determinism/known divergence policy.
 3. Link ADRs from relevant planning docs.
 
+Reference implementation:
+
+1. `docs/adr/README.md`
+
 Acceptance criteria:
 
 1. All listed fragile decisions have ADR coverage.

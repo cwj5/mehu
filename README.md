@@ -128,6 +128,12 @@ CI now enforces this baseline in a dedicated workflow at [.github/workflows/head
 
 This project maintains high code quality with comprehensive automated tests:
 
+## Architecture Decision Records
+
+Locked parity architecture decisions are documented in [docs/adr/README.md](docs/adr/README.md).
+
+Key records include shared `PlotState` authority, `PLOT` commit semantics, unsupported-command policy, contour model policy, translation determinism, and export divergence policy.
+
 ### Parity Gate
 
 Parity changes are merge-gated by the workflow at [.github/workflows/parity-matrix.yml](.github/workflows/parity-matrix.yml). The stable required check names are:

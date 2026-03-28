@@ -34,6 +34,16 @@ This document is the canonical handoff for another agent or engineer picking up 
 
 ## Locked Decisions
 
+Canonical ADR records for locked parity architecture decisions:
+
+- [docs/adr/README.md](../docs/adr/README.md)
+- [ADR-0001 Shared PlotState Authority](../docs/adr/0001-shared-plotstate-authority.md)
+- [ADR-0002 PLOT Commit-Boundary Semantics](../docs/adr/0002-plot-commit-boundary.md)
+- [ADR-0003 Unsupported Command Soft-Fail Policy](../docs/adr/0003-unsupported-command-soft-fail.md)
+- [ADR-0004 Absolute Contour Value Model](../docs/adr/0004-absolute-contour-model.md)
+- [ADR-0005 Deterministic Legacy-to-Modern Translation](../docs/adr/0005-deterministic-legacy-translation.md)
+- [ADR-0006 Export Determinism and Divergence Policy](../docs/adr/0006-export-determinism-divergence-policy.md)
+
 1. Incremental delivery is acceptable, but each release must publish a parity matrix.
 2. A single shared `PlotState` is the source of truth. No dual script state and GUI state machines.
 3. Parity target is equality of `PlotState` and `RenderIntent`, not pixel-identical rendering.

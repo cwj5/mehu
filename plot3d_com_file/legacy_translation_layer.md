@@ -6,6 +6,10 @@
 
 **Status:** Implementation Reference for TKT-009
 
+**Governing ADRs:**
+- [ADR-0005: Deterministic Legacy-to-Modern Translation](../docs/adr/0005-deterministic-legacy-translation.md)
+- [ADR-0006: Export Determinism and Divergence Policy](../docs/adr/0006-export-determinism-divergence-policy.md)
+
 ---
 
 ## Overview
