@@ -510,8 +510,8 @@ fn extract_face_slab(
 
     // For a Custom view (explicit VPOINT), use orthographic projection.
     if matches!(state.axis_view, AxisView::Custom) {
-        if let Some(ref vp) = state.viewpoint {
-            return project_orthographic(snap, vp, warnings);
+        if state.viewpoint.is_some() {
+            return project_orthographic(snap, state, warnings);
         } else {
             // No viewpoint set — fall back to PlusZ.
             warnings
@@ -627,50 +627,144 @@ where
     (uvs, scalars, slab_w, slab_h)
 }
 
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum ProjectionFace {
+    IMin,
+    IMax,
+    JMin,
+    JMax,
+    KMin,
+    KMax,
+}
+
 /// Orthographic projection for arbitrary VPOINT views.
 ///
-/// The look direction is `origin − viewpoint`.  Right and up vectors are
-/// derived from a fixed world-up of (0,1,0) (or (0,0,1) when looking
-/// near-vertical).
+/// To stay aligned with axis-view semantics, we project the outer slab from the
+/// dominant camera look axis (X/Y/Z) and pick min/max side from the look sign.
+/// For oblique viewpoints this is a bounded approximation and emits a warning.
 fn project_orthographic(
     snap: &SolutionSnapshot,
-    vp: &ViewPoint,
-    _warnings: &mut Vec<String>,
+    state: &PlotState,
+    warnings: &mut Vec<String>,
 ) -> (Vec<(f32, f32)>, Vec<f32>, usize, usize) {
-    // Look direction: from viewpoint toward origin.
-    let (lx, ly, lz) = normalize((-vp.x as f32, -vp.y as f32, -vp.z as f32));
+    let camera = camera_basis_for_state(state);
+    let look = camera.2;
+    let abs_x = look.0.abs();
+    let abs_y = look.1.abs();
+    let abs_z = look.2.abs();
 
-    // World-up hint: use Y-up unless look direction is near-vertical.
-    let (wx, wy, wz) = if ly.abs() > 0.9 {
-        (0.0f32, 0.0, 1.0)
-    } else {
-        (0.0, 1.0, 0.0)
+    let ni = snap.ni as usize;
+    let nj = snap.nj as usize;
+    let nk = snap.nk as usize;
+
+    let face_dims = |face: ProjectionFace| -> (usize, usize) {
+        match face {
+            ProjectionFace::IMin | ProjectionFace::IMax => (nj, nk),
+            ProjectionFace::JMin | ProjectionFace::JMax => (ni, nk),
+            ProjectionFace::KMin | ProjectionFace::KMax => (ni, nj),
+        }
     };
 
-    // Right = look × world-up
-    let (rx, ry, rz) = normalize(cross((lx, ly, lz), (wx, wy, wz)));
-    // Up = right × look
-    let (ux, uy, uz) = normalize(cross((rx, ry, rz), (lx, ly, lz)));
+    let mut candidates = vec![
+        (
+            abs_x,
+            if look.0 < 0.0 {
+                ProjectionFace::IMax
+            } else {
+                ProjectionFace::IMin
+            },
+        ),
+        (
+            abs_y,
+            if look.1 < 0.0 {
+                ProjectionFace::JMax
+            } else {
+                ProjectionFace::JMin
+            },
+        ),
+        (
+            abs_z,
+            if look.2 < 0.0 {
+                ProjectionFace::KMax
+            } else {
+                ProjectionFace::KMin
+            },
+        ),
+    ];
+    candidates.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
-    let n = snap.x.len();
-    let mut uvs = Vec::with_capacity(n);
-    // Slab layout for orthographic: flatten all grid points into a 1-D list;
-    // use ni×nj as the nominal slab dimensions so marching squares can still
-    // iterate over the outermost K face.
-    let slab_w = snap.ni as usize;
-    let slab_h = snap.nj as usize;
-    let k = snap.nk as usize - 1;
+    let (dominant, primary_face) = candidates[0];
+    let mut face = primary_face;
+    for (_, candidate_face) in &candidates {
+        let (w, h) = face_dims(*candidate_face);
+        if w >= 2 && h >= 2 {
+            face = *candidate_face;
+            break;
+        }
+    }
 
-    let total = slab_w * slab_h;
-    let mut scalars = Vec::with_capacity(total);
+    if dominant < 0.85 {
+        warnings.push(
+            "Renderer: custom VPOINT is oblique; using dominant-axis outer-face projection"
+                .to_string(),
+        );
+    }
+    if face != primary_face {
+        warnings.push(
+            "Renderer: custom VPOINT dominant face is degenerate; using nearest non-degenerate outer face"
+                .to_string(),
+        );
+    }
 
-    for j in 0..slab_h {
-        for i in 0..slab_w {
-            let idx = i + j * slab_w + k * slab_w * slab_h;
-            let (px, py, pz) = (snap.x[idx], snap.y[idx], snap.z[idx]);
-            let u = px * rx + py * ry + pz * rz;
-            let v = px * ux + py * uy + pz * uz;
-            uvs.push((u, v));
+    let (slab_w, slab_h) = face_dims(face);
+
+    let mut uvs = Vec::with_capacity(slab_w * slab_h);
+    let mut scalars = Vec::with_capacity(slab_w * slab_h);
+
+    for v in 0..slab_h {
+        for u in 0..slab_w {
+            let idx = match face {
+                ProjectionFace::IMin => {
+                    let i = 0;
+                    let j = u;
+                    let k = v;
+                    i + j * ni + k * ni * nj
+                }
+                ProjectionFace::IMax => {
+                    let i = ni - 1;
+                    let j = u;
+                    let k = v;
+                    i + j * ni + k * ni * nj
+                }
+                ProjectionFace::JMin => {
+                    let i = u;
+                    let j = 0;
+                    let k = v;
+                    i + j * ni + k * ni * nj
+                }
+                ProjectionFace::JMax => {
+                    let i = u;
+                    let j = nj - 1;
+                    let k = v;
+                    i + j * ni + k * ni * nj
+                }
+                ProjectionFace::KMin => {
+                    let i = u;
+                    let j = v;
+                    let k = 0;
+                    i + j * ni + k * ni * nj
+                }
+                ProjectionFace::KMax => {
+                    let i = u;
+                    let j = v;
+                    let k = nk - 1;
+                    i + j * ni + k * ni * nj
+                }
+            };
+
+            let p = (snap.x[idx], snap.y[idx], snap.z[idx]);
+            let proj = project_point(p, camera);
+            uvs.push((proj.0, proj.1));
             scalars.push(snap.scalar[idx]);
         }
     }
@@ -1297,5 +1391,100 @@ mod tests {
         assert_eq!(uvs[1], (8.0, 4.0));
         assert_eq!(uvs[2], (16.0, 12.0));
         assert_eq!(uvs[3], (18.0, 14.0));
+    }
+
+    #[test]
+    fn custom_vpoint_projection_uses_matching_outer_face_for_plus_x() {
+        let snap = SolutionSnapshot {
+            ni: 2,
+            nj: 2,
+            nk: 2,
+            x: vec![0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0],
+            y: vec![0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0],
+            z: vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+            scalar: vec![10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0],
+            field_min: 10.0,
+            field_max: 17.0,
+        };
+        let state = PlotState {
+            axis_view: AxisView::Custom,
+            viewpoint: Some(ViewPoint {
+                x: 3.0,
+                y: 0.0,
+                z: 0.0,
+            }),
+            ..PlotState::default()
+        };
+        let mut warnings = Vec::new();
+        let (_uvs, scalars, sw, sh) = extract_face_slab(&snap, &state, &mut warnings);
+
+        assert_eq!((sw, sh), (2, 2));
+        // +X viewpoint should match the i=ni-1 face (same as AxisView::PlusX).
+        assert_eq!(scalars, vec![11.0, 13.0, 15.0, 17.0]);
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn custom_vpoint_projection_warns_for_oblique_viewpoint() {
+        let snap = SolutionSnapshot {
+            ni: 2,
+            nj: 2,
+            nk: 2,
+            x: vec![0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0],
+            y: vec![0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0],
+            z: vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+            scalar: vec![10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0],
+            field_min: 10.0,
+            field_max: 17.0,
+        };
+        let state = PlotState {
+            axis_view: AxisView::Custom,
+            viewpoint: Some(ViewPoint {
+                x: 1.7,
+                y: 1.3,
+                z: 1.1,
+            }),
+            ..PlotState::default()
+        };
+        let mut warnings = Vec::new();
+        let (_uvs, _scalars, _sw, _sh) = extract_face_slab(&snap, &state, &mut warnings);
+
+        assert!(warnings
+            .iter()
+            .any(|w| w.contains("oblique") && w.contains("dominant-axis")));
+    }
+
+    #[test]
+    fn custom_vpoint_projection_falls_back_from_degenerate_face() {
+        // nk=1 means I/J outer faces are degenerate (width x 1). A +X-like
+        // VPOINT should fall back to K face for contour slab extraction.
+        let snap = SolutionSnapshot {
+            ni: 2,
+            nj: 2,
+            nk: 1,
+            x: vec![0.0, 1.0, 0.0, 1.0],
+            y: vec![0.0, 0.0, 1.0, 1.0],
+            z: vec![0.0, 0.0, 0.0, 0.0],
+            scalar: vec![20.0, 21.0, 22.0, 23.0],
+            field_min: 20.0,
+            field_max: 23.0,
+        };
+        let state = PlotState {
+            axis_view: AxisView::Custom,
+            viewpoint: Some(ViewPoint {
+                x: 3.0,
+                y: 0.0,
+                z: 0.0,
+            }),
+            ..PlotState::default()
+        };
+        let mut warnings = Vec::new();
+        let (_uvs, scalars, sw, sh) = extract_face_slab(&snap, &state, &mut warnings);
+
+        assert_eq!((sw, sh), (2, 2));
+        assert_eq!(scalars, vec![20.0, 21.0, 22.0, 23.0]);
+        assert!(warnings
+            .iter()
+            .any(|w| w.contains("dominant face is degenerate")));
     }
 }

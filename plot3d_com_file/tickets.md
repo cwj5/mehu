@@ -671,6 +671,13 @@ Update: 2026-03-27 (camera/projection parity increment)
 2. The swap behavior is applied to contour slab extraction and function-surface projection so horizontal/vertical axis order follows legacy plane-token intent.
 3. Added renderer unit tests covering `PlaneYX`, `PlaneZX`, and `PlaneZY` slab-axis ordering.
 
+Update: 2026-03-27 (custom VPOINT contour projection increment)
+
+1. Custom `VPOINT` contour projection now uses the same camera-basis semantics as the renderer camera mapping and selects outer-face slabs by dominant look axis/sign.
+2. Added bounded fallback for degenerate dominant faces (for example single-layer `nk=1` data): the renderer now selects the nearest non-degenerate outer face and emits an explicit warning.
+3. Added renderer unit coverage for custom-viewpoint dominant-face selection, oblique-view warning behavior, and degenerate-face fallback behavior.
+4. Added non-axis-aligned custom-view regression fixtures: `synthetic_4x4_vpoint_oblique.com` and `synthetic_4x4_vpoint_oblique_surface.com`, with corresponding reference PNG/hash baselines and regression-script coverage.
+
 Current verification baseline (as of 2026-03-27):
 
 1. `cargo test --manifest-path headless-export/Cargo.toml --bin overview-export` passes.
