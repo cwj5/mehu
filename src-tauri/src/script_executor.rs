@@ -167,7 +167,27 @@ mod tests {
     ];
 
     fn parity_fixture_dir() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/parity")
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let candidates = [
+            manifest_dir.join("tests/fixtures/parity"),
+            manifest_dir.join("../src-tauri/tests/fixtures/parity"),
+            manifest_dir.join("../tests/fixtures/parity"),
+        ];
+
+        candidates
+            .iter()
+            .find(|path| path.exists())
+            .cloned()
+            .unwrap_or_else(|| {
+                panic!(
+                    "failed to locate parity fixture directory; checked: {}",
+                    candidates
+                        .iter()
+                        .map(|p| p.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })
     }
 
     fn load_expected_fixture(case_name: &str) -> ExpectedParityFixture {
