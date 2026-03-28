@@ -1,0 +1,5 @@
+READ synthetic_4x4.xyz synthetic_4x4.q
+FUNCTION 110
+VIEW XZ
+CONTOURS /SURFACE 6
+PLOT/SURFACE/UP=-Z

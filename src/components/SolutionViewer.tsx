@@ -8,21 +8,41 @@ import './SolutionViewer.css';
 
 interface SolutionViewerProps {
     selectedGrid: GridItem | null;
+    selectedField?: ScalarField;
+    selectedColorScheme?: ColorScheme;
     onScalarFieldChange?: (field: ScalarField) => void;
     onColorSchemeChange?: (scheme: ColorScheme) => void;
 }
 
-export function SolutionViewer({ selectedGrid, onScalarFieldChange, onColorSchemeChange }: SolutionViewerProps) {
-    const [selectedField, setSelectedField] = useState<ScalarField>('none');
-    const [colorScheme, setColorScheme] = useState<ColorScheme>('viridis');
+export function SolutionViewer({
+    selectedGrid,
+    selectedField: controlledField,
+    selectedColorScheme: controlledColorScheme,
+    onScalarFieldChange,
+    onColorSchemeChange,
+}: SolutionViewerProps) {
+    const [localSelectedField, setLocalSelectedField] = useState<ScalarField>('none');
+    const [localColorScheme, setLocalColorScheme] = useState<ColorScheme>('viridis');
     const [fieldStats, setFieldStats] = useState<{ min: number, max: number, mean: number, stdDev: number } | null>(null);
     const statsRequestRef = useRef(0);
 
     const hasSolution = selectedGrid?.hasSolution === true;
 
+    useEffect(() => {
+        if (controlledField !== undefined) {
+            setLocalSelectedField(controlledField);
+        }
+    }, [controlledField]);
+
+    useEffect(() => {
+        if (controlledColorScheme !== undefined) {
+            setLocalColorScheme(controlledColorScheme);
+        }
+    }, [controlledColorScheme]);
+
     // Compute field stats in chunks to keep the UI responsive on large grids
     useEffect(() => {
-        if (!hasSolution || selectedField === 'none') {
+        if (!hasSolution || localSelectedField === 'none') {
             setFieldStats(null);
             return;
         }
@@ -55,7 +75,7 @@ export function SolutionViewer({ selectedGrid, onScalarFieldChange, onColorSchem
         let index = 0;
 
         const getValue = (i: number): number => {
-            switch (selectedField) {
+            switch (localSelectedField) {
                 case 'density':
                     return solution.rho[i];
                 case 'velocity_magnitude': {
@@ -134,17 +154,17 @@ export function SolutionViewer({ selectedGrid, onScalarFieldChange, onColorSchem
                 statsRequestRef.current += 1;
             }
         };
-    }, [selectedField, hasSolution, selectedGrid]);
+    }, [localSelectedField, hasSolution, selectedGrid]);
 
     const handleFieldChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
         const field = e.target.value as ScalarField;
-        setSelectedField(field);
+        setLocalSelectedField(field);
         onScalarFieldChange?.(field);
     };
 
     const handleColorSchemeChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
         const scheme = e.target.value as ColorScheme;
-        setColorScheme(scheme);
+        setLocalColorScheme(scheme);
         onColorSchemeChange?.(scheme);
     };
 
@@ -197,7 +217,7 @@ export function SolutionViewer({ selectedGrid, onScalarFieldChange, onColorSchem
                     <strong>Field:</strong>
                 </label>
                 <select
-                    value={selectedField}
+                    value={localSelectedField}
                     onChange={handleFieldChange}
                     style={{
                         padding: '6px',
@@ -222,7 +242,7 @@ export function SolutionViewer({ selectedGrid, onScalarFieldChange, onColorSchem
                     <strong>Color Scheme:</strong>
                 </label>
                 <select
-                    value={colorScheme}
+                    value={localColorScheme}
                     onChange={handleColorSchemeChange}
                     style={{
                         padding: '6px',
@@ -242,15 +262,15 @@ export function SolutionViewer({ selectedGrid, onScalarFieldChange, onColorSchem
                 </select>
             </div>
 
-            {fieldStats && selectedField !== 'none' && (
+            {fieldStats && localSelectedField !== 'none' && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                     <ColorLegend
                         min={fieldStats.min}
                         max={fieldStats.max}
-                        colorScheme={colorScheme}
+                        colorScheme={localColorScheme}
                         orientation="horizontal"
                         numTicks={5}
-                        label={SCALAR_FIELDS.find(f => f.field === selectedField)?.name}
+                        label={SCALAR_FIELDS.find(f => f.field === localSelectedField)?.name}
                     />
 
                     <div style={{

@@ -1,0 +1,1060 @@
+# PLOT3D .com File Support: Tickets
+
+Last updated: 2026-03-28
+
+## Current Status Snapshot
+
+Completed tickets:
+
+1. TKT-001
+2. TKT-002
+3. TKT-003
+4. TKT-004
+5. TKT-005
+6. TKT-006
+7. TKT-007 (including TKT-007A through TKT-007E)
+8. TKT-008
+9. TKT-009
+10. TKT-010
+
+In progress:
+
+None.
+
+Completed since last update:
+
+11. TKT-011 (headless CLI PNG export)
+12. TKT-012 (hardening and governance)
+
+Remaining:
+
+None.
+
+This ticket set breaks the work into milestones and implementation-sized tasks. It is written so another agent can pick up the work with minimal additional context.
+
+## Milestone A: Foundation
+
+### ~~TKT-001: Define capability catalog and parity matrix~~ ✅ COMPLETE
+
+Completed: 2026-03-12. Artifacts: `plot3d_com_file/capability_catalog.md`, `plot3d_com_file/parity_matrix.json`, `scripts/validate-parity-matrix.mjs`, `.github/workflows/parity-matrix.yml`.
+
+Goal:
+Create the canonical list of supported visualization-critical capabilities and establish the parity-matrix artifact that every release must publish.
+
+Why this exists:
+Without a capability catalog, script/GUI parity will drift and scope will expand informally.
+
+Scope:
+
+1. Define capability IDs for:
+   - `READ`
+   - `FUNCTION`
+   - `VIEW`
+   - `VPOINT`
+   - `MINMAX`
+   - `CONTOURS`
+   - `PLOT`
+   - `WALLS`
+   - `SUBSETS`
+   - `FSURFACE`
+   - `TEXT`
+   - `SHOW`
+2. Define parity states:
+   - `supported`
+   - `script-only`
+   - `gui-only`
+   - `not-supported`
+3. Define which legacy commands are intentionally out of scope.
+4. Add the parity matrix as a repo artifact.
+5. Add a lightweight CI check for presence/format of the matrix.
+
+Acceptance criteria:
+
+1. All in-scope capabilities have IDs and parity status.
+2. The parity matrix file is checked into the repo.
+3. Out-of-scope commands are explicitly listed.
+
+Dependencies:
+
+1. None
+
+Relevant decisions:
+
+1. Incremental delivery is allowed.
+2. Supported scope may not contain undeclared script-only features.
+
+### ~~TKT-002: Introduce shared PlotState, PlotAction, and diagnostics model~~ ✅ COMPLETE
+
+Completed: 2026-03-12. Includes `PlotState`, `PlotAction`, diagnostics model, `apply_action`, `get_plot_state` / `apply_plot_action`, absolute multi-level contours, canonical `plot_state::ScalarField`, and `PlotMode` state/action coverage with unit tests.
+
+Goal:
+Create the backend-owned canonical state and transition model used by both script execution and GUI interaction.
+
+Why this exists:
+This is the core anti-fragility decision. Everything else depends on it.
+
+Scope:
+
+1. Add `PlotState` in Rust.
+2. Add `PlotAction` enum in Rust.
+3. Add diagnostics type with capability ID, severity, file, line, column, and message.
+4. Add `apply_action` transition function.
+5. Add `get_plot_state` command for debugging and parity inspection.
+6. Define contour data model with absolute values and multi-level support.
+7. Define the modern representation of `WALLS`, `SUBSETS`, `VIEW`, `VPOINT`, `MINMAX`, `FSURFACE`, `TEXT`, and plot mode.
+
+Acceptance criteria:
+
+1. Shared state can represent all in-scope capabilities.
+2. Contours are absolute-valued, not normalized.
+3. Multi-level contour representation exists.
+4. The state transition API is covered by unit tests.
+
+Dependencies:
+
+1. TKT-001
+
+Relevant decisions:
+
+1. Shared `PlotState` is the only source of truth.
+2. GUI writes to it only on apply/release.
+3. `ScalarField` stays canonical.
+
+### ~~TKT-003: Define and implement FUNCTION-number mapping~~ ✅ COMPLETE
+
+Completed: 2026-03-12. Added deterministic legacy FUNCTION mapping in `src-tauri/src/function_mapping.rs`, with tests for supported values, known-unimplemented soft-fail behavior, and unknown/out-of-scope warnings. Canonical `ScalarField` now includes placeholder variants for known legacy scalar functions and explicit `TODO_EQUATION` markers where formulas are not yet implemented.
+
+Goal:
+Create the mapping from legacy `FUNCTION` integers to the existing frontend/backend scalar-field model.
+
+Why this exists:
+The parser should not leak raw legacy function numbers deep into the app.
+
+Scope:
+
+1. Enumerate supported legacy scalar-function numbers.
+2. Map them to `ScalarField` variants.
+3. Document unsupported or unknown values.
+4. Add tests for known and unknown mappings.
+
+Acceptance criteria:
+
+1. Known values map deterministically.
+2. Unknown values warn and soft-fail.
+3. The mapping is reusable by parser, executor, and GUI labels if needed.
+
+Dependencies:
+
+1. TKT-002
+
+Relevant decisions:
+
+1. The enum remains canonical.
+2. Legacy number parsing is a translation layer concern.
+
+### ~~TKT-004: Implement strict parser and validator for `.com` files~~ ✅ COMPLETE
+
+Completed: 2026-03-12. Implemented `src-tauri/src/com_parser.rs` with tokenizer, alias table, include handling (with cycle detection), command dispatch for all in-scope capabilities, and 15 unit tests covering all three acceptance criteria.
+
+Goal:
+Parse supported legacy command syntax into typed actions.
+
+Why this exists:
+No parser exists today.
+
+Scope:
+
+1. Tokenize command words, qualifiers, tuples, quoted text, comments, and blank prompt-style input.
+2. Parse supported commands into `PlotAction` values.
+3. Add abbreviation alias table.
+4. Implement include-file handling.
+5. Emit warnings for unsupported commands and unknown qualifiers.
+
+Acceptance criteria:
+
+1. Example command files from `plot3d.md` parse successfully for supported commands.
+2. Unsupported commands emit warnings and continue.
+3. Malformed inputs produce useful diagnostics.
+
+Dependencies:
+
+1. TKT-002
+2. TKT-003
+
+Relevant decisions:
+
+1. Soft-fail unsupported commands.
+2. Include-file paths are expected to be relative to the parsed file until proven otherwise.
+
+### ~~TKT-005: Implement command executor and RenderIntent~~ ✅ COMPLETE
+
+Completed: 2026-03-12. Added `src-tauri/src/script_executor.rs` with `RenderIntent`, `ScriptExecutionResult`, `execute_actions`, and `execute_parsed_script`; wired `execute_com_script` Tauri command in `src-tauri/src/lib.rs`; `PLOT` now emits render intents at commit boundaries, `SHOW` produces executor output, parsed and execution diagnostics are merged, and final `PlotState` is persisted to shared backend state.
+
+Goal:
+Apply parsed actions to `PlotState` and emit `RenderIntent` values on `PLOT`.
+
+Why this exists:
+Parsing alone does not update the view panel or export anything.
+
+Scope:
+
+1. Execute actions in order.
+2. Mutate pending `PlotState`.
+3. Emit `RenderIntent` only when `PLOT` is encountered.
+4. Support `SHOW` output and `TEXT` storage.
+5. Return execution diagnostics.
+
+Acceptance criteria:
+
+1. `PLOT` is the only render-intent commit boundary.
+2. Equal `PlotState` yields equal `RenderIntent`.
+3. Execution result contains final state, intents, and diagnostics.
+
+Dependencies:
+
+1. TKT-004
+
+Relevant decisions:
+
+1. Parity target is `PlotState` plus `RenderIntent` equality.
+2. Script execution is not allowed to bypass the shared state model.
+
+## Milestone B: GUI parity
+
+### ~~TKT-006: Refactor GUI state flow to use PlotAction commits~~ ✅ COMPLETE
+
+Started: 2026-03-12. First migration slice complete: scalar-field and contour controls in `src/App.tsx` now dispatch backend `apply_plot_action` updates, `SolutionViewer` is controlled from app-level state, and a backend `PlotState` dev inspector panel was added to the sidebar.
+
+Update: 2026-03-15. Camera view presets now commit through shared plot-state actions (`SetAxisView` via `set_plot_axis_view`) and `PLOT` commit boundaries from the GUI, keeping `VIEW`/`VPOINT` camera interactions on the same backend state path used by script execution. Fixed serde mismatch where `rename_all = "snake_case"` produced `"plane_x_y"` instead of `"plane_xy"` for plane view variants; explicit `#[serde(rename)]` overrides added and covered by a Rust round-trip test.
+
+Update: 2026-03-17. Subset/slicing apply flow replaced: the old implicit `useEffect`-driven per-edit push was removed in favour of an explicit "Apply Slicing to PlotState" button (and Enter-key alias) that calls `set_plot_subsets` → `commit_plot` as a single atomic boundary. `CameraCommitControls` in `Viewer3D.tsx` now ignores programmatic camera moves so only user drag events schedule a commit. Frontend integration test suite added (`App.integration.test.tsx`, 4 tests) covering axis-view wiring, plane_xy serde regression, contour mode, and Enter-to-apply slices. Rendering-hint state (`ignoreIblank`, `showWireframe`, `shadingMode`) confirmed absent from the parity matrix and explicitly left as local React state — not in scope.
+
+Update: 2026-03-27. GUI camera sync now honors backend `plot_up` orientation for both axis presets and custom viewpoints by passing `plot_up` through `App` into `Viewer3D` and applying it to camera-up vectors during synchronization. Camera-up resolution now includes a parallel-look fallback (matching the headless safety rule) to avoid unstable up-vectors when `/UP` aligns with the current look direction. Integration coverage was extended to assert `plot_up` pass-through (`cameraPlotUp`) so `/UP` stays locked across script and GUI paths.
+
+Goal:
+Move GUI capability-bearing state changes onto the shared action/state path.
+
+Why this exists:
+Current GUI logic is mostly local React state, which is incompatible with parity guarantees.
+
+Scope:
+
+1. Audit current `App.tsx` and `Viewer3D.tsx` state changes.
+2. Replace direct commits for parity-relevant controls with action dispatches.
+3. Keep transient drag/edit state local until apply or release.
+4. Add dev inspector for current `PlotState`.
+
+Acceptance criteria:
+
+1. Core capability state is no longer independently owned only by React.
+2. Dragging does not flood backend state updates.
+3. Dev inspector shows live backend state.
+
+Dependencies:
+
+1. TKT-005
+
+Relevant decisions:
+
+1. Apply/release commit model.
+2. Shared state must remain authoritative.
+
+### ~~TKT-007 (Epic): Absolute multi-level contours and plot-family semantic alignment~~ ✅ COMPLETE
+
+Completed: 2026-03-20. All sub-tickets TKT-007A through TKT-007E complete.
+
+Updated scope: 2026-03-17. This is now an umbrella ticket split into implementation-sized parts (TKT-007A through TKT-007E).
+
+Execution metadata:
+
+1. Estimated effort: XL
+2. Primary owner role: Feature lead coordinating backend + frontend
+3. Suggested contributors: parser/backend owner, frontend/viewer owner, test owner
+4. Exit condition: all TKT-007A through TKT-007E acceptance criteria satisfied
+
+Goal:
+Replace the normalized single-level contour path with an absolute-valued, multi-level contour system and align contour versus function-surface or carpet semantics with legacy behavior.
+
+Why this exists:
+The old path conflates parity concepts and local viewer toggles, still uses normalized contour assumptions in key places, and blurs contour-plot behavior with function-surface behavior.
+
+Implementation context:
+
+1. Contour plots represent scalar values by level location.
+2. Function-surface or carpet plots represent scalar magnitude on a plotted function axis against one or two spatial axes.
+3. `CONTOURS` sets contour levels and contour attributes; it does not choose the plot family.
+4. Plot-family selection must not be encoded through the retired `Enable Contours` checkbox and `surfaces / lines / both` display shortcut.
+
+Epic-level acceptance criteria:
+
+1. No normalized contour-value contract remains across shared state, GUI contracts, or extraction IPC.
+2. `AUTOMATIC`, `INCREMENT`, and `MANUAL` contour specs round-trip script and GUI flows without truncation.
+3. Contour plots and function-surface or carpet plots follow distinct deterministic render paths.
+4. First-pass contour attributes exist as shared parity state with explicit behavior and diagnostics for unsupported combinations.
+
+Dependencies:
+
+1. TKT-002
+2. TKT-005
+3. TKT-006
+
+Relevant decisions:
+
+1. No normalized contour values.
+2. Multi-level contour support is mandatory.
+3. Default contour attribute is `LINE`.
+4. `COLOR CONTOURS` first pass uses the existing field colormap on filled geometry.
+5. Function-surface or carpet rendering may ship as a bounded MVP if incomplete paths are explicit.
+6. Legacy contour attributes are shared parity state; wireframe and shading remain local viewer styling.
+
+### ~~TKT-007A: Shared state and parser contracts for contour specs, attributes, and plot families~~ ✅ COMPLETE
+
+Completed: 2026-03-18. Added `ContourAttribute` enum (`Line`, `Surface`, `Grid`, `ColorContours`, `Dots`; default `Line`) and replaced `PlotMode` with explicit `PlotFamily` enum (`Contour` (default), `FunctionSurface`) in `plot_state.rs`. `PlotState` gains `contour_attribute: ContourAttribute` field and `plot_mode`/`plot_family` rename. `PlotAction` gains `SetPlotFamily` (replacing `SetPlotMode`) and new `SetContourAttribute`. Parser (`com_parser.rs`) now emits `SetContourAttribute` for `/LINE`, `/SURFACE`, `/GRID`, `/COLOR`, `/DOTS` qualifiers on `CONTOURS`; `/LINE` is no longer a distinct PLOT family — it maps to `FunctionSurface` alongside `/SURFACE`/`/CARPET`; `/2D` and `/3D` accepted without effect. Tauri command `set_plot_mode` replaced by `set_plot_family`. Frontend `BackendPlotMode` replaced by `BackendPlotFamily` + new `BackendContourAttribute` type; `BackendPlotState` updated accordingly. All 180 Rust tests and 104 TypeScript tests pass.
+
+Execution metadata:
+
+1. Estimated effort: M
+2. Primary owner role: Backend/parser engineer
+3. Secondary owner role: Integration reviewer for script compatibility
+
+Goal:
+Finalize backend state and parser contracts so contour levels, contour attributes, and plot-family choices are represented unambiguously in shared state.
+
+Scope:
+
+1. Refine shared `PlotState` and `PlotAction` representations for contour levels and first-pass contour attributes: `LINE`, `SURFACE`, `GRID`, `COLOR CONTOURS`, and `DOTS`.
+2. Ensure plot-family representation is explicit and does not rely on old UI shortcut semantics.
+3. Update parser handling for `CONTOURS`, `PLOT`, and related qualifiers to populate the refined shared model.
+4. Stop silently ignoring contour-attribute intent in parser/state transitions.
+
+Acceptance criteria:
+
+1. Shared state can express all three contour-spec modes and first-pass contour attributes.
+2. Parser emits deterministic actions for `CONTOURS` level modes and plot-family switches.
+3. Unknown or unsupported qualifiers generate diagnostics rather than silent behavior changes.
+
+Dependencies:
+
+1. TKT-002
+2. TKT-004
+3. TKT-006
+
+### ~~TKT-007B: Absolute contour-level resolution and IPC contract migration~~ ✅ COMPLETE
+
+Execution metadata:
+
+1. Estimated effort: M
+2. Primary owner role: Backend/IPC engineer
+3. Secondary owner role: Viewer integration engineer
+
+Goal:
+Remove normalized contour-value contracts and standardize one absolute contour-level resolution path.
+
+Scope:
+
+1. Replace normalized contour extraction arguments with absolute level inputs across Tauri commands.
+2. Add a backend helper that resolves `AUTOMATIC`, `INCREMENT`, and `MANUAL` specs into explicit absolute levels using field range context.
+3. Ensure degenerate range handling is deterministic and diagnostic-friendly.
+
+Acceptance criteria:
+
+1. No extraction command requires a normalized contour input.
+2. All contour-level resolution flows use one canonical absolute-level resolver.
+3. Uniform-field cases avoid divide-by-zero behavior and emit deterministic outcomes.
+
+Dependencies:
+
+1. TKT-007A
+
+### ~~TKT-007C: GUI contour model and editor migration~~ ✅ COMPLETE
+
+Execution metadata:
+
+1. Estimated effort: L
+2. Primary owner role: Frontend app engineer
+3. Secondary owner role: Backend reviewer for state/action shape alignment
+
+Goal:
+Replace the old single-level contour UI with a parity-aligned plot-family and contour editor flow.
+
+Scope:
+
+1. Retire `Enable Contours` and the `surfaces / lines / both` control.
+2. Add GUI controls for plot-family selection and contour-spec modes: `AUTOMATIC`, `INCREMENT`, `MANUAL`.
+3. Add first-pass GUI controls for contour attributes with default `LINE` behavior.
+4. Ensure backend-to-UI sync round-trips script-driven contour specs without collapsing to one manual level.
+
+Acceptance criteria:
+
+1. GUI can author and edit all three contour-spec modes.
+2. Script-loaded contour specs and attributes remain intact after GUI sync and apply.
+3. Old single-level behavior exists only as a subset of manual mode.
+
+Dependencies:
+
+1. TKT-007A
+2. TKT-007B
+
+### ~~TKT-007D: Renderer semantic split and bounded function-surface MVP~~ ✅ COMPLETE
+
+Completed: 2026-03-19. Viewer integration now uses explicit `plotFamily` renderer branching (`contour` vs `function_surface`) instead of legacy contour-enable assumptions. In `Viewer3D.tsx`, contour extraction and overlay rendering execute only for contour family, while function-surface mode uses the base mesh path deterministically. `COLOR CONTOURS` now colors iso-surfaces by resolved contour level through the existing field colormap (rather than fixed single-color surfaces). First-pass unsupported combinations now surface explicit UI messaging in the viewer (for `GRID`/`DOTS` fallback and contour-spec inputs while in function-surface mode), eliminating silent fallback behavior.
+
+Execution metadata:
+
+1. Estimated effort: L
+2. Primary owner role: Frontend viewer/render engineer
+3. Secondary owner role: Backend reviewer for render-intent/contract consistency
+
+Goal:
+Implement deterministic renderer-path separation for contour plots versus function-surface or carpet plots.
+
+Scope:
+
+1. Split contour rendering from function-surface or carpet rendering in viewer integration paths.
+2. Remove old display-mode mapping assumptions from rendering code.
+3. Implement first-pass contour-attribute behavior with explicit diagnostics for unsupported combinations.
+4. Ship a bounded function-surface MVP where complete parity is not yet available.
+
+Acceptance criteria:
+
+1. Contour and function-surface or carpet paths are distinct and deterministic.
+2. First-pass `COLOR CONTOURS` uses field colormap on filled geometry.
+3. Unsupported combinations surface diagnostics or explicit UI messaging, not silent fallback.
+
+Dependencies:
+
+1. TKT-007A
+2. TKT-007B
+3. TKT-007C
+
+### ~~TKT-007E: TKT-007 parity and regression test coverage~~ ✅ COMPLETE
+
+Completed: 2026-03-20. Added 8 Rust unit tests and 7 frontend integration tests covering all acceptance criteria.
+
+Execution metadata:
+
+1. Estimated effort: M
+2. Primary owner role: Test/integration engineer
+3. Secondary owner role: backend + frontend code owners for review
+
+Goal:
+Lock in the TKT-007 behavior with targeted backend and frontend coverage.
+
+Scope:
+
+1. Add unit tests for contour spec parsing/state transitions and contour-level resolution edge cases.
+2. Add integration tests for GUI plot-family and contour-spec commits.
+3. Add contract tests that verify absolute-level arguments reach extraction commands.
+4. Add regression tests for unsupported-combination diagnostics.
+
+Acceptance criteria:
+
+1. New test suite fails on normalized contour regressions.
+2. GUI tests cover Automatic, Increment, Manual, and plot-family round-trips.
+3. Diagnostics behavior for unsupported combinations is test-covered.
+
+Dependencies:
+
+1. TKT-007A
+2. TKT-007B
+3. TKT-007C
+4. TKT-007D
+
+### TKT-007 Implementation Reference (future handoff)
+
+Purpose:
+Capture concrete implementation anchors and non-negotiable decisions so future agents can execute without rediscovery.
+
+Key non-negotiable decisions:
+
+1. Contour values are absolute physical values end-to-end; normalized contour-value contracts are forbidden.
+2. `CONTOURS` is a level-and-attribute command. It does not choose plot family.
+3. Plot-family semantics must not reuse the retired `Enable Contours` and `surfaces / lines / both` shortcut.
+4. Default contour attribute is `LINE`.
+5. First-pass `COLOR CONTOURS` uses field colormap on filled geometry (no per-level GUI color editor required in this ticket).
+6. Unsupported combinations must emit diagnostics or explicit UI messaging; no silent fallback.
+7. Wireframe/shading stay local viewer styling for TKT-007.
+
+Code touchpoints to expect for TKT-007 work:
+
+1. `src-tauri/src/plot_state.rs`: canonical contour spec/attribute/plot-family state and `apply_action` behavior.
+2. `src-tauri/src/com_parser.rs`: `CONTOURS`, `PLOT`, and related qualifier parsing.
+3. `src-tauri/src/lib.rs`: Tauri contour extraction commands and IPC argument contracts.
+4. `src-tauri/src/script_executor.rs`: render-intent boundary behavior at `PLOT` commits.
+5. `src/types/plot3d.ts`: frontend type contract mirrors for contour/plot-family state.
+6. `src/App.tsx`: contour editor controls, plot-family controls, and backend-state sync.
+7. `src/components/Viewer3D.tsx`: contour/function-surface rendering path split and extraction call arguments.
+8. `src/App.integration.test.tsx`: GUI commit flow and regression tests.
+
+Source references for legacy semantics:
+
+1. `plot3d.md`:
+   - `CONTOURS` modes and qualifier behavior.
+   - `FSURFACE` semantics and relationship to `VIEW`, `MINMAX`, and contour attributes.
+   - `PLOT` qualifiers (`/CONTOUR`, `/SURFACE`, `/CARPET`, `/LINE`) and expected behavior distinctions.
+2. `plot3d_com_file/capability_catalog.md`: canonical in-scope capability definitions.
+3. `plot3d_com_file/parity_matrix.json`: current parity status and ticket ownership.
+4. The scalar-function possibility chart (project discussion artifact): interpret as behavioral guidance for first-pass attribute semantics (`LINE`, `SURFACE`, `GRID`, `COLOR CONTOURS`, `DOTS`).
+
+Contract migration checklist:
+
+1. Remove any remaining `levelNormalized` contour arguments at frontend/backend boundaries.
+2. Ensure one canonical resolver computes explicit contour levels for `AUTOMATIC`, `INCREMENT`, and `MANUAL` specs.
+3. Verify manual absolute values never get silently reinterpreted as normalized fallback values.
+4. Verify degenerate-range behavior is deterministic and test-covered.
+
+Recommended completion evidence for TKT-007 sub-tickets:
+
+1. Backend tests: contour-state transitions, parser behavior, and level-resolution edge cases.
+2. Frontend tests: plot-family + Automatic/Increment/Manual editor round-trips and commit ordering.
+3. Contract tests: extraction commands receive absolute levels only.
+4. Manual scenario checks:
+   - `CONTOURS 5` + `PLOT/CONTOUR` reflects Automatic mode in GUI.
+   - Manual multi-level entries persist through apply/reload cycles.
+   - Function-surface path is distinct from contour path.
+
+Current verification baseline (as of 2026-03-17):
+
+1. `cargo test plot_state` passes in `src-tauri`.
+2. `npm run test -- src/App.integration.test.tsx` passes in repo root.
+
+### ~~TKT-008: Close GUI gaps for WALLS, SUBSETS, FSURFACE, TEXT, and SHOW~~ ✅ COMPLETE
+
+Completed: 2026-03-20. Added GUI parity controls for range-based `SUBSETS` and `WALLS` (including compact row rendering, edit/remove actions, and full-range `:` semantics backed by explicit full-span normalization), `FSURFACE` controls with immediate enable/disable apply behavior, `TEXT` annotation add/clear controls with sidebar-fit layout fixes, and a `SHOW` status panel with refresh output. Backend Tauri commands added and wired in `src-tauri/src/lib.rs` for `set_plot_walls`, `set_plot_fsurface`, `add_plot_text_annotation`, `clear_plot_text_annotations`, and `show_plot_status`; frontend integration and state synchronization added in `src/App.tsx`; existing integration tests updated for expanded `PlotState` shape and selector disambiguation.
+
+Current verification baseline (as of 2026-03-20):
+
+1. `cargo test plot_state` passes in `src-tauri`.
+2. `npm run test -- src/App.integration.test.tsx` passes in repo root.
+
+Goal:
+Add or refactor GUI affordances so supported script features are also available interactively.
+
+Why this exists:
+Feature parity is an explicit goal.
+
+Scope:
+
+1. Design a richer range-based selection model for `SUBSETS` and `WALLS`.
+2. Update or replace current index-slice controls so they align with that model.
+3. Add `FSURFACE` controls beyond the bounded MVP separation delivered in TKT-007, including scale factor, walls origin, and any needed mode controls.
+4. Add plot-text controls.
+5. Add a `SHOW` status view.
+
+Acceptance criteria:
+
+1. No supported feature remains script-only.
+2. Index slices are aligned with subset/wall semantics or replaced by a better model.
+3. The parity matrix reflects GUI support accurately.
+
+Dependencies:
+
+1. TKT-006
+2. TKT-007D
+
+Relevant decisions:
+
+1. Existing slice behavior should evolve toward subset/wall semantics.
+2. Script-only knobs can exist temporarily but must be tracked.
+3. TKT-007 is responsible for separating contour plots from function-surface or carpet plots; TKT-008 finishes the missing interactive `FSURFACE` controls.
+
+### ~~TKT-009: Implement deterministic legacy-to-Three.js translation layer~~ ✅ COMPLETE
+
+Completed: 2026-03-20. Deliverable: `plot3d_com_file/legacy_translation_layer.md` — authoritative reference for legacy-to-Three.js mappings.
+
+Goal:
+Formalize how legacy plotting concepts translate to the modern rendering stack.
+
+Why this exists:
+Without a formal translation layer, render behavior will be brittle and undocumented.
+
+Scope:
+
+1. Map `VIEW` and `VPOINT` into camera behavior. ✅ (*Documented in § 1.2–1.5*)
+2. Map `PLOT/UP` and related orientation options. ✅ (*Documented in § 1.5; deferred to follow-up*)
+3. Define how contour, function-surface, carpet, and line plot families use current geometry-generation paths, building on the semantic split introduced in TKT-007. ✅ (*Documented in § 2*)
+4. Document known differences from legacy output. ✅ (*Documented in § 3*)
+
+Acceptance criteria:
+
+1. Translation is deterministic. ✅ All camera calculations and rendering paths are explicitly specified.
+2. Known deviations are documented. ✅ Camera distance, /UP deferral, and sphere/plane conventions captured.
+3. Equal `RenderIntent` yields predictable interactive and export results. ✅ Pipeline specification enables deterministic testing.
+
+Dependencies:
+
+1. TKT-005 ✅
+2. TKT-007D ✅
+
+Relevant decisions:
+
+1. Exact visual legacy parity is not required.
+2. Documented deterministic behavior is required.
+3. TKT-007 may ship a bounded function-surface MVP, but TKT-009 is where the long-term translation rules and documented deviations must be finalized.
+
+Execution metadata:
+
+1. Estimated effort: M
+2. Primary owner role: Backend architect / rendering specification lead
+3. Secondary owner role: Frontend reviewer for camera/geometry consistency
+
+Implementation reference:
+
+The translation layer document covers:
+- **Part 1 (Camera Behavior):** VIEW/VPOINT/UP semantics, AxisView/ViewPoint mapping, plane views, spherical conversions.
+- **Part 2 (Plot-Family Rendering):** Contour vs function-surface distinction, geometry transformation, rendering paths.
+- **Part 3 (Known Deviations):** Camera distance, /UP deferral, plane-view conventions, spherical coordinates, function-surface color mapping, WALLS styling.
+- **Part 4 (Implementation Checklist):** Code touchpoints (plot_state.rs, com_parser.rs, Viewer3D.tsx, App.tsx), test coverage, and documentation requirements.
+- **Part 5 (Design Decisions):** Rationale for fixed view distance, /UP deferral, plane orthogonality, WALLS-as-lines scope.
+- **Part 6 (Integration Examples):** Worked examples showing script → translation → viewer behavior.
+
+Verification baseline (as of 2026-03-20):
+
+1. `cargo test plot_state` — 52 tests pass in backend (`src-tauri/src/plot_state.rs`).
+2. `npm run test -- src/App.integration.test.tsx` — 11 tests pass in frontend.
+3. Manual verification: Example scripts (cp.com, shuttle examples from plot3d.md) render with expected camera placement and plot families.
+
+## Milestone C: Export
+
+### ~~TKT-010: In-app PNG export from command files~~ ✅ COMPLETE
+
+Completed: 2026-03-23. Two export paths implemented: (1) "Export View" header button exports the current live canvas; (2) Command sidebar export triggers full multi-PLOT batch export — one PNG per `PLOT` intent, rendered sequentially with Viewer3D state applied for each, saved to auto-numbered files (`scene_001.png`, `scene_002.png`, …). Backend commands: `save_png_file_dialog`, `write_png_file` (returns resolved path). Canvas readback enabled via `preserveDrawingBuffer: true`. Viewer3D loading tracked via `viewer3dLoadingRef` + `waitForViewer3DStable()`. 18 integration tests passing.
+
+Goal:
+Allow users to run a `.com` file and export PNG output from the current app.
+
+Why this exists:
+This is the first delivery target for deterministic artifact generation.
+
+Scope:
+
+1. Add command-file run and export workflow to the app.
+2. Support one or more `PLOT` outputs per command file.
+3. Surface command warnings/errors during export.
+4. Reuse shared `RenderIntent` logic.
+
+Acceptance criteria:
+
+1. A user can run a `.com` file and export PNGs from within the GUI.
+2. Multi-`PLOT` scripts produce multiple outputs.
+3. Warnings remain non-fatal unless the file cannot produce any render intent.
+
+Dependencies:
+
+1. TKT-009
+
+Relevant decisions:
+
+1. Visual equivalence is sufficient.
+2. Shared render/export logic is preferred.
+
+### ~~TKT-011: Headless CLI PNG export~~ ✅ COMPLETE
+
+Started: 2026-03-23. Phase 1 bootstrap implementation landed and was then split into a dedicated crate at `headless-export/` with binary target `overview-export`.
+
+Phase completion status (as of 2026-03-28):
+
+1. Phase 1 — ✅ COMPLETE
+2. Phase 2a — ✅ COMPLETE
+3. Phase 2b — ✅ COMPLETE
+4. Phase 2c — ✅ COMPLETE (bounded MVP delivered; deviations documented in `legacy_translation_layer.md` § 3.7–3.10)
+5. Phase 2d — ✅ COMPLETE (14-case regression matrix, dedicated CI gate, all divergences formally documented)
+
+Phase 1 status notes:
+
+1. `.com` parsing and execution are reused directly via existing `com_parser` and `script_executor` modules.
+2. CLI contract now works: `overview-export --cmd file.com --out out.png`.
+3. Multi-`PLOT` scripts export one file per render intent with `_001`, `_002`, ... suffixing.
+4. PNG generation is intentionally dependency-light (pure Rust crates only) to keep backnode deployment simple and avoid unusual system libraries.
+5. Visual output is deterministic but currently a headless fallback renderer, not full Three.js-equivalent rendering yet.
+
+Update: 2026-03-23 (Phase 2 implementation started)
+
+1. Phase 2a baseline landed: `RenderIntent` now has an optional in-memory `SolutionSnapshot` field (non-serialized) so the CLI can render with real grid/solution scalar data when available.
+2. The CLI now attempts to resolve `READ` dataset paths relative to the `.com` script directory and load a single-grid PLOT3D binary `(XYZ + Q)` snapshot for each `PLOT` intent.
+3. Phase 2b baseline landed: a projection-based software renderer now draws a data-driven heatmap and marching-squares iso-contour overlays when a snapshot is available.
+4. Fallback behavior remains: if no dataset is available (or parsing fails), exporter still emits deterministic placeholder PNGs (preserving current smoke-test reliability).
+5. Added unit coverage for colormap interpolation, scalar computation, slab extraction, contour-level resolution, and marching-squares crossing detection.
+6. Dataset loading now reuses the shared GUI PLOT3D reader path (same binary-format detection and parsing code as `src-tauri/src/plot3d.rs`) instead of a headless-only legacy reader.
+7. Temporary synthetic regression fixtures were expanded to cover binary-format variants generated via `gfortran`: little-endian f32 (baseline), little-endian f64, and big-endian f32.
+8. Fixture generation was consolidated into one Fortran source: `headless-export/fixtures/regression/generate_additional_synthetic_formats.f90`.
+
+Update: 2026-03-27 (temporary regression reference added)
+
+1. Added temporary regression fixture set under `headless-export/fixtures/regression/`: `synthetic_4x4.xyz`, `synthetic_4x4.q`, and `synthetic_4x4.com`.
+2. Captured a reference output image at `headless-export/fixtures/regression/reference/synthetic_4x4.png`.
+3. Stored the baseline hash in `headless-export/fixtures/regression/reference/synthetic_4x4.sha256`.
+4. Added helper script `headless-export/fixtures/regression/check_regression.sh` to regenerate output and assert hash equality for quick local regression checks.
+5. Added a second function-surface regression fixture `synthetic_4x4_surface.com` with reference output `reference/synthetic_4x4_surface.png` and hash `reference/synthetic_4x4_surface.sha256`.
+6. Expanded the regression check script so CI now validates both contour and function-surface synthetic baselines.
+
+Update: 2026-03-27 (regression matrix expansion)
+
+1. Added additional command fixtures for format-variant coverage: `synthetic_4x4_le_f64(.com, _surface.com)` and `synthetic_4x4_be_f32(.com, _surface.com)`.
+2. Added reference PNG/hash baselines for both contour and function-surface outputs of the new format variants.
+3. Expanded `headless-export/fixtures/regression/check_regression.sh` from 2 cases to 6 cases.
+4. Added README regeneration docs for synthetic fixtures (single `gfortran` command).
+
+Update: 2026-03-27 (Phase 2c bounded MVP started)
+
+1. `FunctionSurface` no longer falls through to the contour heatmap path only; the headless renderer now has a bounded wireframe-projection MVP for function-surface plots.
+2. The MVP uses orthographic projection with an oblique fallback camera for top/custom views that would otherwise collapse the height axis.
+3. Function-surface rendering now includes a depth-buffer filled-surface pass (bounded hidden-surface-aware rasterization) plus attribute-specific overlays (`LINE`/`GRID` wireframe and `DOTS` markers).
+4. Function-surface rendering is still not parity-complete: there is no perspective camera model, no physically based lighting/material model, and no full Three.js-equivalent mesh pipeline yet.
+5. Added test coverage verifying that function-surface renders produce visible output, differ from contour renders, and emit a warning when the oblique fallback camera is used.
+
+Update: 2026-03-27 (camera/projection parity increment)
+
+1. Headless renderer now honors swapped plane-view semantics for `VIEW YX`, `VIEW ZX`, and `VIEW ZY` rather than treating them as unswapped aliases.
+2. The swap behavior is applied to contour slab extraction and function-surface projection so horizontal/vertical axis order follows legacy plane-token intent.
+3. Added renderer unit tests covering `PlaneYX`, `PlaneZX`, and `PlaneZY` slab-axis ordering.
+
+Update: 2026-03-27 (custom VPOINT contour projection increment)
+
+1. Custom `VPOINT` contour projection now uses the same camera-basis semantics as the renderer camera mapping and selects outer-face slabs by dominant look axis/sign.
+2. Added bounded fallback for degenerate dominant faces (for example single-layer `nk=1` data): the renderer now selects the nearest non-degenerate outer face and emits an explicit warning.
+3. Added renderer unit coverage for custom-viewpoint dominant-face selection, oblique-view warning behavior, and degenerate-face fallback behavior.
+4. Added non-axis-aligned custom-view regression fixtures: `synthetic_4x4_vpoint_oblique.com` and `synthetic_4x4_vpoint_oblique_surface.com`, with corresponding reference PNG/hash baselines and regression-script coverage.
+
+Update: 2026-03-27 (multi-layer custom VPOINT regression increment)
+
+1. Extended the unified Fortran fixture generator with a true multi-layer synthetic dataset: `synthetic_4x4x2.xyz` and `synthetic_4x4x2.q`.
+2. Added custom `VPOINT` regression fixtures on the multi-layer dataset: `synthetic_4x4x2_vpoint_plusx.com` and `synthetic_4x4x2_vpoint_plusx_surface.com`.
+3. These cases exercise non-degenerate dominant-face selection directly in image regression for both contour and function-surface output paths.
+4. Regression references and hashes were added and the local regression script now covers the multi-layer custom-view cases too.
+
+Update: 2026-03-27 (thin-slab function-surface parity increment)
+
+1. The headless function-surface renderer no longer rejects `1xNxN` or `Nx1xN` slices outright; it now follows the same collapsed-axis orientation rule as the backend surface mesh path.
+2. Height-axis placement now depends on the collapsed dimension (`k -> z`, `i -> x`, `j -> y`), and the oblique fallback camera is triggered whenever the requested view would otherwise look straight down that height axis.
+3. Added thin-slab synthetic regression fixtures: `synthetic_1x4x4_surface.com` and `synthetic_4x1x4_surface.com`, with corresponding generated datasets and reference PNG/hash baselines.
+
+Update: 2026-03-27 (PLOT/UP orientation increment)
+
+1. Shared `PlotState` now carries `PLOT/UP` as an explicit signed axis, and the parser maps `/UP=X`, `/UP=-Y`, etc. into that state instead of dropping them as unknown qualifiers.
+2. The headless renderer now applies `plot_up` to contour slab orientation and projected camera bases, covering both axis-aligned views and custom/function-surface camera paths.
+3. Added renderer unit tests plus two regression fixtures, `synthetic_4x4_up_neg_y.com` and `synthetic_4x4_surface_up_neg_z.com`, to lock in non-default orientation behavior.
+
+Update: 2026-03-27 (function-surface custom-VPOINT perspective increment)
+
+1. Function-surface rendering now uses a bounded perspective projection when an explicit custom `VPOINT` is active (`AxisView::Custom` with a viewpoint), narrowing the largest remaining visual-equivalence gap without changing axis-preset baselines.
+2. Axis-aligned/preset views and oblique fallback-camera paths remain orthographic to preserve existing deterministic behavior and reference stability.
+3. Added renderer unit coverage for perspective foreshortening and activation behavior, and refreshed the two affected regression references: `synthetic_4x4_vpoint_oblique_surface` and `synthetic_4x4x2_vpoint_plusx_surface`.
+
+Current verification baseline (as of 2026-03-27):
+
+1. `cargo test --manifest-path headless-export/Cargo.toml --bin overview-export` passes.
+2. CI smoke export runs `headless-export/fixtures/smoke.com` and asserts multi-PLOT outputs are generated.
+3. Temporary regression hash checks pass for fourteen synthetic cases, including format variants, oblique custom-view fixtures, multi-layer custom-view fixtures, thin-slab function-surface fixtures, and explicit `PLOT/UP` orientation fixtures.
+4. Dedicated CI workflow gate at [.github/workflows/headless-regression.yml](.github/workflows/headless-regression.yml) runs the full synthetic regression matrix and uploads generated `out/` images as artifacts on failure.
+
+Phase 2 plan (original):
+
+The Phase 1 renderer is a placeholder: it draws a gradient background, a signature band from a `PlotState` hash, and schematic contour lines. It does not load solution data and does not attempt 3D rendering. Acceptance criterion #2 ("Output is visually equivalent to the same render intent in-app") cannot be satisfied without a more complete renderer.
+
+The core architectural gap between Phase 1 and visual equivalence is this:
+
+1. `RenderIntent` only carries `PlotState` (configuration: function number, contour levels, view angle, etc.). It carries no solution data (grid geometry or scalar field values). The in-app renderer has already loaded solution data via the `READ` command before `PLOT` is reached. The headless CLI currently has no hook to receive that data.
+
+2. The in-app renderer runs Three.js on a GPU. A headless CLI cannot use Three.js without a browser context. Achieving equivalence requires either a pure-Rust software renderer fed with the same data, or a headless browser/node runtime that can execute Three.js code.
+
+Phase 2 is broken into four sub-phases:
+
+Phase 2a — Carry solution data through RenderIntent: ✅ COMPLETE
+
+1. Add a solution-data field (grid vertices + scalar field values) to `RenderIntent` so the headless CLI has the raw inputs the in-app renderer has.
+2. Update `script_executor` to capture the active loaded solution when a `CommitPlot` boundary is reached and embed it in the intent.
+3. Update `headless-export/src/main.rs` to receive and forward the data to the renderer.
+4. `RenderIntent` must remain serializable; use `Option<SolutionSnapshot>` with a serde-skip default so existing callers that do not load solutions continue to compile without changes.
+
+Phase 2b — Implement a 2D projection software renderer: ✅ COMPLETE (baseline)
+
+1. Implement a flat axis-aligned view path: for the `PlusZ` / `PlusX` / `PlusY` axis-view presets, project grid vertices onto the corresponding 2D plane and render a heatmap using the resolved colormap.
+2. For arbitrary `VPOINT` camera positions, implement an orthographic projection from the VIEW/VPOINT camera parameters defined in the translation layer (`legacy_translation_layer.md`).
+3. Apply the same color-mapping function used in-app (`src/utils/colorMapping.ts`) but re-implemented in Rust — the mapping tables are already partially available in the frontend and can be ported.
+4. Draw contour iso-lines over the projected heatmap at the resolved absolute contour levels. Use marching squares (or a grid-edge crossing scan) on the 2D projected grid rather than the placeholder horizontal stripe approach.
+5. `ContourAttribute::ColorContours` fills bands between iso-lines using the field colormap. `ContourAttribute::Surface` renders iso-surfaces as colored filled regions. `ContourAttribute::Line` draws line-only iso-contours. `ContourAttribute::Grid` adds a mesh grid overlay. `ContourAttribute::Dots` marks iso-crossings only.
+
+Phase 2c — Function-surface plot family: ✅ COMPLETE
+
+1. Implement a simple wireframe-projection renderer for the `FunctionSurface` plot family using the same camera model.
+2. The function-surface family renders the scalar function as a height axis; project each grid face as a polygon and shade by scalar value using the field colormap.
+3. This phase may be scoped to a bounded MVP: full hidden-surface elimination is optional if the deviation is documented.
+
+Phase 2d — Test coverage and documented divergence: ✅ COMPLETE
+
+1. Add pixel-level regression tests using fixture `.com` files with known solution data. The CI smoke baseline exists (`headless-export/fixtures/smoke.com`) but must be extended to include a fixture that loads real or synthetic solution data.
+2. Document the remaining known deviations from in-app output (e.g., no anti-aliasing, no lighting model, wireframe fallback for function-surface hidden surface elimination). These form the content for acceptance criterion #3.
+3. Update `headless-export/fixtures/` with a `regression/` subdirectory containing reference PNG outputs. Add a CI step that compares new outputs against reference images using a pixel-difference threshold.
+
+Decision points to resolve before starting Phase 2:
+
+1. Whether to carry full solution data in `RenderIntent` or keep it as a side-channel (e.g., a resolved file path). Full carry is simpler for correctness; side-channel avoids large memory copies for big solutions.
+2. Whether Phase 2c (function-surface 3D projection) is in scope for the MVP visual-equivalence target, or whether the documented fallback from Phase 1 is acceptable for the function-surface family.
+3. The acceptable pixel-difference threshold for the regression-comparison CI step.
+4. Long-term: whether a headless Node.js + headless WebGL path (running the actual Three.js renderer) is preferable to the pure-Rust software rasterizer path. The pure-Rust path keeps the crate fully self-contained; the Node path achieves exact parity at the cost of an additional runtime dependency.
+
+Code touchpoints for Phase 2:
+
+1. `src-tauri/src/script_executor.rs`: add `SolutionSnapshot` field to `RenderIntent`; populate it on `CommitPlot`.
+2. `src-tauri/src/solution.rs` or similar: define `SolutionSnapshot` struct (grid vertices, scalar field values, field range).
+3. `src-tauri/src/lib.rs`: plumb loaded solution data into executor context.
+4. `headless-export/src/main.rs`: replace placeholder renderer with projection-based software renderer.
+5. `src/utils/colorMapping.ts`: reference for color-ramp tables to port to Rust.
+6. `headless-export/fixtures/`: expand with solution-bearing `.com` fixtures and reference PNGs.
+
+Goal:
+Create a standalone export path for command files without launching the full GUI.
+
+Why this exists:
+Long-term deterministic export should be scriptable and automation-friendly.
+
+Scope:
+
+1. Add a CLI binary target.
+2. Reuse parser, executor, and render-intent pipeline.
+3. Implement PNG export in a portable way.
+4. Keep GUI and CLI behavior aligned through shared logic where practical.
+
+Acceptance criteria:
+
+1. `overview-export --cmd file.com --out out.png` works. ✅ COMPLETE (Phase 1)
+2. Output is visually equivalent to the same render intent in-app. ✅ COMPLETE (bounded MVP scope; known deviations documented in `legacy_translation_layer.md` § 3.7–3.10: no anti-aliasing, flat Lambert shading, orthographic for named views, no iso-contours on function surfaces)
+3. Any divergence from in-app export is documented. ✅ COMPLETE (formal divergence entries in `legacy_translation_layer.md` § 3.7–3.10)
+
+Dependencies:
+
+1. TKT-010 or at minimum the shared render/export core
+
+Relevant decisions:
+
+1. One shared render path is preferred but not mandatory if impractical.
+2. Bitwise-identical PNGs are optional.
+
+## Milestone D: Hardening and governance
+
+### ~~TKT-012: Add parity tests, CI gates, and ADRs~~ ✅ COMPLETE
+
+Completed: 2026-03-28. Sub-tickets TKT-012A through TKT-012F complete, including parity governance validation, backend parity fixtures, cross-path parity integration tests, unified parity CI gate, ADR pack, and parity docs hardening.
+
+Execution metadata:
+
+1. Estimated effort: L
+2. Primary owner role: Test/governance lead
+3. Suggested contributors: backend owner, frontend owner, docs owner
+4. Exit condition: all TKT-012A through TKT-012F acceptance criteria satisfied
+
+Goal:
+Prevent long-term drift between script execution and GUI behavior.
+
+Why this exists:
+This project will be fragile without automated parity checks and recorded decisions.
+
+Scope:
+
+1. Add parity matrix CI checks.
+2. Add parser, state, render-intent, and parity equivalence tests.
+3. Add ADRs for key architecture decisions.
+4. Update README-level documentation as capabilities become supported.
+
+Acceptance criteria:
+
+1. CI fails when parity or required artifacts regress.
+2. ADRs exist for the locked architectural decisions.
+3. Another engineer can understand supported scope and known limitations from repo docs.
+
+Dependencies:
+
+1. All prior milestones
+
+Relevant decisions:
+
+1. TDD/prefer-tests-first approach.
+2. ADRs are mandatory for fragile architecture choices.
+
+### TKT-012 implementation breakdown (recommended)
+
+#### TKT-012A: Parity matrix governance and freshness checks
+
+Goal:
+Prevent parity-matrix drift by validating semantic quality, not only JSON shape.
+
+Scope:
+
+1. Extend `scripts/validate-parity-matrix.mjs` with governance checks beyond schema validation.
+2. Require each capability row to include current ticket reference and non-empty notes.
+3. Add guardrails so `script-only` and `gui-only` rows require explicit rationale text.
+4. Add a freshness policy for `lastUpdated` when capability-affecting files change.
+5. Keep `.github/workflows/parity-matrix.yml` as a required CI gate.
+
+Acceptance criteria:
+
+1. CI fails on stale or semantically incomplete parity-matrix rows.
+2. Capability status drift cannot merge without updating matrix metadata.
+3. Validator error messages are actionable for contributors.
+
+Dependencies:
+
+1. None (can start immediately)
+
+#### TKT-012B: Backend parity-equivalence fixture suite
+
+Goal:
+Lock deterministic script-path behavior at parser, state, and render-intent boundaries.
+
+Scope:
+
+1. Add fixture-driven Rust tests for parser and executor parity-critical paths.
+2. Assert deterministic final `PlotState` and `RenderIntent` for representative command files.
+3. Cover capability families: `FUNCTION`, `VIEW`/`VPOINT`, `MINMAX`, `CONTOURS`, `PLOT`, `WALLS`, `SUBSETS`, `FSURFACE`, `TEXT`, `SHOW`.
+4. Add targeted edge-case fixtures for historical regressions (`PLOT/UP`, contour mode variants, thin-slab function-surface behavior).
+
+Acceptance criteria:
+
+1. Backend parity fixtures fail on behavior drift in parser/state/render-intent outputs.
+2. Tests are deterministic across platforms in CI.
+3. New capability changes require fixture updates or explicit justification.
+
+Dependencies:
+
+1. TKT-012A (recommended, not mandatory)
+
+#### TKT-012C: Cross-path parity tests (script path vs GUI action path)
+
+Goal:
+Ensure equivalent user intent yields equivalent shared-state outcomes regardless of entry path.
+
+Scope:
+
+1. Add integration tests that compare script-executed final state to GUI-dispatched action state.
+2. Cover core round-trips for contour specs, plot family, view/orientation, subsets/walls, and annotations.
+3. Assert parity at `PlotState` and `RenderIntent` boundaries; avoid pixel-level requirements here.
+
+Acceptance criteria:
+
+1. Script and GUI paths produce equivalent canonical state for equivalent scenarios.
+2. Parity regressions fail in CI with focused diagnostics.
+
+Dependencies:
+
+1. TKT-012B
+
+#### TKT-012D: Unified parity CI gate
+
+Goal:
+Make parity a merge-blocking requirement, not a best-effort signal.
+
+Scope:
+
+1. Add or update a dedicated CI workflow that runs parity matrix validation, backend parity fixtures, and cross-path parity tests.
+2. Keep existing headless regression matrix in required-check policy to prevent export-path drift.
+3. Ensure CI reports clearly separate governance failures from behavioral parity failures.
+
+Acceptance criteria:
+
+1. PRs cannot merge when parity governance or equivalence tests fail.
+2. Required checks are documented and stable for contributors.
+
+Dependencies:
+
+1. TKT-012A
+2. TKT-012B
+3. TKT-012C
+
+#### TKT-012E: ADR pack for locked architecture decisions
+
+Goal:
+Record non-negotiable design choices so future work does not re-litigate fragile decisions.
+
+Scope:
+
+1. Add ADR index and naming convention.
+2. Add ADRs for: shared `PlotState` authority, `PLOT` commit boundary semantics, unsupported-command soft-fail policy, absolute contour model, legacy-to-modern translation determinism, and export determinism/known divergence policy.
+3. Link ADRs from relevant planning docs.
+
+Reference implementation:
+
+1. `docs/adr/README.md`
+
+Acceptance criteria:
+
+1. All listed fragile decisions have ADR coverage.
+2. ADRs are discoverable from repository documentation.
+
+Dependencies:
+
+1. TKT-012A (recommended)
+
+#### TKT-012F: Documentation hardening for parity support and limitations
+
+Goal:
+Ensure a new engineer can understand supported scope, known gaps, and verification workflow quickly.
+
+Scope:
+
+1. Update `README.md` with current supported scope summary derived from parity matrix.
+2. Update `README.md` and `TESTING.md` with parity test and CI-gate workflows.
+3. Link known rendering/export deviations to `plot3d_com_file/legacy_translation_layer.md`.
+4. Add contributor guidance for when parity-matrix updates are mandatory.
+
+Acceptance criteria:
+
+1. Supported scope and known limitations are clear from top-level docs.
+2. A contributor can run parity checks locally using documented commands.
+3. Doc updates stay aligned with CI-required parity checks.
+
+Dependencies:
+
+1. TKT-012D
+2. TKT-012E
+
+### TKT-012 sequencing guidance
+
+1. Start with TKT-012A to make matrix governance enforceable.
+2. Land TKT-012B before TKT-012C to establish backend parity baseline.
+3. Land TKT-012D once A/B/C are stable enough to be required checks.
+4. TKT-012E can run in parallel with B/C, but should complete before final docs.
+5. Finish with TKT-012F after CI and ADR structure are finalized.
+
+### Suggested PR slicing for TKT-012
+
+1. PR-1: TKT-012A (validator + parity-matrix CI policy updates)
+2. PR-2: TKT-012B (backend fixture parity tests)
+3. PR-3: TKT-012C + TKT-012D (cross-path tests + required gate wiring)
+4. PR-4: TKT-012E + TKT-012F (ADR pack + docs hardening)
+
+### Recommended completion evidence for TKT-012
+
+1. CI logs showing required parity gate blocks regressions.
+2. Test artifacts proving deterministic parity fixture execution.
+3. ADR index plus linked decision records for locked architecture choices.
+4. Updated `README.md` and `TESTING.md` showing supported scope, limits, and local parity commands.
+
+## Recommended Milestone Ordering
+
+1. Milestone A: TKT-001 through TKT-005
+2. Milestone B: TKT-006, TKT-007A through TKT-007E, TKT-008, TKT-009
+3. Milestone C: TKT-010 through TKT-011
+4. Milestone D: TKT-012
+
+## Parallelism Notes
+
+1. TKT-003 can overlap with TKT-002 once state types are stable enough.
+2. TKT-007A should land before TKT-007B, TKT-007C, and TKT-007D begin full implementation.
+3. TKT-007B and TKT-007C can overlap once shared contracts from TKT-007A are stable.
+4. TKT-007D should start after TKT-007B contract migration is in place and TKT-007C has established new GUI control semantics.
+5. TKT-007E runs continuously but should not be considered complete until TKT-007D behavior is merged.
+6. TKT-010 and TKT-011 should share as much render/export logic as practical.
+
+## Things Another Agent Should Not Re-Decide
+
+1. Do not reintroduce normalized contour values.
+2. Do not make raw legacy function integers the canonical internal function representation.
+3. Do not make script execution a special path that bypasses GUI/state architecture.
+4. Do not silently skip unsupported commands without diagnostics.
+5. Do not assume exact legacy visual parity is required.
+6. Do not design continuous GUI editing to write through IPC on every drag event.
+7. Do not treat the old `surfaces / lines / both` contour control as a parity concept.
+8. Do not collapse contour plots and function-surface or carpet plots back into one ambiguous rendering mode.
+9. Do not promote current wireframe or shading viewer toggles into shared parity state as part of TKT-007.
+10. Do not silently fall back from unsupported contour-attribute or plot-family combinations.

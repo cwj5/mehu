@@ -25,7 +25,9 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: |
+            src-tauri
+            headless-export
       
       - name: Install dependencies
         run: |
@@ -37,12 +39,28 @@ jobs:
       
       - name: Build
         run: npm run tauri build
+
+      - name: Build standalone CLI
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'release'))
+        run: cargo build --manifest-path headless-export/Cargo.toml --release --bin overview-export
       
       - name: Upload AppImage
         uses: actions/upload-artifact@v4
         with:
           name: overview-linux-appimage
           path: src-tauri/target/release/bundle/appimage/
+
+      - name: Package standalone CLI
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'release'))
+        run: |
+          tar -czf overview-cli-linux-x86_64.tar.gz -C headless-export/target/release overview-export
+
+      - name: Upload standalone CLI package
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'release'))
+        uses: actions/upload-artifact@v4
+        with:
+          name: overview-cli-linux-x86_64
+          path: overview-cli-linux-x86_64.tar.gz
 
   build-macos:
     runs-on: macos-latest
@@ -66,7 +84,9 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: |
+            src-tauri
+            headless-export
           key: ${{ matrix.target }}
       
       - name: Install npm dependencies
@@ -74,12 +94,28 @@ jobs:
       
       - name: Build
         run: npm run tauri build -- --target ${{ matrix.target }}
+
+      - name: Build standalone CLI
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'release'))
+        run: cargo build --manifest-path headless-export/Cargo.toml --release --target ${{ matrix.target }} --bin overview-export
       
       - name: Upload macOS app
         uses: actions/upload-artifact@v4
         with:
           name: overview-macos-${{ matrix.target }}
           path: src-tauri/target/${{ matrix.target }}/release/bundle/macos/
+
+      - name: Package standalone CLI
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'release'))
+        run: |
+          tar -czf overview-cli-macos-${{ matrix.target }}.tar.gz -C headless-export/target/${{ matrix.target }}/release overview-export
+
+      - name: Upload standalone CLI package
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'release'))
+        uses: actions/upload-artifact@v4
+        with:
+          name: overview-cli-macos-${{ matrix.target }}
+          path: overview-cli-macos-${{ matrix.target }}.tar.gz
 
   build-windows:
     runs-on: windows-latest
@@ -98,13 +134,19 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: |
+            src-tauri
+            headless-export
       
       - name: Install npm dependencies
         run: npm install
       
       - name: Build
         run: npm run tauri build
+
+      - name: Build standalone CLI
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'release'))
+        run: cargo build --manifest-path headless-export/Cargo.toml --release --bin overview-export
       
       - name: Upload Windows installer
         uses: actions/upload-artifact@v4
@@ -113,3 +155,16 @@ jobs:
           path: |
             src-tauri/target/release/bundle/msi/*
             src-tauri/target/release/bundle/nsis/*
+
+      - name: Package standalone CLI
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'release'))
+        shell: pwsh
+        run: |
+          Compress-Archive -Path headless-export/target/release/overview-export.exe -DestinationPath overview-cli-windows-x86_64.zip -Force
+
+      - name: Upload standalone CLI package
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'release'))
+        uses: actions/upload-artifact@v4
+        with:
+          name: overview-cli-windows-x86_64
+          path: overview-cli-windows-x86_64.zip

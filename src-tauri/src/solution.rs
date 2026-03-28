@@ -24,32 +24,7 @@ impl ColorScheme {
     }
 }
 
-/// Scalar field types
-#[derive(Debug, Clone, Copy)]
-pub enum ScalarField {
-    Density,
-    VelocityMagnitude,
-    MomentumX,
-    MomentumY,
-    MomentumZ,
-    Pressure,
-    Energy,
-}
-
-impl ScalarField {
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "density" => Some(ScalarField::Density),
-            "velocity_magnitude" => Some(ScalarField::VelocityMagnitude),
-            "momentum_x" => Some(ScalarField::MomentumX),
-            "momentum_y" => Some(ScalarField::MomentumY),
-            "momentum_z" => Some(ScalarField::MomentumZ),
-            "pressure" => Some(ScalarField::Pressure),
-            "energy" => Some(ScalarField::Energy),
-            _ => None,
-        }
-    }
-}
+use crate::plot_state::ScalarField;
 
 /// Compute a scalar field from solution data
 #[allow(dead_code)]
@@ -60,6 +35,39 @@ pub fn compute_scalar_field(solution: &Plot3DSolution, field: ScalarField) -> Ve
     match field {
         ScalarField::Density => {
             result = solution.rho.clone();
+        }
+
+        ScalarField::UVelocity => {
+            for i in 0..total_points {
+                let rho = solution.rho[i];
+                if rho > 0.0 {
+                    result.push(solution.rhou[i] / rho);
+                } else {
+                    result.push(0.0);
+                }
+            }
+        }
+
+        ScalarField::VVelocity => {
+            for i in 0..total_points {
+                let rho = solution.rho[i];
+                if rho > 0.0 {
+                    result.push(solution.rhov[i] / rho);
+                } else {
+                    result.push(0.0);
+                }
+            }
+        }
+
+        ScalarField::WVelocity => {
+            for i in 0..total_points {
+                let rho = solution.rho[i];
+                if rho > 0.0 {
+                    result.push(solution.rhow[i] / rho);
+                } else {
+                    result.push(0.0);
+                }
+            }
         }
 
         ScalarField::VelocityMagnitude => {
@@ -117,6 +125,14 @@ pub fn compute_scalar_field(solution: &Plot3DSolution, field: ScalarField) -> Ve
         ScalarField::Energy => {
             result = solution.rhoe.clone();
         }
+
+        // Placeholder fields are recognized for legacy FUNCTION mapping, but
+        // equations are intentionally not guessed here.
+        // equations are intentionally not guessed here. We still return a
+        // vector with one value per grid point to preserve length invariants.
+        _ => {
+            result = vec![0.0; total_points];
+        }
     }
 
     result
@@ -146,6 +162,30 @@ pub fn compute_scalar_field_surface(
 
             let value = match field {
                 ScalarField::Density => solution.rho[idx],
+                ScalarField::UVelocity => {
+                    let rho = solution.rho[idx];
+                    if rho > 0.0 {
+                        solution.rhou[idx] / rho
+                    } else {
+                        0.0
+                    }
+                }
+                ScalarField::VVelocity => {
+                    let rho = solution.rho[idx];
+                    if rho > 0.0 {
+                        solution.rhov[idx] / rho
+                    } else {
+                        0.0
+                    }
+                }
+                ScalarField::WVelocity => {
+                    let rho = solution.rho[idx];
+                    if rho > 0.0 {
+                        solution.rhow[idx] / rho
+                    } else {
+                        0.0
+                    }
+                }
                 ScalarField::MomentumX => solution.rhou[idx],
                 ScalarField::MomentumY => solution.rhov[idx],
                 ScalarField::MomentumZ => solution.rhow[idx],
@@ -180,6 +220,10 @@ pub fn compute_scalar_field_surface(
                         0.0
                     }
                 }
+
+                // Placeholder fields are recognized for legacy FUNCTION mapping,
+                // but equations are intentionally not guessed here.
+                _ => 0.0,
             };
 
             values.push(value);

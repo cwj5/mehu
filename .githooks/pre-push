@@ -1,0 +1,40 @@
+#!/bin/bash
+
+# Pre-push hook to run expensive build checks before pushing
+# Fast checks (tests) run in the pre-commit hook instead.
+
+set -e
+
+echo "🔨 Running pre-push build checks..."
+echo ""
+
+# Colors for output
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+NC='\033[0m' # No Color
+
+# Get the git root directory
+REPO_ROOT=$(git rev-parse --show-toplevel)
+cd "$REPO_ROOT"
+
+# Run Tauri build
+echo "Building Tauri app..."
+if npm run tauri build > /dev/null 2>&1; then
+    echo -e "${GREEN}✓ Tauri build succeeded${NC}"
+else
+    echo -e "${RED}✗ Tauri build failed${NC}"
+    exit 1
+fi
+
+# Run Cargo build
+echo "Building Rust library..."
+if (cd "${REPO_ROOT}/src-tauri" && cargo build -p overview > /dev/null 2>&1); then
+    echo -e "${GREEN}✓ Rust build succeeded${NC}"
+else
+    echo -e "${RED}✗ Rust build failed${NC}"
+    exit 1
+fi
+
+echo ""
+echo -e "${GREEN}✅ All build checks passed! Proceeding with push.${NC}"
+exit 0

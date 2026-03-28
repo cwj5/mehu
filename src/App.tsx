@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { useMemo, useState, useEffect } from "react";
+import { useMemo, useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Menu, MenuItem, Submenu, CheckMenuItem, PredefinedMenuItem } from "@tauri-apps/api/menu";
 import Viewer3D from "./components/Viewer3D";
@@ -31,6 +31,328 @@ interface FileMetadata {
   fileNames: string[];
   gridCount: number;
 }
+
+type BackendScalarField =
+  | 'none'
+  | 'density'
+  | 'velocity_magnitude'
+  | 'momentum_x'
+  | 'momentum_y'
+  | 'momentum_z'
+  | 'pressure'
+  | 'energy';
+
+type BackendPlotFamily = 'contour' | 'function_surface';
+
+type BackendContourAttribute = 'line' | 'surface' | 'grid' | 'color_contours' | 'dots';
+
+type ContourSpecMode = 'none' | 'automatic' | 'increment' | 'manual';
+
+type BackendAxisView =
+  | 'plus_x'
+  | 'minus_x'
+  | 'plus_y'
+  | 'minus_y'
+  | 'plus_z'
+  | 'minus_z'
+  | 'plane_xy'
+  | 'plane_xz'
+  | 'plane_yz'
+  | 'plane_yx'
+  | 'plane_zx'
+  | 'plane_zy'
+  | 'custom';
+
+type BackendPlotUpAxis =
+  | 'positive_x'
+  | 'positive_y'
+  | 'positive_z'
+  | 'negative_x'
+  | 'negative_y'
+  | 'negative_z';
+
+const AXIS_VIEW_OPTIONS: Array<{ value: BackendAxisView; label: string }> = [
+  { value: 'custom', label: 'Custom' },
+  { value: 'plus_x', label: '+X (Right)' },
+  { value: 'minus_x', label: '-X (Left)' },
+  { value: 'plus_y', label: '+Y (Top)' },
+  { value: 'minus_y', label: '-Y (Bottom)' },
+  { value: 'plus_z', label: '+Z (Front)' },
+  { value: 'minus_z', label: '-Z (Back)' },
+  { value: 'plane_xy', label: 'Plane XY (Top)' },
+  { value: 'plane_xz', label: 'Plane XZ (Side)' },
+  { value: 'plane_yz', label: 'Plane YZ (Front)' },
+  { value: 'plane_yx', label: 'Plane YX' },
+  { value: 'plane_zx', label: 'Plane ZX' },
+  { value: 'plane_zy', label: 'Plane ZY' },
+];
+
+interface BackendPlotState {
+  scalar_field: BackendScalarField;
+  plot_family: BackendPlotFamily;
+  contour_attribute: BackendContourAttribute;
+  axis_view: BackendAxisView;
+  plot_up?: BackendPlotUpAxis | null;
+  contour_spec: unknown;
+  walls: BackendGridSubset[];
+  subsets: BackendGridSubset[];
+  fsurface?: BackendFsurfaceSpec | null;
+  text_annotations: BackendPlotText[];
+  viewpoint?: { x: number; y: number; z: number } | null;
+}
+
+interface BackendFsurfaceSpec {
+  value: number;
+  scalar_field: BackendScalarField;
+}
+
+interface BackendPlotText {
+  content: string;
+  x: number;
+  y: number;
+}
+
+interface BackendIndexRange {
+  start: number;
+  end?: number | null;
+}
+
+interface BackendGridSubset {
+  grid: number;
+  gui_managed?: boolean;
+  i_range?: BackendIndexRange | null;
+  j_range?: BackendIndexRange | null;
+  k_range?: BackendIndexRange | null;
+}
+
+interface BackendDiagnostic {
+  capability: string;
+  severity: 'info' | 'warning' | 'error';
+  message: string;
+}
+
+interface ApplyPlotActionResult {
+  state: BackendPlotState;
+  diagnostics: BackendDiagnostic[];
+}
+
+interface RenderIntent {
+  state: BackendPlotState;
+}
+
+interface ScriptExecutionResult {
+  final_state: BackendPlotState;
+  intents: RenderIntent[];
+  show_output: string[];
+  diagnostics: BackendDiagnostic[];
+}
+
+interface ShowStatusResult {
+  status: string;
+  state: BackendPlotState;
+  diagnostics: BackendDiagnostic[];
+}
+
+interface EditableSubset {
+  id: string;
+  subset: BackendGridSubset;
+  editing: boolean;
+}
+
+const cloneSubset = (subset: BackendGridSubset): BackendGridSubset => ({
+  grid: subset.grid,
+  gui_managed: subset.gui_managed,
+  i_range: subset.i_range ? { ...subset.i_range } : null,
+  j_range: subset.j_range ? { ...subset.j_range } : null,
+  k_range: subset.k_range ? { ...subset.k_range } : null,
+});
+
+const editableFromBackend = (items: BackendGridSubset[]): EditableSubset[] =>
+  items.map((subset, idx) => ({
+    id: `range-${subset.grid}-${idx}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    subset: cloneSubset(subset),
+    editing: false,
+  }));
+
+const parseOptionalInt = (value: string): number | null => {
+  const parsed = Number.parseInt(value.trim(), 10);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const rangeStartString = (range?: BackendIndexRange | null): string =>
+  range ? String(range.start) : '';
+
+const rangeEndString = (range?: BackendIndexRange | null): string =>
+  range?.end != null ? String(range.end) : '';
+
+const compactRangeStr = (range?: BackendIndexRange | null, dim?: number): string => {
+  if (!range) {
+    return ':';
+  }
+  const isFull =
+    range.start === 1 &&
+    (range.end == null || range.end === -1 || (dim != null && range.end === dim));
+  if (isFull) {
+    return ':';
+  }
+  return `${range.start}:${range.end ?? ''}`;
+};
+
+const compactSubsetLabel = (
+  subset: BackendGridSubset,
+  dims?: { i: number; j: number; k: number }
+): string =>
+  `G${subset.grid} (${compactRangeStr(subset.i_range, dims?.i)}, ${compactRangeStr(subset.j_range, dims?.j)}, ${compactRangeStr(subset.k_range, dims?.k)})`;
+
+const normalizeAxisRangeForApply = (
+  range?: BackendIndexRange | null
+): BackendIndexRange => {
+  if (!range) {
+    return { start: 1, end: -1 };
+  }
+  if (range.start === 1 && range.end == null) {
+    return { start: 1, end: -1 };
+  }
+  return { ...range };
+};
+
+const normalizeSubsetForApply = (subset: BackendGridSubset): BackendGridSubset => ({
+  ...cloneSubset(subset),
+  i_range: normalizeAxisRangeForApply(subset.i_range),
+  j_range: normalizeAxisRangeForApply(subset.j_range),
+  k_range: normalizeAxisRangeForApply(subset.k_range),
+});
+
+const subsetRangeSig = (range?: BackendIndexRange | null) =>
+  range ? `${range.start}:${range.end ?? ''}` : '-';
+
+const subsetsSignature = (subsets: BackendGridSubset[]): string =>
+  subsets
+    .map(
+      (s) =>
+        `${s.grid}|${s.gui_managed ? 'gui' : 'manual'}|${subsetRangeSig(s.i_range)}|${subsetRangeSig(s.j_range)}|${subsetRangeSig(s.k_range)}`
+    )
+    .sort()
+    .join(';');
+
+const dedupeSubsets = (items: BackendGridSubset[]): BackendGridSubset[] => {
+  const map = new Map<string, BackendGridSubset>();
+  items.forEach((s) => {
+    map.set(
+      `${s.grid}|${s.gui_managed ? 'gui' : 'manual'}|${subsetRangeSig(s.i_range)}|${subsetRangeSig(s.j_range)}|${subsetRangeSig(s.k_range)}`,
+      s
+    );
+  });
+  return Array.from(map.values());
+};
+
+const gridSlicesSignature = (gridSlices: Record<string, GridSlice[]>): string =>
+  Object.entries(gridSlices)
+    .flatMap(([gridId, slices]) => slices.map((slice) => `${gridId}|${slice.plane}|${slice.index}`))
+    .sort()
+    .join(';');
+
+const gridSlicesToBackendSubsets = (
+  gridSlices: Record<string, GridSlice[]>,
+  grids: GridItem[],
+  sliceEnabled: boolean
+): BackendGridSubset[] => {
+  if (!sliceEnabled) {
+    return [];
+  }
+
+  const subsets: BackendGridSubset[] = [];
+  grids.forEach((grid) => {
+    const slices = gridSlices[grid.id] || [];
+    slices.forEach((slice) => {
+      const fullI: BackendIndexRange = { start: 1, end: Math.max(1, grid.dimensions.i) };
+      const fullJ: BackendIndexRange = { start: 1, end: Math.max(1, grid.dimensions.j) };
+      const fullK: BackendIndexRange = { start: 1, end: Math.max(1, grid.dimensions.k) };
+
+      const iPoint = Math.max(1, Math.min(Math.max(1, grid.dimensions.i), Math.floor(slice.index) + 1));
+      const jPoint = Math.max(1, Math.min(Math.max(1, grid.dimensions.j), Math.floor(slice.index) + 1));
+      const kPoint = Math.max(1, Math.min(Math.max(1, grid.dimensions.k), Math.floor(slice.index) + 1));
+
+      subsets.push({
+        grid: grid.gridIndex + 1,
+        gui_managed: true,
+        i_range: slice.plane === 'I' ? { start: iPoint, end: iPoint } : fullI,
+        j_range: slice.plane === 'J' ? { start: jPoint, end: jPoint } : fullJ,
+        k_range: slice.plane === 'K' ? { start: kPoint, end: kPoint } : fullK,
+      });
+    });
+  });
+
+  return subsets;
+};
+
+const backendSubsetsToGridSlices = (
+  subsets: BackendGridSubset[],
+  grids: GridItem[]
+): Record<string, GridSlice[]> => {
+  const gridByNumber = new Map<number, GridItem>();
+  grids.forEach((grid) => {
+    gridByNumber.set(grid.gridIndex + 1, grid);
+  });
+
+  const byGrid: Record<string, GridSlice[]> = {};
+  let counter = 0;
+
+  subsets.forEach((subset) => {
+    if (!subset.gui_managed) {
+      return;
+    }
+    const grid = gridByNumber.get(subset.grid);
+    if (!grid) {
+      return;
+    }
+
+    const axisRanges: Array<{ plane: 'I' | 'J' | 'K'; range?: BackendIndexRange | null; dim: number }> = [
+      { plane: 'I', range: subset.i_range, dim: Math.max(1, grid.dimensions.i) },
+      { plane: 'J', range: subset.j_range, dim: Math.max(1, grid.dimensions.j) },
+      { plane: 'K', range: subset.k_range, dim: Math.max(1, grid.dimensions.k) },
+    ];
+
+    const resolveRange = (range: BackendIndexRange | null | undefined, dim: number) => {
+      if (!range) {
+        return { start: 1, end: dim };
+      }
+      const resolveOneBased = (n: number) => (n < 0 ? dim + n + 1 : n);
+      const start = Math.max(1, Math.min(dim, resolveOneBased(range.start)));
+      const endRaw = range.end != null ? resolveOneBased(range.end) : dim;
+      const end = Math.max(1, Math.min(dim, endRaw));
+      return start <= end ? { start, end } : { start: end, end: start };
+    };
+
+    const classified = axisRanges.map((a) => {
+      const r = resolveRange(a.range, a.dim);
+      const kind: 'point' | 'full' | 'other' =
+        r.start === r.end ? 'point' : r.start === 1 && r.end === a.dim ? 'full' : 'other';
+      return { ...a, resolved: r, kind };
+    });
+
+    const points = classified.filter((a) => a.kind === 'point');
+    const othersAreFull = classified
+      .filter((a) => a.kind !== 'point')
+      .every((a) => a.kind === 'full');
+
+    // GUI-managed slice subset must have one point axis and others full-range.
+    if (points.length !== 1 || !othersAreFull) {
+      return;
+    }
+
+    const selected = points[0];
+    const zeroBased = Math.max(0, Math.min(selected.dim - 1, selected.resolved.start - 1));
+
+    const id = `subset-sync-${subset.grid}-${selected.plane}-${selected.resolved.start}-${counter++}`;
+    if (!byGrid[grid.id]) {
+      byGrid[grid.id] = [];
+    }
+    byGrid[grid.id].push({ id, plane: selected.plane, index: zeroBased });
+  });
+
+  return byGrid;
+};
 
 const GRID_COLORS = [
   "#6366f1",
@@ -104,7 +426,458 @@ const App = () => {
   const [loadingMessage, setLoadingMessage] = useState("Processing...");
 
   const [gridSlices, setGridSlices] = useState<Record<string, GridSlice[]>>({});
+  const [subsetsDirty, setSubsetsDirty] = useState(false);
+  const [sliceIndexDrafts, setSliceIndexDrafts] = useState<Record<string, string>>({});
   const [arbitrarySlices, setArbitrarySlices] = useState<ArbitrarySlice[]>([]);
+  const [manualSubsetRows, setManualSubsetRows] = useState<EditableSubset[]>([]);
+  const [manualWallsRows, setManualWallsRows] = useState<EditableSubset[]>([]);
+  const [manualSubsetDirty, setManualSubsetDirty] = useState(false);
+  const [manualWallsDirty, setManualWallsDirty] = useState(false);
+
+  // Contour state
+  const [plotFamilyState, setPlotFamilyState] = useState<BackendPlotFamily>('contour');
+  const [contourAttributeState, setContourAttributeState] = useState<BackendContourAttribute>('line');
+  const [contourSpecMode, setContourSpecMode] = useState<ContourSpecMode>('none');
+  const [contourAutoCount, setContourAutoCount] = useState(10);
+  const [contourAutoCountDraft, setContourAutoCountDraft] = useState('10');
+  const [contourIncrStart, setContourIncrStart] = useState(0);
+  const [contourIncrStartDraft, setContourIncrStartDraft] = useState('0');
+  const [contourIncrStep, setContourIncrStep] = useState(1);
+  const [contourIncrStepDraft, setContourIncrStepDraft] = useState('1');
+  const [contourLevel, setContourLevel] = useState(0);
+  const [contourLevelDraft, setContourLevelDraft] = useState('0');
+  const [isoSurfaceOpacity, setIsoSurfaceOpacity] = useState(1.0);
+  const [backendPlotState, setBackendPlotState] = useState<BackendPlotState | null>(null);
+  const [backendDiagnostics, setBackendDiagnostics] = useState<BackendDiagnostic[]>([]);
+  const [showCommandWindow, setShowCommandWindow] = useState(false);
+  const [commandText, setCommandText] = useState("SHOW\nPLOT/CONTOUR");
+  const [comFilePath, setComFilePath] = useState("");
+  const [commandWindowOutput, setCommandWindowOutput] = useState("");
+  const [showStatusOutput, setShowStatusOutput] = useState("");
+  const [fsurfaceEnabled, setFsurfaceEnabled] = useState(false);
+  const [fsurfaceValueDraft, setFsurfaceValueDraft] = useState('0');
+  const [fsurfaceField, setFsurfaceField] = useState<BackendScalarField>('pressure');
+  const [textContentDraft, setTextContentDraft] = useState('');
+  const [textXDraft, setTextXDraft] = useState('0.05');
+  const [textYDraft, setTextYDraft] = useState('0.95');
+
+  // Export workflow state
+  const [lastExecutionResult, setLastExecutionResult] = useState<ScriptExecutionResult | null>(null);
+  const [exportInProgress, setExportInProgress] = useState(false);
+  const [exportStatus, setExportStatus] = useState('');
+
+  const backendMappedSlicesSigRef = useRef<string | null>(null);
+  const viewer3dLoadingRef = useRef(false);
+  const viewer3dLoadingResolversRef = useRef<Array<() => void>>([]);
+
+  const syncPlotStateFromBackend = async () => {
+    try {
+      const state = await invoke<BackendPlotState>('get_plot_state');
+      setBackendPlotState(state);
+    } catch (e) {
+      logger.warn(`Failed to sync backend plot state: ${e}`, 'App');
+    }
+  };
+
+  const updateBackendFromResult = (result: ApplyPlotActionResult) => {
+    setBackendPlotState(result.state);
+    setBackendDiagnostics(result.diagnostics);
+  };
+
+  const setPlotScalarField = async (field: BackendScalarField) => {
+    try {
+      const result = await invoke<ApplyPlotActionResult>('set_plot_scalar_field', { field });
+      updateBackendFromResult(result);
+    } catch (e) {
+      logger.error(`Failed to set plot scalar field: ${e}`, 'App');
+    }
+  };
+
+  const setPlotFamily = async (family: BackendPlotFamily) => {
+    try {
+      const result = await invoke<ApplyPlotActionResult>('set_plot_family', { family });
+      updateBackendFromResult(result);
+    } catch (e) {
+      logger.error(`Failed to set plot family: ${e}`, 'App');
+    }
+  };
+
+  const setPlotViewpoint = async (vp: { x: number; y: number; z: number }) => {
+    try {
+      const result = await invoke<ApplyPlotActionResult>('set_plot_viewpoint', { vp });
+      updateBackendFromResult(result);
+    } catch (e) {
+      logger.error(`Failed to set plot viewpoint: ${e}`, 'App');
+    }
+  };
+
+  const setPlotAxisView = async (view: BackendAxisView) => {
+    try {
+      const result = await invoke<ApplyPlotActionResult>('set_plot_axis_view', { view });
+      updateBackendFromResult(result);
+    } catch (e) {
+      logger.error(`Failed to set plot axis view: ${e}`, 'App');
+    }
+  };
+
+  const setPlotContourSpec = async (spec: object) => {
+    try {
+      const result = await invoke<ApplyPlotActionResult>('set_plot_contour_spec', { spec });
+      updateBackendFromResult(result);
+    } catch (e) {
+      logger.error(`Failed to set contour spec: ${e}`, 'App');
+    }
+  };
+
+  const setPlotContourAttributeCmd = async (attribute: BackendContourAttribute) => {
+    try {
+      const result = await invoke<ApplyPlotActionResult>('set_plot_contour_attribute', { attribute });
+      updateBackendFromResult(result);
+    } catch (e) {
+      logger.error(`Failed to set contour attribute: ${e}`, 'App');
+    }
+  };
+
+  const setPlotSubsets = async (subsets: BackendGridSubset[]) => {
+    try {
+      const result = await invoke<ApplyPlotActionResult>('set_plot_subsets', { subsets });
+      updateBackendFromResult(result);
+    } catch (e) {
+      logger.error(`Failed to set plot subsets: ${e}`, 'App');
+    }
+  };
+
+  const setPlotWalls = async (walls: BackendGridSubset[]) => {
+    try {
+      const result = await invoke<ApplyPlotActionResult>('set_plot_walls', { walls });
+      updateBackendFromResult(result);
+    } catch (e) {
+      logger.error(`Failed to set plot walls: ${e}`, 'App');
+    }
+  };
+
+  const setPlotFsurface = async (fsurface: BackendFsurfaceSpec | null) => {
+    try {
+      const result = await invoke<ApplyPlotActionResult>('set_plot_fsurface', { fsurface });
+      updateBackendFromResult(result);
+    } catch (e) {
+      logger.error(`Failed to set FSURFACE: ${e}`, 'App');
+    }
+  };
+
+  const addPlotTextAnnotation = async (text: BackendPlotText) => {
+    try {
+      const result = await invoke<ApplyPlotActionResult>('add_plot_text_annotation', { text });
+      updateBackendFromResult(result);
+    } catch (e) {
+      logger.error(`Failed to add plot text annotation: ${e}`, 'App');
+    }
+  };
+
+  const clearPlotTextAnnotations = async () => {
+    try {
+      const result = await invoke<ApplyPlotActionResult>('clear_plot_text_annotations');
+      updateBackendFromResult(result);
+    } catch (e) {
+      logger.error(`Failed to clear plot text annotations: ${e}`, 'App');
+    }
+  };
+
+  const refreshShowStatus = async () => {
+    try {
+      const result = await invoke<ShowStatusResult>('show_plot_status');
+      setBackendPlotState(result.state);
+      setBackendDiagnostics(result.diagnostics ?? []);
+      setShowStatusOutput(result.status);
+    } catch (e) {
+      logger.error(`Failed to fetch SHOW status: ${e}`, 'App');
+      setShowStatusOutput(`SHOW failed: ${e}`);
+    }
+  };
+
+  const addManualRangeRow = (kind: 'subset' | 'wall') => {
+    const defaultGrid = grids.length > 0 ? grids[0].gridIndex + 1 : 1;
+    const row: EditableSubset = {
+      id: `manual-${kind}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      subset: {
+        grid: defaultGrid,
+        gui_managed: false,
+        i_range: null,
+        j_range: null,
+        k_range: null,
+      },
+      editing: true,
+    };
+    if (kind === 'subset') {
+      setManualSubsetRows((prev) => [...prev, row]);
+      setManualSubsetDirty(true);
+    } else {
+      setManualWallsRows((prev) => [...prev, row]);
+      setManualWallsDirty(true);
+    }
+  };
+
+  const updateManualRangeRow = (
+    kind: 'subset' | 'wall',
+    rowId: string,
+    updater: (subset: BackendGridSubset) => BackendGridSubset
+  ) => {
+    if (kind === 'subset') {
+      setManualSubsetRows((prev) =>
+        prev.map((row) => (row.id === rowId ? { ...row, subset: updater(row.subset) } : row))
+      );
+      setManualSubsetDirty(true);
+      return;
+    }
+    setManualWallsRows((prev) =>
+      prev.map((row) => (row.id === rowId ? { ...row, subset: updater(row.subset) } : row))
+    );
+    setManualWallsDirty(true);
+  };
+
+  const removeManualRangeRow = (kind: 'subset' | 'wall', rowId: string) => {
+    if (kind === 'subset') {
+      setManualSubsetRows((prev) => prev.filter((row) => row.id !== rowId));
+      setManualSubsetDirty(true);
+      return;
+    }
+    setManualWallsRows((prev) => prev.filter((row) => row.id !== rowId));
+    setManualWallsDirty(true);
+  };
+
+  const setRowEditing = (kind: 'subset' | 'wall', rowId: string, editing: boolean) => {
+    if (kind === 'subset') {
+      setManualSubsetRows((prev) => prev.map((row) => (row.id === rowId ? { ...row, editing } : row)));
+    } else {
+      setManualWallsRows((prev) => prev.map((row) => (row.id === rowId ? { ...row, editing } : row)));
+    }
+  };
+
+  const updateManualAxisRange = (
+    kind: 'subset' | 'wall',
+    rowId: string,
+    axis: 'i_range' | 'j_range' | 'k_range',
+    edge: 'start' | 'end',
+    rawValue: string
+  ) => {
+    const parsed = parseOptionalInt(rawValue);
+    updateManualRangeRow(kind, rowId, (subset) => {
+      const current = subset[axis] ?? { start: 1, end: null };
+      const nextRange: BackendIndexRange = {
+        start: edge === 'start' ? (parsed ?? current.start) : current.start,
+        end: edge === 'end' ? parsed : (current.end ?? null),
+      };
+
+      if (edge === 'start' && parsed == null) {
+        if ((nextRange.end ?? null) == null) {
+          return { ...subset, [axis]: null };
+        }
+        nextRange.start = 1;
+      }
+
+      return { ...subset, [axis]: nextRange };
+    });
+  };
+
+  const commitPlot = async () => {
+    try {
+      const result = await invoke<ApplyPlotActionResult>('commit_plot');
+      updateBackendFromResult(result);
+    } catch (e) {
+      logger.error(`Failed to commit plot: ${e}`, 'App');
+    }
+  };
+
+  const formatExecutionResult = (result: ScriptExecutionResult) => {
+    const diagnostics = result.diagnostics ?? [];
+    const shows = result.show_output ?? [];
+    const intents = result.intents ?? [];
+    const diagSummary = diagnostics.map((d) => `[${d.severity}] ${d.capability}: ${d.message}`).join('\n');
+
+    const sections = [
+      `Final plot mode: ${result.final_state?.plot_family ?? 'unknown'}`,
+      `Final scalar field: ${result.final_state?.scalar_field ?? 'unknown'}`,
+      `Render intents: ${intents.length}`,
+      `SHOW lines: ${shows.length}`,
+      '',
+      'SHOW output:',
+      shows.length ? shows.join('\n') : '(none)',
+      '',
+      'Diagnostics:',
+      diagSummary || '(none)',
+    ];
+
+    return sections.join('\n');
+  };
+
+  const runCommandText = async () => {
+    const commands = commandText.trim();
+    if (!commands) {
+      setCommandWindowOutput('Enter one or more commands first.');
+      return;
+    }
+    try {
+      const result = await invoke<ScriptExecutionResult>('execute_plot3d_commands', { commands });
+      setBackendPlotState(result.final_state);
+      setBackendDiagnostics(result.diagnostics ?? []);
+      setCommandWindowOutput(formatExecutionResult(result));
+    } catch (e) {
+      setCommandWindowOutput(`Failed to execute commands:\n${e}`);
+      logger.error(`Command window execute error: ${e}`, 'App');
+    }
+  };
+
+  const runComFile = async () => {
+    const path = comFilePath.trim();
+    if (!path) {
+      setCommandWindowOutput('Enter an absolute .com path first.');
+      return;
+    }
+    try {
+      const result = await invoke<ScriptExecutionResult>('execute_com_script', { path });
+      setBackendPlotState(result.final_state);
+      setBackendDiagnostics(result.diagnostics ?? []);
+      setLastExecutionResult(result);
+      setCommandWindowOutput(formatExecutionResult(result));
+      setExportStatus('');
+    } catch (e) {
+      setCommandWindowOutput(`Failed to execute .com file:\n${e}`);
+      logger.error(`.com execute error: ${e}`, 'App');
+      setLastExecutionResult(null);
+    }
+  };
+
+  const canvasToPngBytes = async (canvas: HTMLCanvasElement): Promise<number[]> => {
+    const blob = await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob((nextBlob) => {
+        if (!nextBlob) {
+          reject(new Error('Failed to create PNG blob from canvas'));
+          return;
+        }
+        resolve(nextBlob);
+      }, 'image/png');
+    });
+
+    const arrayBuffer = await blob.arrayBuffer();
+    return Array.from(new Uint8Array(arrayBuffer));
+  };
+
+  // Export current canvas view as PNG
+  const exportCurrentViewAsPNG = async () => {
+    setExportInProgress(true);
+    try {
+      const canvas = document.querySelector('canvas') as HTMLCanvasElement;
+      if (!canvas) {
+        throw new Error('No canvas found. Render a visualization first.');
+      }
+
+      const filePath = await invoke<string | null>('save_png_file_dialog', {
+        default_name: 'plot_view.png'
+      });
+
+      if (!filePath) {
+        setExportStatus('Export cancelled');
+        return;
+      }
+
+      const pngData = await canvasToPngBytes(canvas);
+
+      const writtenPath = await invoke<string>('write_png_file', {
+        path: filePath,
+        pngData: pngData
+      });
+
+      setExportStatus(`Current view exported to ${writtenPath}`);
+      logger.info(`Exported current view to ${writtenPath}`, 'App');
+    } catch (e) {
+      const errorMsg = `Failed to export current view: ${e}`;
+      setExportStatus(errorMsg);
+      logger.error(errorMsg, 'App');
+    } finally {
+      setExportInProgress(false);
+    }
+  };
+
+  // Export one PNG per render intent from the last .com execution.
+  // For multi-PLOT scripts each intent gets its own sequentially numbered file.
+  const exportPNGsFromExecution = async () => {
+    if (!lastExecutionResult || !lastExecutionResult.intents || lastExecutionResult.intents.length === 0) {
+      setExportStatus('No render intents to export. Execute a .com file first.');
+      return;
+    }
+
+    setExportInProgress(true);
+    const intents = lastExecutionResult.intents;
+    const intentCount = intents.length;
+
+    try {
+      const canvas = document.querySelector('canvas') as HTMLCanvasElement;
+      if (!canvas) throw new Error('No canvas found. Render the plots first.');
+
+      // Ask the user for the first (or only) output file path.
+      const baseName = intentCount > 1 ? 'plot_output_001.png' : 'plot_output.png';
+      const firstPath = await invoke<string | null>('save_png_file_dialog', {
+        default_name: baseName
+      });
+
+      if (!firstPath) {
+        setExportStatus('Export cancelled');
+        return;
+      }
+
+      const paths = derivePngPaths(firstPath, intentCount);
+      const savedPaths: string[] = [];
+      const failures: string[] = [];
+
+      // Remember the state before export so we can restore it afterwards.
+      const preExportState = backendPlotState;
+
+      for (let i = 0; i < intentCount; i++) {
+        setExportStatus(`Rendering plot ${i + 1}/${intentCount}…`);
+
+        // Apply this intent's PlotState to drive the renderer.
+        setBackendPlotState(intents[i].state);
+
+        // Give React a tick to propagate the state through the sync effect,
+        // then wait for Viewer3D computations to finish and Three.js to draw.
+        await waitForViewer3DStable();
+
+        try {
+          const pngData = await canvasToPngBytes(canvas);
+          const writtenPath = await invoke<string>('write_png_file', {
+            path: paths[i],
+            pngData,
+          });
+          savedPaths.push(writtenPath);
+          logger.info(`Exported PNG ${i + 1}/${intentCount} to ${writtenPath}`, 'App');
+        } catch (e) {
+          failures.push(`Plot ${i + 1}: ${e}`);
+          logger.error(`Failed to export plot ${i + 1}: ${e}`, 'App');
+        }
+      }
+
+      // Restore the state that was active before export.
+      setBackendPlotState(preExportState);
+
+      if (failures.length > 0 && savedPaths.length === 0) {
+        setExportStatus(`Export failed:\n${failures.join('\n')}`);
+      } else if (failures.length > 0) {
+        setExportStatus(
+          `Exported ${savedPaths.length}/${intentCount} PNGs.\nFailed:\n${failures.join('\n')}\nSaved:\n${savedPaths.join('\n')}`
+        );
+      } else {
+        setExportStatus(
+          `Successfully exported ${intentCount} PNG${intentCount > 1 ? 's' : ''}:\n${savedPaths.join('\n')}`
+        );
+      }
+    } catch (e) {
+      const errorMsg = `Failed to export PNG: ${e}`;
+      setExportStatus(errorMsg);
+      logger.error(errorMsg, 'App');
+    } finally {
+      setExportInProgress(false);
+    }
+  };
 
 
   // Arbitrary slice management
@@ -165,6 +938,7 @@ const App = () => {
       plane: 'K',
       index: Math.floor(grid.dimensions.k / 2)
     };
+    setSubsetsDirty(true);
     setGridSlices(prev => ({
       ...prev,
       [gridId]: [...(prev[gridId] || []), newSlice]
@@ -172,6 +946,7 @@ const App = () => {
   };
 
   const removeSliceFromGrid = (gridId: string, sliceId: string) => {
+    setSubsetsDirty(true);
     setGridSlices(prev => ({
       ...prev,
       [gridId]: (prev[gridId] || []).filter(s => s.id !== sliceId)
@@ -179,12 +954,127 @@ const App = () => {
   };
 
   const updateGridSlice = (gridId: string, sliceId: string, updates: Partial<GridSlice>) => {
+    setSubsetsDirty(true);
     setGridSlices(prev => ({
       ...prev,
       [gridId]: (prev[gridId] || []).map(s =>
         s.id === sliceId ? { ...s, ...updates } : s
       )
     }));
+  };
+
+  const commitSliceIndexDraft = (
+    gridId: string,
+    slice: GridSlice,
+    maxIdx: number,
+    options?: { applyAfterCommit?: boolean }
+  ) => {
+    const rawDraft = sliceIndexDrafts[slice.id];
+    const parsed = Number.parseInt((rawDraft ?? '').trim(), 10);
+    if (!Number.isFinite(parsed)) {
+      setSliceIndexDrafts((prev) => {
+        if (!(slice.id in prev)) return prev;
+        const next = { ...prev };
+        delete next[slice.id];
+        return next;
+      });
+      return;
+    }
+
+    const oneBased = Math.max(1, Math.min(Math.max(1, maxIdx), parsed));
+    const zeroBased = oneBased - 1;
+    const nextGridSlices = zeroBased !== slice.index
+      ? {
+        ...gridSlices,
+        [gridId]: (gridSlices[gridId] || []).map((existingSlice) =>
+          existingSlice.id === slice.id ? { ...existingSlice, index: zeroBased } : existingSlice
+        )
+      }
+      : gridSlices;
+
+    if (zeroBased !== slice.index) {
+      setSubsetsDirty(true);
+      setGridSlices(nextGridSlices);
+    }
+    setSliceIndexDrafts((prev) => {
+      if (!(slice.id in prev)) return prev;
+      const next = { ...prev };
+      delete next[slice.id];
+      return next;
+    });
+
+    if (options?.applyAfterCommit) {
+      void applyGuiManagedSubsets({ nextGridSlices });
+    }
+  };
+
+  // Apply manual single contour level (called by Apply button or Enter key).
+  const applyManualContourLevel = async () => {
+    const parsed = Number.parseFloat(contourLevelDraft);
+    const nextLevel = Number.isFinite(parsed) ? parsed : contourLevel;
+    setContourLevel(nextLevel);
+    setContourLevelDraft(String(nextLevel));
+    await setPlotContourSpecForCurrentMode(buildContourSpecState({ mode: 'manual', level: nextLevel }));
+  };
+
+  // Build a ContourSpec-shaped object from current spec-mode state.
+  const buildContourSpecState = (overrides?: Partial<{
+    mode: ContourSpecMode; count: number; start: number; step: number; level: number;
+  }>) => {
+    const m = overrides?.mode ?? contourSpecMode;
+    if (m === 'none') return { mode: 'none' as const };
+    if (m === 'automatic') return { mode: 'automatic' as const, count: overrides?.count ?? contourAutoCount };
+    if (m === 'increment') return { mode: 'increment' as const, start: overrides?.start ?? contourIncrStart, increment: overrides?.step ?? contourIncrStep };
+    // manual
+    return { mode: 'manual' as const, entries: [{ value: overrides?.level ?? contourLevel, color: null }] };
+  };
+
+  const setPlotContourSpecForCurrentMode = async (spec: ReturnType<typeof buildContourSpecState>) => {
+    await setPlotContourSpec(spec);
+    await commitPlot();
+  };
+
+  const applyAutomaticContourCount = async () => {
+    const parsed = Number.parseFloat(contourAutoCountDraft);
+    const nextCount = Math.max(1, Math.round(Number.isFinite(parsed) ? parsed : contourAutoCount));
+    setContourAutoCount(nextCount);
+    setContourAutoCountDraft(String(nextCount));
+    await setPlotContourSpecForCurrentMode(buildContourSpecState({ mode: 'automatic', count: nextCount }));
+  };
+
+  const applyIncrementContourSpec = async () => {
+    const parsedStart = Number.parseFloat(contourIncrStartDraft);
+    const parsedStep = Number.parseFloat(contourIncrStepDraft);
+    const nextStart = Number.isFinite(parsedStart) ? parsedStart : contourIncrStart;
+    const nextStep = Number.isFinite(parsedStep) ? parsedStep : contourIncrStep;
+    setContourIncrStart(nextStart);
+    setContourIncrStep(nextStep);
+    setContourIncrStartDraft(String(nextStart));
+    setContourIncrStepDraft(String(nextStep));
+    await setPlotContourSpecForCurrentMode(
+      buildContourSpecState({ mode: 'increment', start: nextStart, step: nextStep })
+    );
+  };
+
+  const handlePlotFamilyChange = async (family: BackendPlotFamily) => {
+    setPlotFamilyState(family);
+    await setPlotFamily(family);
+    await commitPlot();
+  };
+
+  const handleContourAttributeChange = async (attr: BackendContourAttribute) => {
+    setContourAttributeState(attr);
+    await setPlotContourAttributeCmd(attr);
+    await commitPlot();
+  };
+
+  // Mode selection is local-only; nothing is sent to the backend until Apply is clicked.
+  const handleContourSpecModeChange = (mode: ContourSpecMode) => {
+    setContourSpecMode(mode);
+  };
+
+  const applyContourSpecNone = async () => {
+    await setPlotContourSpecForCurrentMode(buildContourSpecState({ mode: 'none' }));
   };
 
   // Debug: Log whenever loading state changes
@@ -360,12 +1250,212 @@ const App = () => {
   const handleScalarFieldChange = async (field: ScalarField) => {
     // Rust will emit loading events
     setCurrentScalarField(field);
+    await setPlotScalarField(field as BackendScalarField);
+    await commitPlot();
   };
 
-  // Callback from Viewer3D when it's done loading meshes
-  const handleViewer3DLoadingChange = () => {
-    // Viewer3D loading is now controlled by Rust events, ignore this callback
-    logger.debug('Ignoring Viewer3D loading change (controlled by Rust)', 'App');
+  const handleCameraCommit = async (vp: { x: number; y: number; z: number }) => {
+    const current = backendPlotState?.viewpoint;
+    if (current) {
+      const dx = current.x - vp.x;
+      const dy = current.y - vp.y;
+      const dz = current.z - vp.z;
+      if ((dx * dx + dy * dy + dz * dz) < 1e-8) {
+        return;
+      }
+    }
+    await setPlotViewpoint(vp);
+  };
+
+  const applyWallsRanges = async () => {
+    const walls = manualWallsRows.map((row) => ({ ...normalizeSubsetForApply(row.subset), gui_managed: false }));
+    await setPlotWalls(walls);
+    await commitPlot();
+    setManualWallsDirty(false);
+  };
+
+  const applyFsurface = async () => {
+    if (!fsurfaceEnabled) {
+      await setPlotFsurface(null);
+      await commitPlot();
+      return;
+    }
+    const parsedValue = Number.parseFloat(fsurfaceValueDraft);
+    const value = Number.isFinite(parsedValue) ? parsedValue : 0;
+    setFsurfaceValueDraft(String(value));
+    await setPlotFsurface({ value, scalar_field: fsurfaceField });
+    await commitPlot();
+  };
+
+  const toggleFsurfaceEnabled = async (enabled: boolean) => {
+    setFsurfaceEnabled(enabled);
+    if (!enabled) {
+      await setPlotFsurface(null);
+      await commitPlot();
+      return;
+    }
+    const parsedValue = Number.parseFloat(fsurfaceValueDraft);
+    const value = Number.isFinite(parsedValue) ? parsedValue : 0;
+    setFsurfaceValueDraft(String(value));
+    await setPlotFsurface({ value, scalar_field: fsurfaceField });
+    await commitPlot();
+  };
+
+  const applyAddTextAnnotation = async () => {
+    const content = textContentDraft.trim();
+    if (!content) {
+      return;
+    }
+    const parsedX = Number.parseFloat(textXDraft);
+    const parsedY = Number.parseFloat(textYDraft);
+    const x = Number.isFinite(parsedX) ? parsedX : 0.05;
+    const y = Number.isFinite(parsedY) ? parsedY : 0.95;
+    await addPlotTextAnnotation({ content, x, y });
+    await commitPlot();
+    setTextContentDraft('');
+    setTextXDraft(String(x));
+    setTextYDraft(String(y));
+  };
+
+  const applyGuiManagedSubsets = async (options?: {
+    nextGridSlices?: Record<string, GridSlice[]>;
+    nextSliceEnabled?: boolean;
+  }) => {
+    const effectiveGridSlices = options?.nextGridSlices ?? gridSlices;
+    const effectiveSliceEnabled = options?.nextSliceEnabled ?? sliceEnabled;
+    const nextSubsets = gridSlicesToBackendSubsets(effectiveGridSlices, grids, effectiveSliceEnabled);
+    const manualSubsets = manualSubsetRows.map((row) => ({ ...normalizeSubsetForApply(row.subset), gui_managed: false }));
+    const currentSubsets = backendPlotState?.subsets ?? [];
+    const reconciledSubsets = dedupeSubsets([...manualSubsets, ...nextSubsets]);
+
+    if (subsetsSignature(reconciledSubsets) === subsetsSignature(currentSubsets)) {
+      setSubsetsDirty(false);
+      return;
+    }
+
+    try {
+      await setPlotSubsets(reconciledSubsets);
+      await commitPlot();
+      backendMappedSlicesSigRef.current = gridSlicesSignature(effectiveGridSlices);
+      setSubsetsDirty(false);
+      setManualSubsetDirty(false);
+    } catch (e) {
+      logger.error(`Failed to apply GUI-managed subsets: ${e}`, 'App');
+    }
+  };
+
+  useEffect(() => {
+    void syncPlotStateFromBackend();
+  }, []);
+
+  // Keep UI controls aligned with backend PlotState for migrated capabilities.
+  useEffect(() => {
+    if (!backendPlotState) {
+      return;
+    }
+
+    setCurrentScalarField(backendPlotState.scalar_field as ScalarField);
+
+    setPlotFamilyState(backendPlotState.plot_family ?? 'contour');
+    setContourAttributeState(backendPlotState.contour_attribute ?? 'line');
+
+    // Sync contour spec fields from backend state.
+    const spec = backendPlotState.contour_spec;
+    if (spec && typeof spec === 'object' && 'mode' in (spec as object)) {
+      const s = spec as { mode: string; count?: number; start?: number; increment?: number; entries?: Array<{ value?: number }> };
+      const mode = (s.mode as ContourSpecMode) ?? 'none';
+      setContourSpecMode(mode);
+      if (mode === 'automatic' && typeof s.count === 'number') {
+        setContourAutoCount(s.count);
+        setContourAutoCountDraft(String(s.count));
+      } else if (mode === 'increment') {
+        if (typeof s.start === 'number') {
+          setContourIncrStart(s.start);
+          setContourIncrStartDraft(String(s.start));
+        }
+        if (typeof s.increment === 'number') {
+          setContourIncrStep(s.increment);
+          setContourIncrStepDraft(String(s.increment));
+        }
+      } else if (mode === 'manual' && Array.isArray(s.entries) && s.entries.length > 0) {
+        const val = s.entries[0]?.value;
+        if (typeof val === 'number' && Number.isFinite(val)) {
+          setContourLevel(val);
+          setContourLevelDraft(String(val));
+        }
+      }
+    }
+
+    if (!subsetsDirty) {
+      const backendSubsets = backendPlotState.subsets ?? [];
+      const mappedSlices = backendSubsetsToGridSlices(backendSubsets, grids);
+      const mappedSig = gridSlicesSignature(mappedSlices);
+      backendMappedSlicesSigRef.current = mappedSig;
+      if (mappedSig !== gridSlicesSignature(gridSlices)) {
+        setGridSlices(mappedSlices);
+      }
+      if (backendSubsets.length > 0 && !sliceEnabled) {
+        setSliceEnabled(true);
+      }
+    }
+
+    if (!manualSubsetDirty) {
+      const manual = (backendPlotState.subsets ?? []).filter((subset) => !subset.gui_managed);
+      setManualSubsetRows(editableFromBackend(manual));
+    }
+
+    if (!manualWallsDirty) {
+      setManualWallsRows(editableFromBackend(backendPlotState.walls ?? []));
+    }
+
+    const fs = backendPlotState.fsurface ?? null;
+    if (fs) {
+      setFsurfaceEnabled(true);
+      setFsurfaceValueDraft(String(fs.value));
+      setFsurfaceField(fs.scalar_field);
+    } else {
+      setFsurfaceEnabled(false);
+    }
+  }, [backendPlotState, grids, gridSlices, sliceEnabled, subsetsDirty, manualSubsetDirty, manualWallsDirty]);
+
+  const dimensionsForGridNumber = (gridNumber: number) =>
+    grids.find((grid) => grid.gridIndex + 1 === gridNumber)?.dimensions;
+
+  // Callback from Viewer3D when its loading state changes.
+  // Used by batch PNG export to wait for each render to settle.
+  const handleViewer3DLoadingChange = (isLoading: boolean) => {
+    viewer3dLoadingRef.current = isLoading;
+    if (!isLoading) {
+      const resolvers = viewer3dLoadingResolversRef.current.splice(0);
+      resolvers.forEach(r => r());
+    }
+  };
+
+  // Wait for Viewer3D to finish loading, then wait 3 animation frames for
+  // Three.js to produce a stable rendered frame.
+  const waitForViewer3DStable = (): Promise<void> => {
+    const waitFrames = (n: number): Promise<void> =>
+      new Promise(resolve => n <= 0 ? resolve() : requestAnimationFrame(() => void waitFrames(n - 1).then(resolve)));
+
+    return new Promise<void>((resolve) => {
+      const timeoutId = setTimeout(() => resolve(), 5000);
+      const settle = () => { clearTimeout(timeoutId); void waitFrames(3).then(resolve); };
+      if (!viewer3dLoadingRef.current) {
+        settle();
+      } else {
+        viewer3dLoadingResolversRef.current.push(settle);
+      }
+    });
+  };
+
+  // Derive numbered PNG file paths from a base path chosen by the user.
+  // e.g. "/out/scene.png" + 3 intents → ["/out/scene_001.png", "_002", "_003"]
+  const derivePngPaths = (basePath: string, count: number): string[] => {
+    if (count === 1) return [basePath];
+    const withoutExt = basePath.replace(/\.png$/i, '');
+    return Array.from({ length: count }, (_, i) =>
+      `${withoutExt}_${String(i + 1).padStart(3, '0')}.png`
+    );
   };
 
   async function loadFiles() {
@@ -574,6 +1664,35 @@ const App = () => {
           >
             {loading ? 'Loading...' : 'Load Files'}
           </button>
+          <button
+            onClick={() => setShowCommandWindow((prev) => !prev)}
+            style={{
+              padding: '8px 16px',
+              cursor: 'pointer',
+              background: showCommandWindow ? '#1d4ed8' : '#334155',
+              border: 'none',
+              borderRadius: '4px',
+              color: 'white',
+            }}
+          >
+            {showCommandWindow ? 'Hide Command Sidebar' : 'Show Command Sidebar'}
+          </button>
+          <button
+            onClick={() => void exportCurrentViewAsPNG()}
+            disabled={loading || exportInProgress}
+            style={{
+              padding: '8px 16px',
+              cursor: (loading || exportInProgress) ? 'not-allowed' : 'pointer',
+              background: '#f97316',
+              border: 'none',
+              borderRadius: '4px',
+              color: 'white',
+              opacity: (loading || exportInProgress) ? 0.6 : 1,
+            }}
+            title="Export current view as PNG"
+          >
+            {exportInProgress ? 'Exporting...' : 'Export View'}
+          </button>
           {hasSolution && (
             <span style={{
               display: 'flex',
@@ -648,11 +1767,265 @@ const App = () => {
                   <div>
                     <SolutionViewer
                       selectedGrid={anyGridHasSolution ? (grids.find(g => g.solution) || grids[0]) : null}
+                      selectedField={currentScalarField}
+                      selectedColorScheme={currentColorScheme}
                       onScalarFieldChange={handleScalarFieldChange}
                       onColorSchemeChange={handleColorSchemeChange}
                     />
                   </div>
                 )}
+
+                {/* Contour Controls Section */}
+                {hasSolution && (
+                  <div style={{ marginBottom: '12px', paddingBottom: '12px', borderBottom: '2px solid #334155' }}>
+                    <div style={{
+                      fontSize: '10px',
+                      fontWeight: '600',
+                      color: '#cbd5e1',
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.05em',
+                      marginBottom: '6px',
+                      paddingBottom: '4px',
+                      borderBottom: '1px solid #334155'
+                    }}>
+                      Contours
+                    </div>
+
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '11px' }}>
+
+                      {/* Plot Family */}
+                      <label style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                        <span style={{ fontSize: '10px', color: '#94a3b8' }}>Plot Family:</span>
+                        <select
+                          value={plotFamilyState}
+                          onChange={(e) => {
+                            void handlePlotFamilyChange(e.target.value as BackendPlotFamily);
+                          }}
+                          style={{ padding: '4px 6px', background: '#1a2640', color: '#e2e8f0', border: '1px solid #334155', borderRadius: '3px', fontSize: '11px' }}
+                        >
+                          <option value="contour">Contour</option>
+                          <option value="function_surface">Function Surface</option>
+                        </select>
+                      </label>
+
+                      {plotFamilyState === 'contour' && (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+
+                          {/* Contour Attribute */}
+                          <label style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                            <span style={{ fontSize: '10px', color: '#94a3b8' }}>Attribute:</span>
+                            <select
+                              value={contourAttributeState}
+                              onChange={(e) => {
+                                void handleContourAttributeChange(e.target.value as BackendContourAttribute);
+                              }}
+                              style={{ padding: '4px 6px', background: '#1a2640', color: '#e2e8f0', border: '1px solid #334155', borderRadius: '3px', fontSize: '11px' }}
+                            >
+                              <option value="line">Line</option>
+                              <option value="surface">Surface</option>
+                              <option value="grid">Grid</option>
+                              <option value="color_contours">Color Contours</option>
+                              <option value="dots">Dots</option>
+                            </select>
+                          </label>
+
+                          {/* Contour Spec Mode */}
+                          <label style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                            <span style={{ fontSize: '10px', color: '#94a3b8' }}>Levels:</span>
+                            <select
+                              value={contourSpecMode}
+                              onChange={(e) => {
+                                handleContourSpecModeChange(e.target.value as ContourSpecMode);
+                              }}
+                              style={{ padding: '4px 6px', background: '#1a2640', color: '#e2e8f0', border: '1px solid #334155', borderRadius: '3px', fontSize: '11px' }}
+                            >
+                              <option value="none">None</option>
+                              <option value="automatic">Automatic</option>
+                              <option value="increment">Increment</option>
+                              <option value="manual">Manual</option>
+                            </select>
+                          </label>
+
+                          {/* None mode: explicit Apply so the backend spec is cleared */}
+                          {contourSpecMode === 'none' && (
+                            <button
+                              type="button"
+                              onClick={() => { void applyContourSpecNone(); }}
+                              style={{ padding: '4px 6px', background: '#334155', color: '#e2e8f0', border: '1px solid #475569', borderRadius: '3px', fontSize: '11px', cursor: 'pointer' }}
+                            >
+                              Apply
+                            </button>
+                          )}
+
+                          {/* Automatic mode: count */}
+                          {contourSpecMode === 'automatic' && (
+                            <label style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                              <span style={{ fontSize: '10px', color: '#94a3b8' }}>Count:</span>
+                              <input
+                                type="number"
+                                min="1"
+                                step="1"
+                                value={contourAutoCountDraft}
+                                onChange={(e) => {
+                                  setContourAutoCountDraft(e.target.value);
+                                }}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') {
+                                    void applyAutomaticContourCount();
+                                  }
+                                }}
+                                style={{ padding: '4px 6px', background: '#1a2640', color: '#e2e8f0', border: '1px solid #334155', borderRadius: '3px', fontSize: '11px' }}
+                              />
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  void applyAutomaticContourCount();
+                                }}
+                                style={{ padding: '4px 6px', background: '#334155', color: '#e2e8f0', border: '1px solid #475569', borderRadius: '3px', fontSize: '11px', cursor: 'pointer' }}
+                              >
+                                Apply
+                              </button>
+                            </label>
+                          )}
+
+                          {/* Increment mode: start + step */}
+                          {contourSpecMode === 'increment' && (
+                            <>
+                              <label style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                <span style={{ fontSize: '10px', color: '#94a3b8' }}>Start:</span>
+                                <input
+                                  type="number"
+                                  step="any"
+                                  value={contourIncrStartDraft}
+                                  onChange={(e) => {
+                                    setContourIncrStartDraft(e.target.value);
+                                  }}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                      void applyIncrementContourSpec();
+                                    }
+                                  }}
+                                  style={{ padding: '4px 6px', background: '#1a2640', color: '#e2e8f0', border: '1px solid #334155', borderRadius: '3px', fontSize: '11px' }}
+                                />
+                              </label>
+                              <label style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                <span style={{ fontSize: '10px', color: '#94a3b8' }}>Step:</span>
+                                <input
+                                  type="number"
+                                  min="0.000001"
+                                  step="any"
+                                  value={contourIncrStepDraft}
+                                  onChange={(e) => {
+                                    setContourIncrStepDraft(e.target.value);
+                                  }}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                      void applyIncrementContourSpec();
+                                    }
+                                  }}
+                                  style={{ padding: '4px 6px', background: '#1a2640', color: '#e2e8f0', border: '1px solid #334155', borderRadius: '3px', fontSize: '11px' }}
+                                />
+                              </label>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  void applyIncrementContourSpec();
+                                }}
+                                style={{ padding: '4px 6px', background: '#334155', color: '#e2e8f0', border: '1px solid #475569', borderRadius: '3px', fontSize: '11px', cursor: 'pointer' }}
+                              >
+                                Apply
+                              </button>
+                            </>
+                          )}
+
+                          {/* Manual mode: single level value — only applied on click/Enter */}
+                          {contourSpecMode === 'manual' && (
+                            <label style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                              <span style={{ fontSize: '10px', color: '#94a3b8' }}>Level:</span>
+                              <input
+                                type="number"
+                                step="any"
+                                value={contourLevelDraft}
+                                onChange={(e) => { setContourLevelDraft(e.target.value); }}
+                                onKeyDown={(e) => { if (e.key === 'Enter') { void applyManualContourLevel(); } }}
+                                style={{ padding: '4px 6px', background: '#1a2640', color: '#e2e8f0', border: '1px solid #334155', borderRadius: '3px', fontSize: '11px' }}
+                              />
+                              <button
+                                type="button"
+                                onClick={() => { void applyManualContourLevel(); }}
+                                style={{ padding: '4px 6px', background: '#334155', color: '#e2e8f0', border: '1px solid #475569', borderRadius: '3px', fontSize: '11px', cursor: 'pointer' }}
+                              >
+                                Apply
+                              </button>
+                            </label>
+                          )}
+
+                          {/* Surface opacity slider (surface / color_contours attributes only) */}
+                          {(contourAttributeState === 'surface' || contourAttributeState === 'color_contours') && (
+                            <label style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                              <span style={{ fontSize: '10px', color: '#94a3b8' }}>Surface Opacity: {Math.round(isoSurfaceOpacity * 100)}%</span>
+                              <input
+                                type="range"
+                                min="0"
+                                max="1"
+                                step="0.05"
+                                value={isoSurfaceOpacity}
+                                onChange={(e) => { setIsoSurfaceOpacity(parseFloat(e.target.value)); }}
+                                style={{ accentColor: '#3b82f6' }}
+                              />
+                            </label>
+                          )}
+
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Camera Controls Section */}
+                <div style={{ marginBottom: '12px', paddingBottom: '12px', borderBottom: '2px solid #334155' }}>
+                  <div
+                    style={{
+                      fontSize: '10px',
+                      fontWeight: '600',
+                      color: '#cbd5e1',
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.05em',
+                      marginBottom: '6px',
+                      paddingBottom: '4px',
+                      borderBottom: '1px solid #334155',
+                    }}
+                  >
+                    Camera
+                  </div>
+                  <label style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    <span style={{ fontSize: '10px', color: '#94a3b8' }}>View Preset:</span>
+                    <select
+                      value={backendPlotState?.axis_view ?? 'custom'}
+                      onChange={(e) => {
+                        const next = e.target.value as BackendAxisView;
+                        void (async () => {
+                          await setPlotAxisView(next);
+                          await commitPlot();
+                        })();
+                      }}
+                      style={{
+                        padding: '4px 6px',
+                        background: '#1a2640',
+                        color: '#e2e8f0',
+                        border: '1px solid #334155',
+                        borderRadius: '3px',
+                        fontSize: '11px',
+                      }}
+                    >
+                      {AXIS_VIEW_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
 
                 {/* Arbitrary Planes Section */}
                 <div style={{ marginBottom: '12px', paddingBottom: '12px', borderBottom: '2px solid #334155' }}>
@@ -909,10 +2282,312 @@ const App = () => {
                     <input
                       type="checkbox"
                       checked={sliceEnabled}
-                      onChange={(e) => setSliceEnabled(e.target.checked)}
+                      onChange={(e) => {
+                        const next = e.target.checked;
+                        setSliceEnabled(next);
+                        setSubsetsDirty(true);
+                      }}
                     />
                     Slicing {sliceEnabled ? '(enabled)' : '(disabled)'}
                   </label>
+                  <button
+                    onClick={() => {
+                      void applyGuiManagedSubsets();
+                    }}
+                    disabled={!subsetsDirty}
+                    style={{
+                      width: '100%',
+                      padding: '6px 10px',
+                      fontSize: '12px',
+                      background: subsetsDirty ? '#0284c7' : '#475569',
+                      border: 'none',
+                      color: 'white',
+                      borderRadius: '6px',
+                      cursor: subsetsDirty ? 'pointer' : 'not-allowed',
+                    }}
+                  >
+                    {subsetsDirty ? 'Apply Slicing to PlotState' : 'Slicing in sync'}
+                  </button>
+                </div>
+
+                <div style={{ marginTop: '10px', background: '#0b1120', padding: '10px', borderRadius: '8px', fontSize: '11px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  <div style={{ fontWeight: 600 }}>Range-Based SUBSETS</div>
+                  {manualSubsetRows.map((row) => (
+                    <div key={row.id}>
+                      {!row.editing ? (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                          <span style={{ flex: 1, fontFamily: 'monospace', fontSize: '10px', background: '#1e293b', padding: '3px 6px', borderRadius: '4px', border: '1px solid #334155', color: '#cbd5e1', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {compactSubsetLabel(row.subset, dimensionsForGridNumber(row.subset.grid))}
+                          </span>
+                          <button
+                            onClick={() => setRowEditing('subset', row.id, true)}
+                            title="Edit"
+                            style={{ padding: '2px 6px', background: '#1d4ed8', color: 'white', border: 'none', borderRadius: '3px', cursor: 'pointer', fontSize: '11px', flexShrink: 0 }}
+                          >✎</button>
+                          <button
+                            onClick={() => removeManualRangeRow('subset', row.id)}
+                            title="Remove"
+                            style={{ padding: '2px 6px', background: '#7f1d1d', color: 'white', border: 'none', borderRadius: '3px', cursor: 'pointer', fontSize: '11px', flexShrink: 0 }}
+                          >✕</button>
+                        </div>
+                      ) : (
+                        <div style={{ border: '1px solid #334155', borderRadius: '6px', padding: '6px', display: 'grid', gap: '4px', overflow: 'hidden' }}>
+                          <label style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                            <span style={{ minWidth: '30px' }}>Grid</span>
+                            <input
+                              type="number"
+                              min={1}
+                              value={row.subset.grid}
+                              onChange={(e) => {
+                                const next = Math.max(1, Number.parseInt(e.target.value || '1', 10));
+                                updateManualRangeRow('subset', row.id, (subset) => ({ ...subset, grid: next }));
+                              }}
+                              style={{ width: '50px', padding: '2px 4px', background: '#1a2640', color: '#e2e8f0', border: '1px solid #334155', borderRadius: '3px', fontSize: '11px' }}
+                            />
+                          </label>
+                          {(['i_range', 'j_range', 'k_range'] as const).map((axis) => (
+                            <div key={axis} style={{ display: 'grid', gridTemplateColumns: '16px 1fr 1fr', gap: '3px', alignItems: 'center' }}>
+                              <span style={{ fontSize: '10px' }}>{axis[0].toUpperCase()}</span>
+                              <input
+                                type="number"
+                                placeholder="start"
+                                value={rangeStartString(row.subset[axis])}
+                                onChange={(e) => updateManualAxisRange('subset', row.id, axis, 'start', e.target.value)}
+                                style={{ width: '100%', minWidth: 0, padding: '2px 4px', background: '#1a2640', color: '#e2e8f0', border: '1px solid #334155', borderRadius: '3px', fontSize: '11px', boxSizing: 'border-box' }}
+                              />
+                              <input
+                                type="number"
+                                placeholder="end"
+                                value={rangeEndString(row.subset[axis])}
+                                onChange={(e) => updateManualAxisRange('subset', row.id, axis, 'end', e.target.value)}
+                                style={{ width: '100%', minWidth: 0, padding: '2px 4px', background: '#1a2640', color: '#e2e8f0', border: '1px solid #334155', borderRadius: '3px', fontSize: '11px', boxSizing: 'border-box' }}
+                              />
+                            </div>
+                          ))}
+                          <div style={{ display: 'flex', gap: '4px' }}>
+                            <button
+                              onClick={() => setRowEditing('subset', row.id, false)}
+                              style={{ flex: 1, padding: '3px 6px', background: '#374151', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '11px' }}
+                            >Done</button>
+                            <button
+                              onClick={() => removeManualRangeRow('subset', row.id)}
+                              style={{ flex: 1, padding: '3px 6px', background: '#7f1d1d', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '11px' }}
+                            >Remove</button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    <button
+                      onClick={() => addManualRangeRow('subset')}
+                      style={{ flex: 1, padding: '5px 6px', background: '#1d4ed8', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '11px' }}
+                    >
+                      Add Subset Range
+                    </button>
+                    <button
+                      onClick={() => void applyGuiManagedSubsets()}
+                      disabled={!manualSubsetDirty && !subsetsDirty}
+                      style={{ flex: 1, padding: '5px 6px', background: (!manualSubsetDirty && !subsetsDirty) ? '#475569' : '#0284c7', color: 'white', border: 'none', borderRadius: '4px', cursor: (!manualSubsetDirty && !subsetsDirty) ? 'not-allowed' : 'pointer', fontSize: '11px' }}
+                    >
+                      Apply SUBSETS
+                    </button>
+                  </div>
+                </div>
+
+                <div style={{ marginTop: '10px', background: '#0b1120', padding: '10px', borderRadius: '8px', fontSize: '11px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  <div style={{ fontWeight: 600 }}>Range-Based WALLS</div>
+                  {manualWallsRows.map((row) => (
+                    <div key={row.id}>
+                      {!row.editing ? (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                          <span style={{ flex: 1, fontFamily: 'monospace', fontSize: '10px', background: '#1e293b', padding: '3px 6px', borderRadius: '4px', border: '1px solid #334155', color: '#cbd5e1', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {compactSubsetLabel(row.subset, dimensionsForGridNumber(row.subset.grid))}
+                          </span>
+                          <button
+                            onClick={() => setRowEditing('wall', row.id, true)}
+                            title="Edit"
+                            style={{ padding: '2px 6px', background: '#1d4ed8', color: 'white', border: 'none', borderRadius: '3px', cursor: 'pointer', fontSize: '11px', flexShrink: 0 }}
+                          >✎</button>
+                          <button
+                            onClick={() => removeManualRangeRow('wall', row.id)}
+                            title="Remove"
+                            style={{ padding: '2px 6px', background: '#7f1d1d', color: 'white', border: 'none', borderRadius: '3px', cursor: 'pointer', fontSize: '11px', flexShrink: 0 }}
+                          >✕</button>
+                        </div>
+                      ) : (
+                        <div style={{ border: '1px solid #334155', borderRadius: '6px', padding: '6px', display: 'grid', gap: '4px', overflow: 'hidden' }}>
+                          <label style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                            <span style={{ minWidth: '30px' }}>Grid</span>
+                            <input
+                              type="number"
+                              min={1}
+                              value={row.subset.grid}
+                              onChange={(e) => {
+                                const next = Math.max(1, Number.parseInt(e.target.value || '1', 10));
+                                updateManualRangeRow('wall', row.id, (subset) => ({ ...subset, grid: next }));
+                              }}
+                              style={{ width: '50px', padding: '2px 4px', background: '#1a2640', color: '#e2e8f0', border: '1px solid #334155', borderRadius: '3px', fontSize: '11px' }}
+                            />
+                          </label>
+                          {(['i_range', 'j_range', 'k_range'] as const).map((axis) => (
+                            <div key={axis} style={{ display: 'grid', gridTemplateColumns: '16px 1fr 1fr', gap: '3px', alignItems: 'center' }}>
+                              <span style={{ fontSize: '10px' }}>{axis[0].toUpperCase()}</span>
+                              <input
+                                type="number"
+                                placeholder="start"
+                                value={rangeStartString(row.subset[axis])}
+                                onChange={(e) => updateManualAxisRange('wall', row.id, axis, 'start', e.target.value)}
+                                style={{ width: '100%', minWidth: 0, padding: '2px 4px', background: '#1a2640', color: '#e2e8f0', border: '1px solid #334155', borderRadius: '3px', fontSize: '11px', boxSizing: 'border-box' }}
+                              />
+                              <input
+                                type="number"
+                                placeholder="end"
+                                value={rangeEndString(row.subset[axis])}
+                                onChange={(e) => updateManualAxisRange('wall', row.id, axis, 'end', e.target.value)}
+                                style={{ width: '100%', minWidth: 0, padding: '2px 4px', background: '#1a2640', color: '#e2e8f0', border: '1px solid #334155', borderRadius: '3px', fontSize: '11px', boxSizing: 'border-box' }}
+                              />
+                            </div>
+                          ))}
+                          <div style={{ display: 'flex', gap: '4px' }}>
+                            <button
+                              onClick={() => setRowEditing('wall', row.id, false)}
+                              style={{ flex: 1, padding: '3px 6px', background: '#374151', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '11px' }}
+                            >Done</button>
+                            <button
+                              onClick={() => removeManualRangeRow('wall', row.id)}
+                              style={{ flex: 1, padding: '3px 6px', background: '#7f1d1d', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '11px' }}
+                            >Remove</button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    <button
+                      onClick={() => addManualRangeRow('wall')}
+                      style={{ flex: 1, padding: '5px 6px', background: '#1d4ed8', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '11px' }}
+                    >
+                      Add Wall Range
+                    </button>
+                    <button
+                      onClick={() => { void applyWallsRanges(); }}
+                      disabled={!manualWallsDirty}
+                      style={{ flex: 1, padding: '5px 6px', background: manualWallsDirty ? '#0284c7' : '#475569', color: 'white', border: 'none', borderRadius: '4px', cursor: manualWallsDirty ? 'pointer' : 'not-allowed', fontSize: '11px' }}
+                    >
+                      Apply WALLS
+                    </button>
+                  </div>
+                </div>
+
+                {hasSolution && (
+                  <div style={{ marginTop: '10px', background: '#0b1120', padding: '10px', borderRadius: '8px', fontSize: '11px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    <div style={{ fontWeight: 600 }}>FSURFACE</div>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <input
+                        type="checkbox"
+                        checked={fsurfaceEnabled}
+                        onChange={(e) => {
+                          void toggleFsurfaceEnabled(e.target.checked);
+                        }}
+                      />
+                      Enabled
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                      <span style={{ fontSize: '10px', color: '#94a3b8' }}>Level</span>
+                      <input
+                        type="number"
+                        step="any"
+                        value={fsurfaceValueDraft}
+                        onChange={(e) => setFsurfaceValueDraft(e.target.value)}
+                        style={{ padding: '4px 6px', background: '#1a2640', color: '#e2e8f0', border: '1px solid #334155', borderRadius: '3px', fontSize: '11px' }}
+                      />
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                      <span style={{ fontSize: '10px', color: '#94a3b8' }}>Scalar Field</span>
+                      <select
+                        value={fsurfaceField}
+                        onChange={(e) => setFsurfaceField(e.target.value as BackendScalarField)}
+                        style={{ padding: '4px 6px', background: '#1a2640', color: '#e2e8f0', border: '1px solid #334155', borderRadius: '3px', fontSize: '11px' }}
+                      >
+                        <option value="density">Density</option>
+                        <option value="velocity_magnitude">Velocity Magnitude</option>
+                        <option value="momentum_x">Momentum X</option>
+                        <option value="momentum_y">Momentum Y</option>
+                        <option value="momentum_z">Momentum Z</option>
+                        <option value="pressure">Pressure</option>
+                        <option value="energy">Energy</option>
+                      </select>
+                    </label>
+                    <button
+                      onClick={() => { void applyFsurface(); }}
+                      style={{ padding: '5px 6px', background: '#0369a1', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '11px' }}
+                    >
+                      Apply FSURFACE
+                    </button>
+                  </div>
+                )}
+
+                <div style={{ marginTop: '10px', background: '#0b1120', padding: '10px', borderRadius: '8px', fontSize: '11px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                  <div style={{ fontWeight: 600 }}>TEXT Annotations</div>
+                  <input
+                    type="text"
+                    value={textContentDraft}
+                    onChange={(e) => setTextContentDraft(e.target.value)}
+                    placeholder="Annotation text"
+                    style={{ width: '100%', minWidth: 0, boxSizing: 'border-box', minHeight: '34px', lineHeight: 1.35, padding: '6px 8px', background: '#1a2640', color: '#e2e8f0', border: '1px solid #334155', borderRadius: '3px', fontSize: '12px' }}
+                  />
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
+                    <input
+                      type="number"
+                      step="any"
+                      value={textXDraft}
+                      onChange={(e) => setTextXDraft(e.target.value)}
+                      placeholder="X (0..1)"
+                      style={{ width: '100%', minWidth: 0, boxSizing: 'border-box', minHeight: '34px', lineHeight: 1.35, padding: '6px 8px', background: '#1a2640', color: '#e2e8f0', border: '1px solid #334155', borderRadius: '3px', fontSize: '12px' }}
+                    />
+                    <input
+                      type="number"
+                      step="any"
+                      value={textYDraft}
+                      onChange={(e) => setTextYDraft(e.target.value)}
+                      placeholder="Y (0..1)"
+                      style={{ width: '100%', minWidth: 0, boxSizing: 'border-box', minHeight: '34px', lineHeight: 1.35, padding: '6px 8px', background: '#1a2640', color: '#e2e8f0', border: '1px solid #334155', borderRadius: '3px', fontSize: '12px' }}
+                    />
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
+                    <button
+                      onClick={() => { void applyAddTextAnnotation(); }}
+                      style={{ width: '100%', minWidth: 0, minHeight: '34px', padding: '6px 8px', background: '#1d4ed8', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}
+                    >
+                      Add TEXT
+                    </button>
+                    <button
+                      onClick={() => {
+                        void (async () => {
+                          await clearPlotTextAnnotations();
+                          await commitPlot();
+                        })();
+                      }}
+                      disabled={(backendPlotState?.text_annotations?.length ?? 0) === 0}
+                      style={{ width: '100%', minWidth: 0, minHeight: '34px', padding: '6px 8px', background: (backendPlotState?.text_annotations?.length ?? 0) > 0 ? '#7f1d1d' : '#475569', color: 'white', border: 'none', borderRadius: '4px', cursor: (backendPlotState?.text_annotations?.length ?? 0) > 0 ? 'pointer' : 'not-allowed', fontSize: '12px' }}
+                    >
+                      Clear TEXT
+                    </button>
+                  </div>
+                </div>
+
+                <div style={{ marginTop: '10px', background: '#0b1120', padding: '10px', borderRadius: '8px', fontSize: '11px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  <div style={{ fontWeight: 600 }}>SHOW Status</div>
+                  <button
+                    onClick={() => { void refreshShowStatus(); }}
+                    style={{ padding: '5px 6px', background: '#0f766e', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '11px' }}
+                  >
+                    Refresh SHOW
+                  </button>
+                  <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: '#cbd5e1', background: '#020617', border: '1px solid #334155', borderRadius: '6px', padding: '8px' }}>
+                    {showStatusOutput || 'No SHOW snapshot yet.'}
+                  </pre>
                 </div>
 
                 {gridTree.length === 0 ? (
@@ -1069,14 +2744,53 @@ const App = () => {
                                               <option value="K">K</option>
                                             </select>
                                             <input
-                                              type="range"
-                                              min={0}
-                                              max={Math.max(0, maxIdx - 1)}
-                                              value={slice.index}
-                                              onChange={(e) => updateGridSlice(grid.id, slice.id, { index: parseInt(e.target.value) })}
-                                              style={{ flex: 1, height: '12px', minWidth: '80px' }}
+                                              type="number"
+                                              min={1}
+                                              max={Math.max(1, maxIdx)}
+                                              value={sliceIndexDrafts[slice.id] ?? String(slice.index + 1)}
+                                              onChange={(e) => {
+                                                const next = e.target.value;
+                                                setSliceIndexDrafts((prev) => ({
+                                                  ...prev,
+                                                  [slice.id]: next,
+                                                }));
+                                              }}
+                                              onKeyDown={(e) => {
+                                                if (e.key === 'Enter') {
+                                                  e.preventDefault();
+                                                  commitSliceIndexDraft(grid.id, slice, maxIdx, { applyAfterCommit: true });
+                                                }
+                                                if (e.key === 'Escape') {
+                                                  e.preventDefault();
+                                                  setSliceIndexDrafts((prev) => {
+                                                    if (!(slice.id in prev)) return prev;
+                                                    const next = { ...prev };
+                                                    delete next[slice.id];
+                                                    return next;
+                                                  });
+                                                }
+                                              }}
+                                              onBlur={() => {
+                                                // Per UX request, only commit on Enter; blur discards draft edits.
+                                                setSliceIndexDrafts((prev) => {
+                                                  if (!(slice.id in prev)) return prev;
+                                                  const next = { ...prev };
+                                                  delete next[slice.id];
+                                                  return next;
+                                                });
+                                              }}
+                                              style={{
+                                                flex: 1,
+                                                minWidth: '80px',
+                                                padding: '2px 4px',
+                                                background: '#1a2640',
+                                                color: '#e2e8f0',
+                                                border: '1px solid #334155',
+                                                borderRadius: '3px',
+                                                fontSize: '10px'
+                                              }}
                                             />
-                                            <span style={{ minWidth: '18px', textAlign: 'right' }}>{slice.index + 1}</span>
+                                            <span style={{ minWidth: '34px', textAlign: 'right', fontSize: '10px', color: '#94a3b8' }}>/ {Math.max(1, maxIdx)}</span>
                                             <button
                                               type="button"
                                               onClick={(e) => {
@@ -1199,6 +2913,34 @@ const App = () => {
                     ))}
                   </div>
                 )}
+
+                <div style={{ marginTop: '10px', background: '#0b1120', padding: '10px', borderRadius: '8px', fontSize: '11px' }}>
+                  <div style={{ fontWeight: 600, marginBottom: '6px' }}>Backend PlotState (Dev)</div>
+                  <button
+                    onClick={() => void syncPlotStateFromBackend()}
+                    style={{
+                      marginBottom: '8px',
+                      width: '100%',
+                      padding: '5px 6px',
+                      background: '#1f2937',
+                      color: '#e2e8f0',
+                      border: '1px solid #334155',
+                      borderRadius: '4px',
+                      cursor: 'pointer',
+                      fontSize: '11px',
+                    }}
+                  >
+                    Refresh
+                  </button>
+                  <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: '#94a3b8' }}>
+                    {backendPlotState ? JSON.stringify(backendPlotState, null, 2) : 'No backend state loaded yet.'}
+                  </pre>
+                  {backendDiagnostics.length > 0 && (
+                    <div style={{ marginTop: '8px', color: '#facc15' }}>
+                      Last diagnostics: {backendDiagnostics.length}
+                    </div>
+                  )}
+                </div>
               </>
             )}
 
@@ -1217,15 +2959,188 @@ const App = () => {
               showWireframe={showWireframe}
               shadingMode={shadingMode}
               sliceEnabled={sliceEnabled}
-              gridSlices={gridSlices}
+              subsets={backendPlotState?.subsets ?? []}
               arbitrarySlices={arbitrarySlices}
-              onSlicesChange={setGridSlices}
+              plotFamily={plotFamilyState}
+              contourAttribute={contourAttributeState}
+              contourSpec={backendPlotState?.contour_spec}
+              isoSurfaceOpacity={isoSurfaceOpacity}
+              cameraAxisView={backendPlotState?.axis_view ?? 'custom'}
+              cameraViewpoint={backendPlotState?.viewpoint ?? null}
+              cameraPlotUp={backendPlotState?.plot_up ?? null}
+              onCameraCommit={handleCameraCommit}
               onLoadingChange={handleViewer3DLoadingChange}
             />
           </div>
+
+          {showCommandWindow && (
+            <aside
+              style={{
+                width: 'min(420px, 42vw)',
+                minWidth: '300px',
+                maxWidth: '520px',
+                background: '#0b1220',
+                borderLeft: '1px solid #1f2937',
+                color: '#e2e8f0',
+                display: 'flex',
+                flexDirection: 'column',
+                padding: '12px',
+                gap: '10px',
+                overflow: 'auto',
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <h2 style={{ margin: 0, fontSize: '16px' }}>PLOT3D Command Sidebar</h2>
+                <button
+                  onClick={() => setShowCommandWindow(false)}
+                  style={{
+                    padding: '6px 10px',
+                    background: '#1f2937',
+                    color: '#e2e8f0',
+                    border: '1px solid #334155',
+                    borderRadius: '4px',
+                    cursor: 'pointer',
+                  }}
+                >
+                  Close
+                </button>
+              </div>
+
+              <div>
+                <div style={{ fontSize: '12px', marginBottom: '6px', color: '#93c5fd' }}>Type commands:</div>
+                <textarea
+                  value={commandText}
+                  onChange={(e) => setCommandText(e.target.value)}
+                  spellCheck={false}
+                  style={{
+                    width: '100%',
+                    minHeight: '170px',
+                    boxSizing: 'border-box',
+                    padding: '10px',
+                    background: '#020617',
+                    color: '#e2e8f0',
+                    border: '1px solid #334155',
+                    borderRadius: '6px',
+                    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                    fontSize: '12px',
+                  }}
+                />
+                <button
+                  onClick={() => void runCommandText()}
+                  style={{
+                    marginTop: '8px',
+                    padding: '7px 12px',
+                    background: '#2563eb',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '4px',
+                    cursor: 'pointer',
+                  }}
+                >
+                  Execute Commands
+                </button>
+              </div>
+
+              <div style={{ borderTop: '1px solid #334155', paddingTop: '10px' }}>
+                <div style={{ fontSize: '12px', marginBottom: '6px', color: '#93c5fd' }}>Or run .com file:</div>
+                <input
+                  type="text"
+                  value={comFilePath}
+                  onChange={(e) => setComFilePath(e.target.value)}
+                  placeholder="/absolute/path/to/script.com"
+                  style={{
+                    width: '100%',
+                    boxSizing: 'border-box',
+                    padding: '8px',
+                    background: '#020617',
+                    color: '#e2e8f0',
+                    border: '1px solid #334155',
+                    borderRadius: '4px',
+                    fontSize: '12px',
+                  }}
+                />
+                <button
+                  onClick={() => void runComFile()}
+                  style={{
+                    marginTop: '8px',
+                    padding: '7px 12px',
+                    background: '#0f766e',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '4px',
+                    cursor: 'pointer',
+                  }}
+                >
+                  Execute .com File
+                </button>
+              </div>
+
+              <div style={{ borderTop: '1px solid #334155', paddingTop: '10px' }}>
+                <div style={{ fontSize: '12px', marginBottom: '6px', color: '#93c5fd' }}>Export PNGs:</div>
+                {lastExecutionResult && lastExecutionResult.intents && lastExecutionResult.intents.length > 0 ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <div style={{ fontSize: '11px', color: '#cbd5e1' }}>
+                      Ready to export {lastExecutionResult.intents.length} plot(s)
+                    </div>
+                    <button
+                      onClick={() => void exportPNGsFromExecution()}
+                      disabled={exportInProgress}
+                      style={{
+                        padding: '7px 12px',
+                        background: exportInProgress ? '#475569' : '#7c2d12',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '4px',
+                        cursor: exportInProgress ? 'not-allowed' : 'pointer',
+                        fontSize: '12px',
+                      }}
+                    >
+                      {exportInProgress ? 'Exporting...' : 'Export to PNG'}
+                    </button>
+                    {exportStatus && (
+                      <div style={{
+                        fontSize: '11px',
+                        color: exportStatus.startsWith('Failed') ? '#ef4444' : '#86efac',
+                        background: '#0a0a0a',
+                        padding: '6px',
+                        borderRadius: '4px',
+                        border: '1px solid #334155',
+                        wordBreak: 'break-word'
+                      }}>
+                        {exportStatus}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: '11px', color: '#94a3b8' }}>
+                    Execute a .com file to enable PNG export
+                  </div>
+                )}
+              </div>
+
+              <div style={{ borderTop: '1px solid #334155', paddingTop: '10px' }}>
+                <div style={{ fontSize: '12px', marginBottom: '6px', color: '#93c5fd' }}>Output:</div>
+                <pre style={{
+                  margin: 0,
+                  minHeight: '90px',
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                  background: '#020617',
+                  border: '1px solid #334155',
+                  borderRadius: '6px',
+                  padding: '10px',
+                  color: '#cbd5e1',
+                  fontSize: '12px',
+                }}>
+                  {commandWindowOutput || 'No output yet.'}
+                </pre>
+              </div>
+            </aside>
+          )}
         </div>
         <LogViewer isOpen={showLogs} onToggle={setShowLogs} />
       </main>
+
       <LoadingIndicator isLoading={loading} message={loadingMessage} />
     </div>
   );

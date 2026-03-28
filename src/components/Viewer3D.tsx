@@ -1,13 +1,19 @@
-import { Canvas } from '@react-three/fiber';
+import { Canvas, useThree } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
-import { useState, useEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef, type MutableRefObject } from 'react';
+import * as THREE from 'three';
 import { BufferGeometry, BufferAttribute, ShaderMaterial } from 'three';
+import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js';
+import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeometry.js';
+import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import { invoke } from '@tauri-apps/api/core';
 import { logger } from '../utils/logger';
 import type { GridItem, GridSlice, ArbitrarySlice } from '../types/grids';
 import type { ColorScheme } from '../utils/colorMapping';
+import { mapValueToColor, normalizeValue, rgbToHex } from '../utils/colorMapping';
 import type { ScalarField } from '../utils/solutionData';
 import { getVisibleGridItems } from '../utils/gridUtils';
+import { resolveCameraUpVector, type CameraPlotUpAxis } from './cameraUp';
 
 interface MeshGeometry {
     vertices: number[];
@@ -28,6 +34,18 @@ interface SerializableGrid {
     original_indices?: number[]; // Maps sliced points back to original grid indices
 }
 
+interface BackendIndexRange {
+    start: number;
+    end?: number | null;
+}
+
+interface BackendGridSubset {
+    grid: number;
+    i_range?: BackendIndexRange | null;
+    j_range?: BackendIndexRange | null;
+    k_range?: BackendIndexRange | null;
+}
+
 interface Viewer3DProps {
     grids: GridItem[];
     selectedGridIds: string[];
@@ -40,20 +58,293 @@ interface Viewer3DProps {
     showWireframe?: boolean;
     shadingMode?: 'none' | 'smooth';
     sliceEnabled?: boolean;
-    gridSlices?: Record<string, GridSlice[]>;
+    subsets?: BackendGridSubset[];
     arbitrarySlices?: ArbitrarySlice[];
-    onSlicesChange?: (slices: Record<string, GridSlice[]>) => void;
+    plotFamily?: 'contour' | 'function_surface';
+    contourAttribute?: 'line' | 'surface' | 'grid' | 'color_contours' | 'dots';
+    contourSpec?: unknown;
+    isoSurfaceOpacity?: number;
+    cameraAxisView?:
+    | 'plus_x'
+    | 'minus_x'
+    | 'plus_y'
+    | 'minus_y'
+    | 'plus_z'
+    | 'minus_z'
+    | 'plane_xy'
+    | 'plane_xz'
+    | 'plane_yz'
+    | 'plane_yx'
+    | 'plane_zx'
+    | 'plane_zy'
+    | 'custom';
+    cameraViewpoint?: { x: number; y: number; z: number } | null;
+    cameraPlotUp?: CameraPlotUpAxis | null;
+    onCameraCommit?: (vp: { x: number; y: number; z: number }) => void;
     onLoadingChange?: (isLoading: boolean) => void;
+}
+
+function CameraViewpointSync({
+    cameraAxisView,
+    cameraViewpoint,
+    cameraPlotUp,
+    isUserNavigatingRef,
+    controlsRef,
+}: {
+    cameraAxisView?:
+    | 'plus_x'
+    | 'minus_x'
+    | 'plus_y'
+    | 'minus_y'
+    | 'plus_z'
+    | 'minus_z'
+    | 'plane_xy'
+    | 'plane_xz'
+    | 'plane_yz'
+    | 'plane_yx'
+    | 'plane_zx'
+    | 'plane_zy'
+    | 'custom';
+    cameraViewpoint?: { x: number; y: number; z: number } | null;
+    cameraPlotUp?: CameraPlotUpAxis | null;
+    isUserNavigatingRef: MutableRefObject<boolean>;
+    controlsRef: MutableRefObject<any>;
+}) {
+    const { camera } = useThree();
+    const lastAppliedAxisViewRef = useRef<string | null>(null);
+
+    const axisDirection = (axisView: NonNullable<typeof cameraAxisView>): THREE.Vector3 | null => {
+        switch (axisView) {
+            case 'plus_x':
+                return new THREE.Vector3(1, 0, 0);
+            case 'minus_x':
+                return new THREE.Vector3(-1, 0, 0);
+            case 'plus_y':
+                return new THREE.Vector3(0, 1, 0);
+            case 'minus_y':
+                return new THREE.Vector3(0, -1, 0);
+            case 'plus_z':
+                return new THREE.Vector3(0, 0, 1);
+            case 'minus_z':
+                return new THREE.Vector3(0, 0, -1);
+            // Legacy plane aliases map to canonical orthogonal camera axes.
+            // TOP(XY)->+Z, SIDE(XZ)->+Y, FRONT(YZ)->+X.
+            case 'plane_xy':
+            case 'plane_yx':
+                return new THREE.Vector3(0, 0, 1);
+            case 'plane_xz':
+            case 'plane_zx':
+                return new THREE.Vector3(0, 1, 0);
+            case 'plane_yz':
+            case 'plane_zy':
+                return new THREE.Vector3(1, 0, 0);
+            case 'custom':
+            default:
+                return null;
+        }
+    };
+
+    const plotUpDirection = (plotUp: CameraPlotUpAxis | null): THREE.Vector3 | null => {
+        switch (plotUp) {
+            case 'positive_x':
+                return new THREE.Vector3(1, 0, 0);
+            case 'positive_y':
+                return new THREE.Vector3(0, 1, 0);
+            case 'positive_z':
+                return new THREE.Vector3(0, 0, 1);
+            case 'negative_x':
+                return new THREE.Vector3(-1, 0, 0);
+            case 'negative_y':
+                return new THREE.Vector3(0, -1, 0);
+            case 'negative_z':
+                return new THREE.Vector3(0, 0, -1);
+            default:
+                return null;
+        }
+    };
+
+    const applyCameraUpForPosition = (position: THREE.Vector3) => {
+        const requestedUp = plotUpDirection(cameraPlotUp ?? null);
+        const nextUp = resolveCameraUpVector(position, requestedUp);
+        if (camera.up.distanceToSquared(nextUp) < 1e-8) {
+            return;
+        }
+        camera.up.copy(nextUp);
+    };
+
+    useEffect(() => {
+        applyCameraUpForPosition(camera.position);
+        if (controlsRef.current) {
+            controlsRef.current.update();
+        } else {
+            camera.lookAt(0, 0, 0);
+        }
+    }, [camera, cameraPlotUp, controlsRef]);
+
+    useEffect(() => {
+        if (!cameraViewpoint) {
+            return;
+        }
+        // Never fight active user interaction; only sync from backend when idle.
+        if (isUserNavigatingRef.current) {
+            return;
+        }
+
+        const dx = camera.position.x - cameraViewpoint.x;
+        const dy = camera.position.y - cameraViewpoint.y;
+        const dz = camera.position.z - cameraViewpoint.z;
+        const dist2 = dx * dx + dy * dy + dz * dz;
+        // Avoid tiny corrective snaps that feel like jitter.
+        if (dist2 < 1e-8) {
+            return;
+        }
+
+        camera.position.set(cameraViewpoint.x, cameraViewpoint.y, cameraViewpoint.z);
+        applyCameraUpForPosition(camera.position);
+        if (controlsRef.current) {
+            controlsRef.current.target.set(0, 0, 0);
+            controlsRef.current.update();
+        } else {
+            camera.lookAt(0, 0, 0);
+        }
+        lastAppliedAxisViewRef.current = null;
+    }, [camera, cameraViewpoint, cameraPlotUp, controlsRef, isUserNavigatingRef]);
+
+    useEffect(() => {
+        if (!cameraAxisView || cameraAxisView === 'custom') {
+            return;
+        }
+        if (isUserNavigatingRef.current) {
+            return;
+        }
+        if (lastAppliedAxisViewRef.current === cameraAxisView) {
+            return;
+        }
+
+        const dir = axisDirection(cameraAxisView);
+        if (!dir) {
+            return;
+        }
+
+        // Preserve current camera radius when switching to a named axis view.
+        const distance = Math.max(camera.position.length(), 1.0);
+        const next = dir.multiplyScalar(distance);
+        camera.position.set(next.x, next.y, next.z);
+        applyCameraUpForPosition(camera.position);
+        if (controlsRef.current) {
+            controlsRef.current.target.set(0, 0, 0);
+            controlsRef.current.update();
+        } else {
+            camera.lookAt(0, 0, 0);
+        }
+        lastAppliedAxisViewRef.current = cameraAxisView;
+    }, [camera, cameraAxisView, cameraViewpoint, cameraPlotUp, controlsRef, isUserNavigatingRef]);
+
+    return null;
+}
+
+function CameraCommitControls({
+    onCameraCommit,
+    isUserNavigatingRef,
+    controlsRef,
+}: {
+    onCameraCommit?: (vp: { x: number; y: number; z: number }) => void;
+    isUserNavigatingRef: MutableRefObject<boolean>;
+    controlsRef: MutableRefObject<any>;
+}) {
+    const { camera } = useThree();
+    const settleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    const enableDamping = true;
+    const dampingFactor = 0.15;
+
+    // Derive "idle" debounce from OrbitControls damping settings.
+    // Smaller damping factors decay more slowly, so we wait longer.
+    const settleDelayMs = enableDamping
+        ? Math.max(80, Math.min(350, Math.round(30 / Math.max(dampingFactor, 0.001))))
+        : 40;
+
+    const clearSettleTimer = () => {
+        if (settleTimerRef.current) {
+            clearTimeout(settleTimerRef.current);
+            settleTimerRef.current = null;
+        }
+    };
+
+    const scheduleCommitAfterIdle = () => {
+        clearSettleTimer();
+        settleTimerRef.current = setTimeout(() => {
+            isUserNavigatingRef.current = false;
+            if (onCameraCommit) {
+                onCameraCommit({
+                    x: camera.position.x,
+                    y: camera.position.y,
+                    z: camera.position.z,
+                });
+            }
+        }, settleDelayMs);
+    };
+
+    const handleStart = () => {
+        isUserNavigatingRef.current = true;
+        clearSettleTimer();
+    };
+
+    const handleChange = () => {
+        // Ignore programmatic camera changes (preset/viewpoint sync). We only
+        // want to commit when the user is actively interacting with controls.
+        if (!isUserNavigatingRef.current) {
+            return;
+        }
+        scheduleCommitAfterIdle();
+    };
+
+    const handleEnd = () => {
+        if (!enableDamping) {
+            isUserNavigatingRef.current = false;
+            if (onCameraCommit) {
+                onCameraCommit({
+                    x: camera.position.x,
+                    y: camera.position.y,
+                    z: camera.position.z,
+                });
+            }
+            return;
+        }
+        // Damping continues after pointer release; wait for "change" events to
+        // go quiet before committing.
+        isUserNavigatingRef.current = true;
+        scheduleCommitAfterIdle();
+    };
+
+    useEffect(() => {
+        return () => {
+            clearSettleTimer();
+        };
+    }, []);
+
+    return (
+        <OrbitControls
+            ref={controlsRef}
+            enableDamping={enableDamping}
+            dampingFactor={dampingFactor}
+            onStart={handleStart}
+            onChange={handleChange}
+            onEnd={handleEnd}
+        />
+    );
 }
 
 function SolidMeshRenderer({
     meshGeometry,
     color,
     dimmed,
+    forceSolidColor = false,
 }: {
     meshGeometry: MeshGeometry;
     color: string;
     dimmed: boolean;
+    forceSolidColor?: boolean;
 }) {
     // Shader for field quantity colors (vertex colors) - both sides equally visible
     const vertexColorMaterial = useMemo(() => {
@@ -229,7 +520,7 @@ function SolidMeshRenderer({
     }, [meshGeometry]);
 
     // Use vertex colors if available, otherwise use single color
-    const hasColors = !!meshGeometry.colors && meshGeometry.colors.length === meshGeometry.vertices.length;
+    const hasColors = !forceSolidColor && !!meshGeometry.colors && meshGeometry.colors.length === meshGeometry.vertices.length;
 
     return (
         <mesh geometry={geometry} frustumCulled={true}>
@@ -246,10 +537,12 @@ function MeshRenderer({
     meshGeometry,
     color,
     dimmed,
+    forceSolidColor = false,
 }: {
     meshGeometry: MeshGeometry;
     color: string;
     dimmed: boolean;
+    forceSolidColor?: boolean;
 }) {
     const vertexColorMaterial = useMemo(() => {
         return new ShaderMaterial({
@@ -288,7 +581,7 @@ function MeshRenderer({
         );
 
         const colors = meshGeometry.colors;
-        const hasColors = !!colors && colors.length === meshGeometry.vertices.length;
+        const hasColors = !forceSolidColor && !!colors && colors.length === meshGeometry.vertices.length;
 
         // Add vertex colors if available and length matches vertices
         if (hasColors) {
@@ -328,10 +621,10 @@ function MeshRenderer({
         geo.computeBoundingSphere();
 
         return geo;
-    }, [meshGeometry]);
+    }, [forceSolidColor, meshGeometry]);
 
     // Use vertex colors if available, otherwise use single color
-    const hasColors = !!meshGeometry.colors && meshGeometry.colors.length === meshGeometry.vertices.length;
+    const hasColors = !forceSolidColor && !!meshGeometry.colors && meshGeometry.colors.length === meshGeometry.vertices.length;
 
     return (
         <lineSegments geometry={geometry} frustumCulled={true}>
@@ -348,6 +641,66 @@ function MeshRenderer({
     );
 }
 
+// Iso-surface renderer — double-sided with optional transparency.
+function IsoSurfaceRenderer({ meshGeometry, color, opacity = 1.0 }: {
+    meshGeometry: MeshGeometry;
+    color: string;
+    opacity?: number;
+}) {
+    const geometry = useMemo(() => {
+        const geo = new BufferGeometry();
+        geo.setAttribute('position', new BufferAttribute(new Float32Array(meshGeometry.vertices), 3));
+        geo.setAttribute('normal', new BufferAttribute(new Float32Array(meshGeometry.normals), 3));
+        geo.setIndex(new BufferAttribute(new Uint32Array(meshGeometry.triangle_indices), 1));
+        geo.computeBoundingSphere();
+        return geo;
+    }, [meshGeometry]);
+
+    return (
+        <mesh geometry={geometry} frustumCulled={true}>
+            <meshStandardMaterial
+                color={color}
+                side={THREE.DoubleSide}
+                transparent={opacity < 1.0}
+                opacity={opacity}
+                depthWrite={opacity >= 1.0}
+            />
+        </mesh>
+    );
+}
+
+// Contour line renderer (thick line segments using LineSegments2)
+function ContourLineRenderer({ lineData, color }: { lineData: Float32Array; color: string }) {
+    const { size } = useThree();
+
+    const lineSegments = useMemo(() => {
+        const geometry = new LineSegmentsGeometry();
+        geometry.setPositions(lineData);
+
+        const material = new LineMaterial({
+            color: color,
+            linewidth: 2, // in pixels
+            resolution: new THREE.Vector2(size.width, size.height),
+            depthTest: true,
+            depthWrite: true,
+            transparent: false,
+            opacity: 1.0,
+        });
+
+        const segments = new LineSegments2(geometry, material);
+        segments.computeLineDistances();
+        return segments;
+    }, [lineData, color, size.height, size.width]);
+
+    useEffect(() => {
+        if (lineSegments.material instanceof LineMaterial) {
+            lineSegments.material.resolution.set(size.width, size.height);
+        }
+    }, [lineSegments, size.height, size.width]);
+
+    return <primitive object={lineSegments} frustumCulled={true} />;
+}
+
 export default function Viewer3D({
     grids,
     selectedGridIds,
@@ -360,15 +713,82 @@ export default function Viewer3D({
     showWireframe = true,
     shadingMode = 'none',
     sliceEnabled = false,
-    gridSlices = {},
+    subsets = [],
     arbitrarySlices = [],
-    onSlicesChange,
+    plotFamily = 'contour',
+    contourAttribute = 'line' as 'line' | 'surface' | 'grid' | 'color_contours' | 'dots',
+    contourSpec,
+    isoSurfaceOpacity = 1.0,
+    cameraAxisView = 'custom',
+    cameraViewpoint,
+    cameraPlotUp,
+    onCameraCommit,
     onLoadingChange
 }: Viewer3DProps) {
+    type IsoSurfaceGeometry = {
+        mesh: MeshGeometry;
+        level: number;
+        color: string;
+    };
+
+    type ContourLineGeometry = {
+        lineData: Float32Array;
+        color: string;
+    };
+
+    const isContourPlotFamily = plotFamily === 'contour';
+    const contourSpecMode =
+        contourSpec && typeof contourSpec === 'object' && 'mode' in contourSpec
+            ? String((contourSpec as { mode?: unknown }).mode ?? 'none')
+            : 'none';
+
+    const renderNotice = useMemo(() => {
+        if (!isContourPlotFamily && contourSpecMode !== 'none') {
+            return 'Contour levels/attributes are ignored in Function Surface mode (MVP behavior).';
+        }
+        if (isContourPlotFamily && (contourAttribute === 'grid' || contourAttribute === 'dots')) {
+            return `${contourAttribute.toUpperCase()} contour attribute is not fully implemented yet; rendering line contours as a first-pass fallback.`;
+        }
+        return null;
+    }, [contourAttribute, contourSpecMode, isContourPlotFamily]);
+
     const [meshById, setMeshById] = useState<Record<string, MeshGeometry>>({});
     const [loadingById, setLoadingById] = useState<Record<string, number>>({});
     const [error, setError] = useState<string | null>(null);
-    const autoCreatedSlicesRef = useRef(false);
+
+    // Contour state
+    const [isoSurfaceGeometries, setIsoSurfaceGeometries] = useState<Record<string, IsoSurfaceGeometry>>({});
+    const [contourLineGeometries, setContourLineGeometries] = useState<Record<string, ContourLineGeometry>>({});
+
+    const mergedContourLinesByColor = useMemo(() => {
+        const buckets = new Map<string, Float32Array[]>();
+
+        Object.values(contourLineGeometries).forEach((contour) => {
+            if (!buckets.has(contour.color)) {
+                buckets.set(contour.color, []);
+            }
+            buckets.get(contour.color)!.push(contour.lineData);
+        });
+
+        const mergeArrays = (arrays: Float32Array[]): Float32Array => {
+            if (arrays.length === 1) {
+                return arrays[0];
+            }
+            const totalLength = arrays.reduce((sum, arr) => sum + arr.length, 0);
+            const merged = new Float32Array(totalLength);
+            let offset = 0;
+            arrays.forEach((arr) => {
+                merged.set(arr, offset);
+                offset += arr.length;
+            });
+            return merged;
+        };
+
+        return Array.from(buckets.entries()).map(([color, chunks]) => ({
+            color,
+            lineData: mergeArrays(chunks),
+        }));
+    }, [contourLineGeometries]);
 
     type MeshResult = { id: string; mesh: MeshGeometry } | { id: string; error: string };
 
@@ -382,7 +802,6 @@ export default function Viewer3D({
 
     // Clear meshes when grids change
     useEffect(() => {
-        autoCreatedSlicesRef.current = false;
         if (grids.length === 0) {
             setMeshById({});
             setLoadingById({});
@@ -393,6 +812,8 @@ export default function Viewer3D({
     const lastColorKeyRef = useRef<string>('');
     const lastSliceKeyRef = useRef<string>('');
     const requestIdRef = useRef(0);
+    const isUserNavigatingRef = useRef(false);
+    const controlsRef = useRef<any>(null);
 
     // Memoize a key based on applied slices (updates only on Apply)
     const appliedSlicesKey = useMemo(
@@ -402,6 +823,104 @@ export default function Viewer3D({
             .join('|'),
         [arbitrarySlices]
     );
+
+    const subsetsContentKey = useMemo(
+        () => (subsets || [])
+            .map((s) => {
+                const i = s.i_range ? `${s.i_range.start}:${s.i_range.end ?? ''}` : '-';
+                const j = s.j_range ? `${s.j_range.start}:${s.j_range.end ?? ''}` : '-';
+                const k = s.k_range ? `${s.k_range.start}:${s.k_range.end ?? ''}` : '-';
+                return `${s.grid}|${i}|${j}|${k}`;
+            })
+            .sort()
+            .join(';'),
+        [subsets]
+    );
+
+    const contourSpecKey = useMemo(() => JSON.stringify(contourSpec), [contourSpec]);
+
+    const contourArbitrarySlicesKey = useMemo(
+        () => (arbitrarySlices || [])
+            .filter((s) => s.enabled && s.applied)
+            .map((s) => `${s.id}|${s.planePoint.join(',')}|${s.planeNormal.join(',')}|${s.applyVersion}`)
+            .sort()
+            .join(';'),
+        [arbitrarySlices]
+    );
+
+    const subsetsByGridId = useMemo(() => {
+        const byGrid: Record<string, BackendGridSubset[]> = {};
+        for (const subset of subsets) {
+            const grid = grids.find((g) => g.gridIndex + 1 === subset.grid);
+            if (!grid) {
+                continue;
+            }
+            if (!byGrid[grid.id]) {
+                byGrid[grid.id] = [];
+            }
+            byGrid[grid.id].push(subset);
+        }
+        return byGrid;
+    }, [grids, subsetsContentKey]);
+
+    const subsetSlicesByGridId = useMemo(() => {
+        const byGrid: Record<string, GridSlice[]> = {};
+        const resolveRange = (range: BackendIndexRange | null | undefined, dim: number) => {
+            if (!range) {
+                return { start: 1, end: dim };
+            }
+            const resolve = (n: number) => (n < 0 ? dim + n + 1 : n);
+            const start = Math.max(1, Math.min(dim, resolve(range.start)));
+            const endRaw = range.end != null ? resolve(range.end) : dim;
+            const end = Math.max(1, Math.min(dim, endRaw));
+            return start <= end ? { start, end } : { start: end, end: start };
+        };
+
+        for (const grid of grids) {
+            const gridSubsets = subsetsByGridId[grid.id] || [];
+            const slices: GridSlice[] = [];
+
+            for (let idx = 0; idx < gridSubsets.length; idx += 1) {
+                const subset = gridSubsets[idx];
+                const i = resolveRange(subset.i_range, grid.dimensions.i);
+                const j = resolveRange(subset.j_range, grid.dimensions.j);
+                const k = resolveRange(subset.k_range, grid.dimensions.k);
+                const axes = [
+                    { plane: 'I' as const, range: i, dim: Math.max(1, grid.dimensions.i) },
+                    { plane: 'J' as const, range: j, dim: Math.max(1, grid.dimensions.j) },
+                    { plane: 'K' as const, range: k, dim: Math.max(1, grid.dimensions.k) },
+                ];
+
+                const classified = axes.map((axis) => {
+                    const isPoint = axis.range.start === axis.range.end;
+                    const isFull = axis.range.start === 1 && axis.range.end === axis.dim;
+                    return { ...axis, isPoint, isFull };
+                });
+
+                const points = classified.filter((axis) => axis.isPoint);
+                const othersAreFull = classified
+                    .filter((axis) => !axis.isPoint)
+                    .every((axis) => axis.isFull);
+
+                // Represent GUI-style slicing: one point axis, others full-range.
+                if (points.length !== 1 || !othersAreFull) {
+                    continue;
+                }
+                const active = points[0];
+                slices.push({
+                    id: `subset-slice-${grid.id}-${idx}`,
+                    plane: active.plane,
+                    index: active.range.start - 1,
+                });
+            }
+
+            if (slices.length > 0) {
+                byGrid[grid.id] = slices;
+            }
+        }
+
+        return byGrid;
+    }, [grids, subsetsByGridId]);
 
     // Generate or regenerate meshes as needed
     // When field/scheme changes, regenerate grids with solutions
@@ -416,7 +935,7 @@ export default function Viewer3D({
 
         const currentColorKey = `${scalarField}|${colorScheme}`;
         // Only include APPLIED slices in the slice key to avoid reprocessing while editing
-        const sliceKey = `${sliceEnabled}|${ignoreIblank}|${showFringePoints}|${iblankFilterMode}|${JSON.stringify(gridSlices)}|${appliedSlicesKey}`;
+        const sliceKey = `${sliceEnabled}|${ignoreIblank}|${showFringePoints}|${iblankFilterMode}|${subsetsContentKey}|${appliedSlicesKey}`;
         const shouldRecolor = lastColorKeyRef.current !== currentColorKey;
         const shouldReslice = lastSliceKeyRef.current !== sliceKey;
 
@@ -427,66 +946,30 @@ export default function Viewer3D({
             message: `[Viewer3D] Slice key check: shouldReslice=${shouldReslice}`
         });
 
-        const hasSlices = Object.keys(gridSlices).length > 0;
-
-        // Auto-create default K=1 slices only once when a new grid set is first loaded
-        if (!hasSlices && !autoCreatedSlicesRef.current) {
-            void invoke('frontend_log', { message: '[Viewer3D] Creating default K=1 slices on initial grid load' });
-            const newSlices: Record<string, GridSlice[]> = {};
-            grids.forEach(grid => {
-                newSlices[grid.id] = [{
-                    id: `${grid.id}_default`,
-                    plane: 'K',
-                    index: 0
-                }];
-            });
-            autoCreatedSlicesRef.current = true;
-            onSlicesChange?.(newSlices);
-            return; // Return to let the effect re-run with the new slices
-        }
-
-        // No slices means nothing is rendered, even if slicing is disabled
-        if (!hasSlices) {
-            requestIdRef.current += 1; // Cancel any in-flight mesh work
-            setLoadingById({});
-            setMeshById((prev) => (Object.keys(prev).length > 0 ? {} : prev));
-            lastSliceKeyRef.current = sliceKey;
-            return;
-        }
-
-        // Clear meshes when slicing is disabled - no rendering when slices are off
-        if (!sliceEnabled) {
-            requestIdRef.current += 1; // Cancel any in-flight mesh work
-            setLoadingById({});
-            setMeshById((prev) => (Object.keys(prev).length > 0 ? {} : prev));
-            lastSliceKeyRef.current = sliceKey;
-            return;
-        }
-
-        const gridsWithSlices = grids.filter((grid) => (gridSlices[grid.id]?.length ?? 0) > 0);
+        const gridsWithSubsets = grids.filter((grid) => (subsetsByGridId[grid.id]?.length ?? 0) > 0);
         const hasAppliedArbitrarySlices = (arbitrarySlices || []).some(s => s.applied);
 
         if (sliceEnabled) {
-            // Only return early if there are NO slices at all (neither I/J/K nor arbitrary)
-            if (gridsWithSlices.length === 0 && !hasAppliedArbitrarySlices) {
-                if (Object.keys(meshById).length > 0) {
-                    setMeshById({});
-                }
-                lastSliceKeyRef.current = sliceKey;
-                return;
+            // If there are no backend subsets, fall back to full-grid rendering.
+            if (gridsWithSubsets.length === 0 && !hasAppliedArbitrarySlices) {
+                void invoke('frontend_log', {
+                    message: '[Viewer3D] No backend subsets available; using full-grid fallback rendering'
+                });
             }
 
-            // Clean up I/J/K meshes for grids without slices
-            const gridsWithoutSlices = grids.filter((grid) => (gridSlices[grid.id]?.length ?? 0) === 0);
-            const hasStaleMeshes = gridsWithoutSlices.some((grid) => meshById[grid.id]);
-            if (hasStaleMeshes) {
-                setMeshById((prev) => {
-                    const next = { ...prev };
-                    gridsWithoutSlices.forEach((grid) => {
-                        delete next[grid.id];
+            // Clean up subset meshes for grids without active subsets.
+            if (gridsWithSubsets.length > 0) {
+                const gridsWithoutSubsets = grids.filter((grid) => (subsetsByGridId[grid.id]?.length ?? 0) === 0);
+                const hasStaleMeshes = gridsWithoutSubsets.some((grid) => meshById[grid.id]);
+                if (hasStaleMeshes) {
+                    setMeshById((prev) => {
+                        const next = { ...prev };
+                        gridsWithoutSubsets.forEach((grid) => {
+                            delete next[grid.id];
+                        });
+                        return next;
                     });
-                    return next;
-                });
+                }
             }
 
             // Clean up arbitrary meshes only when slices are removed or no longer applied
@@ -515,9 +998,9 @@ export default function Viewer3D({
             }
         }
 
-        // targetGrids: grids that need I/J/K slice processing
-        // For arbitrary slices, we always process ALL grids regardless of I/J/K slices
-        const targetGrids = sliceEnabled ? gridsWithSlices : grids;
+        // targetGrids: grids that need subset processing
+        // For arbitrary slices, we always process ALL grids regardless of subsets
+        const targetGrids = sliceEnabled && gridsWithSubsets.length > 0 ? gridsWithSubsets : grids;
 
         // Determine which grids need to be regenerated
         // 1. On color/field change: regenerate all grids to avoid stale colors
@@ -730,26 +1213,43 @@ export default function Viewer3D({
                     const gridStart = performance.now();
                     let mesh: MeshGeometry;
 
-                    // Apply all I/J/K slices for this grid if enabled
-                    if (sliceEnabled && gridSlices[gridItem.id] && gridSlices[gridItem.id].length > 0) {
+                    // Apply all backend subsets for this grid when slicing is enabled.
+                    const gridSubsets = subsetsByGridId[gridItem.id] || [];
+                    if (sliceEnabled && gridSubsets.length > 0) {
                         try {
-                            // Generate meshes for each slice with solution colors if available
-                            const sliceMeshes = await Promise.all(
-                                gridSlices[gridItem.id].map(async (slice) => {
-                                    let sliceMesh: MeshGeometry;
+                            // Generate meshes for each subset and merge them for display.
+                            const subsetMeshes = await Promise.all(
+                                gridSubsets.map(async (subset, subsetIndex) => {
+                                    const norm = (range?: BackendIndexRange | null, dim?: number) => {
+                                        if (!range || !dim || dim <= 0) {
+                                            return { start: undefined as number | undefined, end: undefined as number | undefined };
+                                        }
+                                        const resolve = (n: number) => (n < 0 ? dim + n + 1 : n);
+                                        const s = Math.max(1, Math.min(dim, resolve(range.start)));
+                                        const eRaw = range.end != null ? resolve(range.end) : dim;
+                                        const e = Math.max(1, Math.min(dim, eRaw));
+                                        return s <= e ? { start: s, end: e } : { start: e, end: s };
+                                    };
 
-                                    // Try to apply solution colors to sliced geometry
+                                    const i = norm(subset.i_range, gridItem.dimensions.i);
+                                    const j = norm(subset.j_range, gridItem.dimensions.j);
+                                    const k = norm(subset.k_range, gridItem.dimensions.k);
+
+                                    let subsetMesh: MeshGeometry;
+
                                     if (gridItem.hasSolution && scalarField !== 'none' && gridItem.solutionCacheId) {
                                         try {
-                                            logger.debug(`Attempting solution coloring for slice ${slice.plane}${slice.index}...`, 'Viewer3D');
-
                                             await fieldRangesPromise;
                                             const range = displayedGlobalRange ?? fieldRangeMap.get(gridItem.solutionCacheId);
-                                            sliceMesh = await invoke<MeshGeometry>('compute_solution_colors_sliced', {
+                                            subsetMesh = await invoke<MeshGeometry>('compute_solution_colors_subset_by_id', {
                                                 gridId: gridItem.gridCacheId!,
                                                 solutionId: gridItem.solutionCacheId,
-                                                slicePlane: slice.plane,
-                                                sliceIndex: slice.index,
+                                                iStart: i.start,
+                                                iEnd: i.end,
+                                                jStart: j.start,
+                                                jEnd: j.end,
+                                                kStart: k.start,
+                                                kEnd: k.end,
                                                 field: scalarField,
                                                 colorScheme: colorScheme,
                                                 respectIblank: !ignoreIblank,
@@ -758,50 +1258,47 @@ export default function Viewer3D({
                                                 globalMin: range?.min,
                                                 globalMax: range?.max,
                                             });
-
-                                            const hasColors = sliceMesh.colors && sliceMesh.colors.length > 0;
-                                            void invoke('frontend_log', {
-                                                message: `[Viewer3D] Slice ${slice.plane}${slice.index}: Colors ${hasColors ? 'YES' : 'NO'} (${sliceMesh.colors?.length || 0} values for ${sliceMesh.vertices.length} bytes vertices)`
-                                            });
                                         } catch (colorErr) {
-                                            // Fall back to non-colored geometry if solution coloring fails
-                                            void invoke('frontend_log', {
-                                                message: `[Viewer3D] Solution coloring FAILED on slice ${slice.plane}${slice.index}: ${colorErr}`
-                                            });
-                                            logger.error(`Solution coloring on slice (${slice.plane}${slice.index}) failed: ${colorErr}`, 'Viewer3D');
-
-                                            const slicedGrid = await invoke<SerializableGrid>('slice_grid_by_id', {
+                                            logger.error(`Solution coloring on subset failed: ${colorErr}`, 'Viewer3D');
+                                            const subsetGrid = await invoke<SerializableGrid>('subset_grid_by_id', {
                                                 gridId: gridItem.gridCacheId!,
-                                                plane: slice.plane,
-                                                index: slice.index,
+                                                iStart: i.start,
+                                                iEnd: i.end,
+                                                jStart: j.start,
+                                                jEnd: j.end,
+                                                kStart: k.start,
+                                                kEnd: k.end,
                                             });
-                                            sliceMesh = await invoke<MeshGeometry>('convert_grid_to_mesh', {
-                                                grid: slicedGrid,
+                                            subsetMesh = await invoke<MeshGeometry>('convert_grid_to_mesh', {
+                                                grid: subsetGrid,
                                                 respectIblank: !ignoreIblank,
                                                 showFringePoints: showFringePoints,
-                                                iblankFilterMode: iblankFilterMode
+                                                iblankFilterMode: iblankFilterMode,
                                             });
                                         }
                                     } else {
-                                        // No solution data - use base geometry
-                                        const slicedGrid = await invoke<SerializableGrid>('slice_grid_by_id', {
+                                        const subsetGrid = await invoke<SerializableGrid>('subset_grid_by_id', {
                                             gridId: gridItem.gridCacheId!,
-                                            plane: slice.plane,
-                                            index: slice.index,
+                                            iStart: i.start,
+                                            iEnd: i.end,
+                                            jStart: j.start,
+                                            jEnd: j.end,
+                                            kStart: k.start,
+                                            kEnd: k.end,
                                         });
-                                        sliceMesh = await invoke<MeshGeometry>('convert_grid_to_mesh', {
-                                            grid: slicedGrid,
+                                        subsetMesh = await invoke<MeshGeometry>('convert_grid_to_mesh', {
+                                            grid: subsetGrid,
                                             respectIblank: !ignoreIblank,
                                             showFringePoints: showFringePoints,
-                                            iblankFilterMode: iblankFilterMode
+                                            iblankFilterMode: iblankFilterMode,
                                         });
                                     }
-                                    return { sliceId: slice.id, mesh: sliceMesh };
+                                    return { subsetId: `${subset.grid}:${subsetIndex}`, mesh: subsetMesh };
                                 })
                             );
 
-                            // Merge all slice meshes into one
-                            if (sliceMeshes.length > 0) {
+                            // Merge all subset meshes into one
+                            if (subsetMeshes.length > 0) {
                                 const mergedMesh: MeshGeometry = {
                                     vertices: [],
                                     indices: [],
@@ -813,13 +1310,13 @@ export default function Viewer3D({
                                 };
 
                                 // Check if all slices have colors before processing them
-                                const allHaveColors = sliceMeshes.every(({ mesh }) => mesh.colors && mesh.colors.length > 0);
+                                const allHaveColors = subsetMeshes.every(({ mesh }) => mesh.colors && mesh.colors.length > 0);
                                 void invoke('frontend_log', {
-                                    message: `[Viewer3D] Merging ${sliceMeshes.length} slices, allHaveColors=${allHaveColors}`
+                                    message: `[Viewer3D] Merging ${subsetMeshes.length} subsets, allHaveColors=${allHaveColors}`
                                 });
-                                sliceMeshes.forEach((sm, idx) => {
+                                subsetMeshes.forEach((sm, idx) => {
                                     void invoke('frontend_log', {
-                                        message: `[Viewer3D]  Slice ${idx}: verts=${sm.mesh.vertices.length / 3 | 0}, colors=${sm.mesh.colors?.length || 0}`
+                                        message: `[Viewer3D]  Subset ${idx}: verts=${sm.mesh.vertices.length / 3 | 0}, colors=${sm.mesh.colors?.length || 0}`
                                     });
                                 });
 
@@ -827,7 +1324,7 @@ export default function Viewer3D({
                                     mergedMesh.colors = [];
                                 }
 
-                                for (const { mesh: sliceMesh } of sliceMeshes) {
+                                for (const { mesh: sliceMesh } of subsetMeshes) {
                                     const vertexOffset = mergedMesh.vertices.length / 3;
 
                                     // Append vertices and normals
@@ -876,12 +1373,12 @@ export default function Viewer3D({
 
                                 mesh = mergedMesh;
                             } else {
-                                throw new Error('No slice meshes generated');
+                                throw new Error('No subset meshes generated');
                             }
-                        } catch (sliceErr) {
-                            const sliceMsg = String(sliceErr);
-                            logger.error(`Slicing failed: ${sliceMsg}`, 'Viewer3D');
-                            throw sliceErr;
+                        } catch (subsetErr) {
+                            const subsetMsg = String(subsetErr);
+                            logger.error(`Subset rendering failed: ${subsetMsg}`, 'Viewer3D');
+                            throw subsetErr;
                         }
                     } else {
                         // No slicing - use the original grid (fallback path, shouldn't normally be reached)
@@ -988,12 +1485,228 @@ export default function Viewer3D({
                 message: `[Viewer3D] effect cancelled ms=${Math.round(performance.now() - effectStart)}`
             });
         };
-    }, [grids, ignoreIblank, showFringePoints, iblankFilterMode, scalarField, colorScheme, sliceEnabled, gridSlices, appliedSlicesKey]);
-
+    }, [grids, ignoreIblank, showFringePoints, iblankFilterMode, scalarField, colorScheme, sliceEnabled, subsetsContentKey, subsetsByGridId, appliedSlicesKey]);
     const visibleGrids = useMemo(
         () => getVisibleGridItems(grids, selectedGridIds, isolateSelected),
         [grids, isolateSelected, selectedGridIds]
     );
+
+
+    // Contour extraction effect
+    useEffect(() => {
+        let isCancelled = false;
+        if (!isContourPlotFamily || scalarField === 'none') {
+            // Clear contours when disabled or no field selected
+            setIsoSurfaceGeometries({});
+            setContourLineGeometries({});
+            return;
+        }
+
+        const wantsIsoSurfaces = contourAttribute === 'surface' || contourAttribute === 'color_contours';
+        const wantsContourLines = contourAttribute === 'line' || contourAttribute === 'grid' || contourAttribute === 'dots';
+
+        const gridsWithSolution = grids.filter(g => g.hasSolution && g.solutionCacheId && g.gridCacheId);
+        if (gridsWithSolution.length === 0) {
+            return;
+        }
+
+        const resolveContourLevels = async (): Promise<number[]> => {
+            const refSolution = gridsWithSolution.find(g => g.solutionCacheId != null);
+            if (!refSolution) {
+                return [];
+            }
+            try {
+                const result = await invoke<{ levels: number[]; diagnostics: unknown[] }>(
+                    'resolve_contour_levels',
+                    { solutionId: refSolution.solutionCacheId!, scalarField }
+                );
+                return result.levels;
+            } catch (err) {
+                logger.warn(`resolve_contour_levels failed: ${err}`, 'Viewer3D');
+                return [];
+            }
+        };
+
+        void (async () => {
+            const absoluteLevels = await resolveContourLevels();
+            if (isCancelled) {
+                return;
+            }
+
+            if (absoluteLevels.length === 0) {
+                setIsoSurfaceGeometries({});
+                setContourLineGeometries({});
+                return;
+            }
+
+            const uniqueLevels = Array.from(new Set(absoluteLevels)).sort((a, b) => a - b);
+
+            logger.info(
+                `Extracting contours at ${uniqueLevels.length} level(s) for field ${scalarField}`,
+                'Viewer3D'
+            );
+
+            // Extract iso-surfaces for each grid and each resolved level.
+            const isoSurfacePromises = wantsIsoSurfaces
+                ? gridsWithSolution.flatMap((gridItem) =>
+                    uniqueLevels.map(async (level, levelIndex) => {
+                        try {
+                            const mesh = await invoke<MeshGeometry>('extract_iso_surface_by_id', {
+                                gridId: gridItem.gridCacheId!,
+                                solutionId: gridItem.solutionCacheId!,
+                                scalarField: scalarField,
+                                levelAbsolute: level,
+                                respectIblank: !ignoreIblank,
+                                showFringePoints: showFringePoints,
+                                iblankFilterMode: iblankFilterMode,
+                            });
+                            return { id: `${gridItem.id}::lvl${levelIndex}`, mesh, level };
+                        } catch (err) {
+                            logger.warn(`Failed to extract iso-surface for grid ${gridItem.id}: ${err}`, 'Viewer3D');
+                            return null;
+                        }
+                    })
+                )
+                : [];
+
+            // Extract contour lines for slices (only visible grids).
+            const visibleGridIds = new Set(visibleGrids.map(g => g.id));
+            const sliceContourPromises = wantsContourLines
+                ? gridsWithSolution
+                    .filter(gridItem => visibleGridIds.has(gridItem.id))
+                    .flatMap((gridItem) => {
+                        const slices = subsetSlicesByGridId[gridItem.id] || [];
+                        return slices.flatMap((slice) =>
+                            uniqueLevels.map(async (level, levelIndex) => {
+                                try {
+                                    const lineData = await invoke<number[]>('extract_slice_contours_by_id', {
+                                        gridId: gridItem.gridCacheId!,
+                                        solutionId: gridItem.solutionCacheId!,
+                                        plane: slice.plane,
+                                        index: slice.index,
+                                        scalarField: scalarField,
+                                        levelAbsolute: level,
+                                        respectIblank: !ignoreIblank,
+                                        showFringePoints: showFringePoints,
+                                        iblankFilterMode: iblankFilterMode,
+                                    });
+                                    return {
+                                        id: `slice::${gridItem.id}::${slice.id}::lvl${levelIndex}`,
+                                        level,
+                                        lineData: new Float32Array(lineData)
+                                    };
+                                } catch (err) {
+                                    logger.warn(`Failed to extract slice contours for ${gridItem.id}/${slice.id}: ${err}`, 'Viewer3D');
+                                    return null;
+                                }
+                            })
+                        );
+                    })
+                : [];
+
+            // Extract contour lines for arbitrary planes (only visible grids).
+            const arbitraryContourPromises = wantsContourLines
+                ? (arbitrarySlices || [])
+                    .filter(s => s.enabled && s.applied)
+                    .flatMap((slice) => {
+                        return gridsWithSolution
+                            .flatMap((gridItem) =>
+                                [
+                                    (async () => {
+                                        try {
+                                            const lineSets = await invoke<number[][]>('extract_arbitrary_plane_contours_multi_by_id', {
+                                                gridId: gridItem.gridCacheId!,
+                                                solutionId: gridItem.solutionCacheId!,
+                                                planePoint: slice.planePoint,
+                                                planeNormal: slice.planeNormal,
+                                                scalarField: scalarField,
+                                                levelsAbsolute: uniqueLevels,
+                                                respectIblank: !ignoreIblank,
+                                                showFringePoints: showFringePoints,
+                                                iblankFilterMode: iblankFilterMode,
+                                            });
+
+                                            return uniqueLevels.map((level, levelIndex) => ({
+                                                id: `arbitrary::${slice.id}::${gridItem.id}::lvl${levelIndex}`,
+                                                level,
+                                                lineData: new Float32Array(lineSets[levelIndex] ?? []),
+                                            }));
+                                        } catch {
+                                            // Plane may not intersect this grid - expected.
+                                            return [] as Array<{ id: string; level: number; lineData: Float32Array }>;
+                                        }
+                                    })(),
+                                ]
+                            );
+                    })
+                : [];
+
+            Promise.all([
+                Promise.all(isoSurfacePromises),
+                Promise.all(sliceContourPromises),
+                Promise.all(arbitraryContourPromises),
+            ]).then(([isoResults, sliceResults, arbitraryResults]) => {
+                if (isCancelled) {
+                    return;
+                }
+                // Update iso-surfaces.
+                const minLevel = uniqueLevels[0];
+                const maxLevel = uniqueLevels[uniqueLevels.length - 1];
+                const newIsoSurfaces: Record<string, IsoSurfaceGeometry> = {};
+                isoResults.forEach(result => {
+                    if (result && result.mesh.vertex_count > 0) {
+                        let color = '#3b82f6';
+                        if (contourAttribute === 'color_contours') {
+                            const normalized = normalizeValue(result.level, minLevel, maxLevel);
+                            const rgb = mapValueToColor(normalized, colorScheme);
+                            color = rgbToHex(rgb);
+                        }
+                        newIsoSurfaces[result.id] = { mesh: result.mesh, level: result.level, color };
+                    }
+                });
+                setIsoSurfaceGeometries(newIsoSurfaces);
+
+                // Update contour lines.
+                const newContourLines: Record<string, ContourLineGeometry> = {};
+                const flattenedArbitraryResults = arbitraryResults.flat();
+                [...sliceResults, ...flattenedArbitraryResults].forEach(result => {
+                    if (result && result.lineData.length > 0) {
+                        const normalized = normalizeValue(result.level, minLevel, maxLevel);
+                        const rgb = mapValueToColor(normalized, colorScheme);
+                        newContourLines[result.id] = {
+                            lineData: result.lineData,
+                            color: rgbToHex(rgb),
+                        };
+                    }
+                });
+                setContourLineGeometries(newContourLines);
+
+                logger.info(
+                    `Contours extracted: ${Object.keys(newIsoSurfaces).length} iso-surfaces, ${Object.keys(newContourLines).length} contour lines`,
+                    'Viewer3D'
+                );
+            }).catch(err => {
+                logger.error(`Failed to extract contours: ${err}`, 'Viewer3D');
+            });
+        })();
+
+        return () => {
+            isCancelled = true;
+        };
+    }, [
+        isContourPlotFamily,
+        contourAttribute,
+        contourSpecKey,
+        scalarField,
+        grids,
+        subsetSlicesByGridId,
+        contourArbitrarySlicesKey,
+        ignoreIblank,
+        showFringePoints,
+        iblankFilterMode,
+        visibleGrids,
+        colorScheme,
+    ]);
 
     const enabledArbitraryIds = useMemo(
         () => new Set((arbitrarySlices || []).filter(s => s.applied && s.enabled).map(s => s.id)),
@@ -1018,9 +1731,16 @@ export default function Viewer3D({
 
     return (
         <div style={{ width: '100%', height: '100%', position: 'relative' }}>
-            <Canvas camera={{ position: [5, 5, 5], fov: 50 }}>
+            <Canvas camera={{ position: [5, 5, 5], fov: 50 }} gl={{ preserveDrawingBuffer: true }}>
                 <ambientLight intensity={0.5} />
                 <directionalLight position={[10, 10, 5]} intensity={1} />
+                <CameraViewpointSync
+                    cameraAxisView={cameraAxisView}
+                    cameraViewpoint={cameraViewpoint}
+                    cameraPlotUp={cameraPlotUp}
+                    isUserNavigatingRef={isUserNavigatingRef}
+                    controlsRef={controlsRef}
+                />
 
                 {/* Render mesh based on selected mode */}
                 {visibleGrids.map((gridItem) => {
@@ -1029,6 +1749,8 @@ export default function Viewer3D({
                         return null;
                     }
                     const dimmed = selectedGridIds.length > 0 && !selectedGridIds.includes(gridItem.id) && !isolateSelected;
+                    // Contour family uses neutral context geometry; function-surface keeps field coloring.
+                    const displayColor = isContourPlotFamily ? '#808080' : gridItem.color;
 
                     return (
                         <group key={gridItem.id}>
@@ -1036,16 +1758,18 @@ export default function Viewer3D({
                             {shadingMode === 'smooth' && (
                                 <SolidMeshRenderer
                                     meshGeometry={mesh}
-                                    color={gridItem.color}
+                                    color={displayColor}
                                     dimmed={dimmed}
+                                    forceSolidColor={isContourPlotFamily}
                                 />
                             )}
                             {/* Render wireframe */}
                             {showWireframe && (
                                 <MeshRenderer
                                     meshGeometry={mesh}
-                                    color={gridItem.color}
+                                    color={displayColor}
                                     dimmed={dimmed}
+                                    forceSolidColor={isContourPlotFamily}
                                 />
                             )}
                         </group>
@@ -1061,8 +1785,8 @@ export default function Viewer3D({
                         return enabledArbitraryIds.has(sliceId);
                     })
                     .map(([id, mesh]) => {
-                        // Arbitrary slices use a fixed color (light blue)
-                        const sliceColor = '#60a5fa';
+                        // Contour family uses neutral context geometry; function-surface keeps contrasty slice color.
+                        const sliceColor = isContourPlotFamily ? '#808080' : '#60a5fa';
                         return (
                             <group key={id}>
                                 {shadingMode === 'smooth' && (
@@ -1070,6 +1794,7 @@ export default function Viewer3D({
                                         meshGeometry={mesh}
                                         color={sliceColor}
                                         dimmed={false}
+                                        forceSolidColor={isContourPlotFamily}
                                     />
                                 )}
                                 {showWireframe && (
@@ -1077,14 +1802,37 @@ export default function Viewer3D({
                                         meshGeometry={mesh}
                                         color={sliceColor}
                                         dimmed={false}
+                                        forceSolidColor={isContourPlotFamily}
                                     />
                                 )}
                             </group>
                         );
                     })}
 
+                {/* Render iso-surfaces (surface-based contour attributes) */}
+                {isContourPlotFamily && (contourAttribute === 'surface' || contourAttribute === 'color_contours') &&
+                    Object.entries(isoSurfaceGeometries).map(([id, iso]) => (
+                        <group key={`iso::${id}`}>
+                            <IsoSurfaceRenderer meshGeometry={iso.mesh} color={iso.color} opacity={isoSurfaceOpacity} />
+                        </group>
+                    ))
+                }
+
+                {/* Render contour lines (line attribute, or grid/dots as first-pass fallback) */}
+                {isContourPlotFamily && (contourAttribute === 'line' || contourAttribute === 'grid' || contourAttribute === 'dots') &&
+                    mergedContourLinesByColor.map((contour, idx) => (
+                        <group key={`contour-color::${contour.color}::${idx}`}>
+                            <ContourLineRenderer lineData={contour.lineData} color={contour.color} />
+                        </group>
+                    ))
+                }
+
                 {/* Camera controls */}
-                <OrbitControls enableDamping dampingFactor={0.05} />
+                <CameraCommitControls
+                    onCameraCommit={onCameraCommit}
+                    isUserNavigatingRef={isUserNavigatingRef}
+                    controlsRef={controlsRef}
+                />
             </Canvas>
 
             {/* UI Controls */}
@@ -1101,6 +1849,12 @@ export default function Viewer3D({
                 }}
             >
                 {isLoading && <div>Loading mesh...</div>}
+
+                {renderNotice && (
+                    <div style={{ marginTop: isLoading ? '8px' : '0', color: '#facc15', maxWidth: '240px' }}>
+                        {renderNotice}
+                    </div>
+                )}
 
                 {visibleGrids.length > 0 && (
                     <div style={{ marginTop: isLoading ? '10px' : '0', fontSize: '0.9em' }}>

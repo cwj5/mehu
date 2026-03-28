@@ -1,0 +1,5 @@
+READ synthetic_4x4x2.xyz synthetic_4x4x2.q
+FUNCTION 110
+VPOINT 3.0 0.0 0.0
+CONTOURS /SURFACE 6
+PLOT/SURFACE

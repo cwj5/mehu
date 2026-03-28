@@ -1,0 +1,5 @@
+READ synthetic_4x1x4.xyz synthetic_4x1x4.q
+FUNCTION 110
+VIEW SIDE
+CONTOURS /SURFACE 6
+PLOT/SURFACE

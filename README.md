@@ -21,6 +21,43 @@ A modern, cross-platform application for visualizing CFD (Computational Fluid Dy
 - **Multi-Grid Support**: Handle multiple computational grids
 - **Cross-Platform**: Runs on Linux, Windows, and macOS
 
+## PLOT3D .com Parity Scope
+
+Source of truth: [plot3d_com_file/parity_matrix.json](plot3d_com_file/parity_matrix.json) (lastUpdated: `2026-03-28`).
+
+Current capability status snapshot:
+
+| Capability | Status | Tracking Ticket | Notes |
+|---|---|---|---|
+| READ | not-supported | TKT-004 | Parser/executor implementation pending |
+| FUNCTION | not-supported | TKT-003 | Legacy function-number mapping not implemented |
+| VIEW | not-supported | TKT-009 | Legacy-to-Three.js translation layer pending |
+| VPOINT | not-supported | TKT-009 | Legacy-to-Three.js translation layer pending |
+| MINMAX | not-supported | TKT-002 | Shared PlotState model pending |
+| CONTOURS | not-supported | TKT-007 | Absolute multi-level contour model pending |
+| PLOT | not-supported | TKT-005 | RenderIntent commit pipeline pending |
+| WALLS | not-supported | TKT-008 | Range-based WALLS GUI and state model pending |
+| SUBSETS | not-supported | TKT-008 | Range-based SUBSETS GUI and state model pending |
+| FSURFACE | not-supported | TKT-008 | FSURFACE controls and execution semantics pending |
+| TEXT | not-supported | TKT-008 | Plot text state and GUI controls pending |
+| SHOW | not-supported | TKT-008 | SHOW status output and GUI display pending |
+
+Commands currently out of scope:
+
+- HELP
+- LIST
+- MAP
+- CLEAR
+- EXIT
+- QUIT
+- VECTORS
+- RAKES
+
+## Known Limitations and Deviations
+
+- Known legacy-to-modern rendering translation behavior and deviations are tracked in [plot3d_com_file/legacy_translation_layer.md](plot3d_com_file/legacy_translation_layer.md).
+- Headless export determinism and known divergence from in-app rendering are tracked in [plot3d_com_file/legacy_translation_layer.md](plot3d_com_file/legacy_translation_layer.md) and regression fixtures under [headless-export/fixtures/regression](headless-export/fixtures/regression).
+
 ## Tech Stack
 
 - **Frontend**: React + TypeScript + Three.js
@@ -61,9 +98,110 @@ npm run tauri dev
 npm run tauri build
 ```
 
+## Headless CLI Export (TKT-011 Phase 1)
+
+For backend and automation workflows, a standalone Rust CLI exporter is now available.
+
+Key properties:
+
+- No browser, WebGL, or desktop window is required.
+- Rendering uses pure Rust crates (`clap` and `image`) to avoid unusual system-library requirements.
+- Multi-`PLOT` scripts emit numbered outputs (`_001`, `_002`, ...).
+
+Run from repo root:
+
+```bash
+cargo run --manifest-path headless-export/Cargo.toml --bin overview-export -- \
+	--cmd path/to/script.com \
+	--out path/to/output.png
+```
+
+Notes:
+
+- If the script emits one `PLOT`, `--out` is used exactly.
+- If the script emits multiple `PLOT` intents, output files are suffixed automatically.
+- This is a bootstrap headless renderer for deterministic automation. Visual output is not yet fully equivalent to the in-app Three.js export path and is tracked under TKT-011.
+
+### Temporary Regression Reference
+
+There is now a temporary regression baseline for the headless CLI under [headless-export/fixtures/regression](headless-export/fixtures/regression).
+
+Included assets:
+
+- Synthetic grid fixture: [headless-export/fixtures/regression/synthetic_4x4.xyz](headless-export/fixtures/regression/synthetic_4x4.xyz)
+- Synthetic solution fixture: [headless-export/fixtures/regression/synthetic_4x4.q](headless-export/fixtures/regression/synthetic_4x4.q)
+- Contour command fixture: [headless-export/fixtures/regression/synthetic_4x4.com](headless-export/fixtures/regression/synthetic_4x4.com)
+- Function-surface command fixture: [headless-export/fixtures/regression/synthetic_4x4_surface.com](headless-export/fixtures/regression/synthetic_4x4_surface.com)
+- Contour reference PNG/hash:
+  [headless-export/fixtures/regression/reference/synthetic_4x4.png](headless-export/fixtures/regression/reference/synthetic_4x4.png),
+  [headless-export/fixtures/regression/reference/synthetic_4x4.sha256](headless-export/fixtures/regression/reference/synthetic_4x4.sha256)
+- Function-surface reference PNG/hash:
+  [headless-export/fixtures/regression/reference/synthetic_4x4_surface.png](headless-export/fixtures/regression/reference/synthetic_4x4_surface.png),
+  [headless-export/fixtures/regression/reference/synthetic_4x4_surface.sha256](headless-export/fixtures/regression/reference/synthetic_4x4_surface.sha256)
+
+Run the local regression check from repo root:
+
+```bash
+headless-export/fixtures/regression/check_regression.sh
+```
+
+Regenerate all synthetic regression `*.xyz`/`*.q` fixtures with one command:
+
+```bash
+gfortran headless-export/fixtures/regression/generate_additional_synthetic_formats.f90 -o /tmp/overview-generate-synthetic-formats && /tmp/overview-generate-synthetic-formats
+```
+
+What it does:
+
+- Re-runs the exporter on both synthetic fixtures (contour + function-surface).
+- Writes a fresh output under `headless-export/fixtures/regression/out/`.
+- Compares each generated PNG SHA-256 against its checked-in reference hash.
+
+This is a temporary baseline to catch unintended renderer drift while TKT-011 is still evolving. When a more representative reference set exists, this can be replaced with richer image-diff regression coverage.
+
+CI now enforces this baseline in a dedicated workflow at [.github/workflows/headless-regression.yml](.github/workflows/headless-regression.yml). On failure, generated outputs under [headless-export/fixtures/regression/out](headless-export/fixtures/regression/out) are uploaded as an artifact (`headless-regression-out`) for diagnosis.
+
 ## Testing
 
 This project maintains high code quality with comprehensive automated tests:
+
+## Architecture Decision Records
+
+Locked parity architecture decisions are documented in [docs/adr/README.md](docs/adr/README.md).
+
+Key records include shared `PlotState` authority, `PLOT` commit semantics, unsupported-command policy, contour model policy, translation determinism, and export divergence policy.
+
+### Parity Gate
+
+Parity changes are merge-gated by the workflow at [.github/workflows/parity-matrix.yml](.github/workflows/parity-matrix.yml). The stable required check names are:
+
+- `Parity Governance`
+- `Backend Parity Fixtures`
+- `Cross-Path Parity`
+- `Headless Regression`
+
+Local parity commands from the repo root:
+
+```bash
+# Run the full parity gate locally
+npm run test:parity
+
+# Or run the gate components individually
+npm run validate:parity-matrix
+npm run test:parity-backend
+npm run test:parity-cross-path
+headless-export/fixtures/regression/check_regression.sh
+```
+
+Update [plot3d_com_file/parity_matrix.json](plot3d_com_file/parity_matrix.json) whenever a change affects capability status, rationale, or freshness of parity coverage. The validator will fail if the matrix is stale relative to parity-affecting code changes.
+
+Update the parity matrix in the same PR when you change any of the following:
+
+- Supported state of a capability (`supported`, `script-only`, `gui-only`, `not-supported`)
+- Ticket reference, rationale, or notes for a capability
+- Parser/executor behavior for `READ`, `FUNCTION`, `VIEW`, `VPOINT`, `MINMAX`, `CONTOURS`, `PLOT`, `WALLS`, `SUBSETS`, `FSURFACE`, `TEXT`, or `SHOW`
+- Frontend GUI paths that change parity-relevant behavior for the capabilities above
+- Parity CI/check policy documentation that would make matrix metadata stale
 
 ### Running Tests
 
@@ -79,6 +217,25 @@ npm run test:watch
 
 # Run Rust library tests
 cd src-tauri && cargo test --lib
+
+# Run backend parity fixture equivalence test
+cd .. && npm run test:parity-backend
+
+# Run frontend cross-path parity tests
+npm run test:parity-cross-path
+
+# Run headless CLI crate tests
+cargo test --manifest-path headless-export/Cargo.toml --bin overview-export
+
+# Smoke-run headless CLI export fixture
+cargo run --manifest-path headless-export/Cargo.toml --bin overview-export -- \
+  --cmd headless-export/fixtures/smoke.com \
+  --out /tmp/overview-cli-smoke/smoke.png \
+  --width 320 \
+  --height 200
+
+# Run temporary headless CLI regression check
+headless-export/fixtures/regression/check_regression.sh
 
 # Generate Rust coverage report
 cd src-tauri && cargo tarpaulin --lib --timeout 300

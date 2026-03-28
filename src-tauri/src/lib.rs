@@ -12,24 +12,33 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+mod com_parser;
+mod function_mapping;
 mod logger;
 mod plot3d;
+mod plot_state;
+mod script_executor;
 mod solution;
 
 #[cfg(test)]
 mod logger_tests;
 
-use logger::{clear_logs, export_logs, get_logs, log_debug, log_error, log_info, LogEntry};
+use logger::{
+    clear_logs, export_logs, get_logs, log_debug, log_error, log_info, log_warn, LogEntry,
+};
 use once_cell::sync::Lazy;
 use plot3d::{
-    get_last_solution_metadata, read_plot3d_function, read_plot3d_grid_ascii,
-    read_plot3d_grid_with_metadata, read_plot3d_solution, read_plot3d_solution_ascii,
-    GridDimensions, MeshGeometry, Plot3DFunction, Plot3DGrid, Plot3DSolution, SolutionFileMetadata,
+    extract_contour_lines_from_triangles, get_last_solution_metadata, read_plot3d_function,
+    read_plot3d_grid_ascii, read_plot3d_grid_with_metadata, read_plot3d_solution,
+    read_plot3d_solution_ascii, GridDimensions, MeshGeometry, Plot3DFunction, Plot3DGrid,
+    Plot3DSolution, SolutionFileMetadata,
 };
+use plot_state::{apply_action, ApplyActionResult, PlotAction, PlotState};
+use script_executor::{execute_parsed_script, ScriptExecutionResult};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tauri::webview::WebviewWindow;
 use tauri::Emitter;
@@ -43,6 +52,10 @@ thread_local! {
 
 // Deprecated: Legacy solution cache - keeping for backward compatibility during migration
 static SOLUTION_CACHE: Lazy<Mutex<Vec<Arc<Plot3DSolution>>>> = Lazy::new(|| Mutex::new(Vec::new()));
+
+/// The canonical shared plot state.  Both script execution and GUI interactions
+/// must commit through `apply_plot_action` rather than maintaining separate state.
+static PLOT_STATE: Lazy<Mutex<PlotState>> = Lazy::new(|| Mutex::new(PlotState::default()));
 
 fn cache_solutions(solutions: &[Plot3DSolution]) {
     let cached: Vec<Arc<Plot3DSolution>> = solutions
@@ -467,6 +480,16 @@ static GRID_CACHE: Lazy<Mutex<HashMap<String, CachedGrid>>> =
 static SOLUTION_CACHE_V2: Lazy<Mutex<HashMap<String, CachedSolution>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
+#[derive(Clone)]
+struct CachedArbitraryPlaneField {
+    vertices: Arc<Vec<f32>>,
+    triangle_indices: Arc<Vec<u32>>,
+    scalar_values: Arc<Vec<f32>>,
+}
+
+static ARBITRARY_PLANE_FIELD_CACHE: Lazy<Mutex<HashMap<String, CachedArbitraryPlaneField>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
 /// Counter for generating unique grid IDs
 static GRID_ID_COUNTER: Lazy<Mutex<u64>> = Lazy::new(|| Mutex::new(0));
 
@@ -508,6 +531,86 @@ fn generate_solution_id(file_path: &str, grid_index: usize) -> String {
             .as_millis()
             % 100000
     )
+}
+
+fn quantize_plane_component(v: f32) -> i64 {
+    // 1e-6 quantization keeps cache keys stable against small float jitter.
+    (v as f64 * 1_000_000.0).round() as i64
+}
+
+fn arbitrary_plane_field_cache_key(
+    grid_id: &str,
+    solution_id: &str,
+    plane_point: [f32; 3],
+    plane_normal: [f32; 3],
+    scalar_field: &str,
+    respect_iblank: bool,
+    show_fringe_points: bool,
+    iblank_filter_mode: IblankFilterMode,
+) -> String {
+    let mode = match iblank_filter_mode {
+        IblankFilterMode::Vertex => "vertex",
+        IblankFilterMode::Cell => "cell",
+    };
+    format!(
+        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+        grid_id,
+        solution_id,
+        scalar_field,
+        quantize_plane_component(plane_point[0]),
+        quantize_plane_component(plane_point[1]),
+        quantize_plane_component(plane_point[2]),
+        quantize_plane_component(plane_normal[0]),
+        quantize_plane_component(plane_normal[1]),
+        quantize_plane_component(plane_normal[2]),
+        if respect_iblank { 1 } else { 0 },
+        if show_fringe_points { 1 } else { 0 },
+        mode,
+        "v1"
+    )
+}
+
+fn get_or_build_arbitrary_plane_field_sample(
+    grid: &Plot3DGrid,
+    solution: &Plot3DSolution,
+    scalar_field: plot_state::ScalarField,
+    plane_point: [f32; 3],
+    plane_normal: [f32; 3],
+    respect_iblank: bool,
+    show_fringe_points: bool,
+    iblank_filter_mode: IblankFilterMode,
+    cache_key: &str,
+) -> Result<CachedArbitraryPlaneField, String> {
+    if let Ok(cache) = ARBITRARY_PLANE_FIELD_CACHE.lock() {
+        if let Some(found) = cache.get(cache_key) {
+            return Ok(found.clone());
+        }
+    }
+
+    let (vertices, triangle_indices, scalar_values) = grid.interpolate_arbitrary_plane_field_data(
+        solution,
+        plane_point,
+        plane_normal,
+        scalar_field,
+        respect_iblank,
+        show_fringe_points,
+        iblank_filter_mode,
+    )?;
+
+    let sample = CachedArbitraryPlaneField {
+        vertices: Arc::new(vertices),
+        triangle_indices: Arc::new(triangle_indices),
+        scalar_values: Arc::new(scalar_values),
+    };
+
+    if let Ok(mut cache) = ARBITRARY_PLANE_FIELD_CACHE.lock() {
+        if cache.len() > 128 {
+            cache.clear();
+        }
+        cache.insert(cache_key.to_string(), sample.clone());
+    }
+
+    Ok(sample)
 }
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
@@ -1008,8 +1111,8 @@ fn convert_grid_to_mesh(
 }
 
 /// Helper function to compute a scalar field value from a single point's solution data
-fn compute_scalar_field_value(solution: &Plot3DSolution, field: solution::ScalarField) -> f32 {
-    use solution::ScalarField;
+fn compute_scalar_field_value(solution: &Plot3DSolution, field: plot_state::ScalarField) -> f32 {
+    use plot_state::ScalarField;
 
     if solution.rho.is_empty() {
         return 0.0;
@@ -1034,6 +1137,31 @@ fn compute_scalar_field_value(solution: &Plot3DSolution, field: solution::Scalar
         ScalarField::MomentumY => solution.rhov[0],
         ScalarField::MomentumZ => solution.rhow[0],
 
+        ScalarField::UVelocity => {
+            let rho = solution.rho[0];
+            if rho > 0.0 {
+                solution.rhou[0] / rho
+            } else {
+                0.0
+            }
+        }
+        ScalarField::VVelocity => {
+            let rho = solution.rho[0];
+            if rho > 0.0 {
+                solution.rhov[0] / rho
+            } else {
+                0.0
+            }
+        }
+        ScalarField::WVelocity => {
+            let rho = solution.rho[0];
+            if rho > 0.0 {
+                solution.rhow[0] / rho
+            } else {
+                0.0
+            }
+        }
+
         ScalarField::Pressure => {
             const DEFAULT_GAMMA: f32 = 1.4;
             let rho = solution.rho[0];
@@ -1055,6 +1183,10 @@ fn compute_scalar_field_value(solution: &Plot3DSolution, field: solution::Scalar
         }
 
         ScalarField::Energy => solution.rhoe[0],
+
+        // Known placeholder scalar fields exist for legacy FUNCTION mapping but
+        // are intentionally not computed until equations are explicitly added.
+        _ => 0.0,
     }
 }
 
@@ -1066,12 +1198,33 @@ fn compute_scalar_field_from_components(
     rhow: f32,
     rhoe: f32,
     gamma: Option<f32>,
-    field: solution::ScalarField,
+    field: plot_state::ScalarField,
 ) -> f32 {
-    use solution::ScalarField;
+    use plot_state::ScalarField;
 
     match field {
         ScalarField::Density => rho,
+        ScalarField::UVelocity => {
+            if rho > 0.0 {
+                rhou / rho
+            } else {
+                0.0
+            }
+        }
+        ScalarField::VVelocity => {
+            if rho > 0.0 {
+                rhov / rho
+            } else {
+                0.0
+            }
+        }
+        ScalarField::WVelocity => {
+            if rho > 0.0 {
+                rhow / rho
+            } else {
+                0.0
+            }
+        }
         ScalarField::VelocityMagnitude => {
             if rho > 0.0 {
                 let u = rhou / rho;
@@ -1100,6 +1253,10 @@ fn compute_scalar_field_from_components(
             }
         }
         ScalarField::Energy => rhoe,
+
+        // Known placeholder scalar fields exist for legacy FUNCTION mapping but
+        // are intentionally not computed until equations are explicitly added.
+        _ => 0.0,
     }
 }
 
@@ -1204,6 +1361,108 @@ fn slice_grid_by_id(gridId: String, plane: String, index: u32) -> Result<Plot3DG
     })
 }
 
+fn normalize_subset_bounds(start: Option<u32>, end: Option<u32>, dim: u32) -> (usize, usize) {
+    let max = dim.max(1);
+    let mut s = start.unwrap_or(1).clamp(1, max);
+    let mut e = end.unwrap_or(max).clamp(1, max);
+    if s > e {
+        std::mem::swap(&mut s, &mut e);
+    }
+    ((s - 1) as usize, (e - 1) as usize)
+}
+
+fn build_subset_grid(
+    grid: &Plot3DGrid,
+    i_start: Option<u32>,
+    i_end: Option<u32>,
+    j_start: Option<u32>,
+    j_end: Option<u32>,
+    k_start: Option<u32>,
+    k_end: Option<u32>,
+) -> Result<(Plot3DGrid, Vec<usize>), String> {
+    let ni = grid.dimensions.i;
+    let nj = grid.dimensions.j;
+    let nk = grid.dimensions.k;
+
+    if ni == 0 || nj == 0 || nk == 0 {
+        return Err("Grid dimensions must be non-zero".to_string());
+    }
+
+    let (i0, i1) = normalize_subset_bounds(i_start, i_end, ni);
+    let (j0, j1) = normalize_subset_bounds(j_start, j_end, nj);
+    let (k0, k1) = normalize_subset_bounds(k_start, k_end, nk);
+
+    let out_i = i1 - i0 + 1;
+    let out_j = j1 - j0 + 1;
+    let out_k = k1 - k0 + 1;
+    let out_points = out_i * out_j * out_k;
+
+    let mut x_coords = Vec::with_capacity(out_points);
+    let mut y_coords = Vec::with_capacity(out_points);
+    let mut z_coords = Vec::with_capacity(out_points);
+    let mut original_indices = Vec::with_capacity(out_points);
+    let mut iblank_vec = grid.iblank.as_ref().map(|_| Vec::with_capacity(out_points));
+
+    let ni_usize = ni as usize;
+    let nj_usize = nj as usize;
+
+    for k_idx in k0..=k1 {
+        for j_idx in j0..=j1 {
+            for i_idx in i0..=i1 {
+                let orig = i_idx + j_idx * ni_usize + k_idx * ni_usize * nj_usize;
+                x_coords.push(grid.x_coords[orig]);
+                y_coords.push(grid.y_coords[orig]);
+                z_coords.push(grid.z_coords[orig]);
+                original_indices.push(orig);
+                if let Some(ref mut ib) = iblank_vec {
+                    ib.push(grid.iblank.as_ref().map(|src| src[orig]).unwrap_or(1));
+                }
+            }
+        }
+    }
+
+    Ok((
+        Plot3DGrid {
+            dimensions: GridDimensions {
+                i: out_i as u32,
+                j: out_j as u32,
+                k: out_k as u32,
+            },
+            x_coords,
+            y_coords,
+            z_coords,
+            iblank: iblank_vec,
+        },
+        original_indices,
+    ))
+}
+
+/// Extract a subset volume from a cached grid using 1-based inclusive ranges.
+#[allow(non_snake_case)]
+#[tauri::command]
+fn subset_grid_by_id(
+    gridId: String,
+    iStart: Option<u32>,
+    iEnd: Option<u32>,
+    jStart: Option<u32>,
+    jEnd: Option<u32>,
+    kStart: Option<u32>,
+    kEnd: Option<u32>,
+) -> Result<Plot3DGrid, String> {
+    let grid = {
+        let cache = GRID_CACHE
+            .lock()
+            .map_err(|_| "Grid cache lock poisoned".to_string())?;
+        let cached = cache
+            .get(&gridId)
+            .ok_or_else(|| format!("Grid not found in cache: {}", gridId))?;
+        Arc::clone(&cached.grid)
+    };
+
+    let (subset, _) = build_subset_grid(&grid, iStart, iEnd, jStart, jEnd, kStart, kEnd)?;
+    Ok(subset)
+}
+
 /// Slice a cached grid with arbitrary plane (ID-based)
 #[allow(non_snake_case)]
 #[tauri::command]
@@ -1272,7 +1531,8 @@ fn compute_solution_colors(
     iblank_filter_mode: Option<String>,
     window: WebviewWindow,
 ) -> Result<MeshGeometry, String> {
-    use solution::{compute_colors, compute_scalar_field_surface, ColorScheme, ScalarField};
+    use plot_state::ScalarField;
+    use solution::{compute_colors, compute_scalar_field_surface, ColorScheme};
 
     let _ = window.emit("loading-start", format!("Computing {} field...", field));
 
@@ -1421,7 +1681,8 @@ fn compute_solution_colors_sliced(
     global_max: Option<f32>,
     window: WebviewWindow,
 ) -> Result<MeshGeometry, String> {
-    use solution::{compute_colors_with_range, ColorScheme, ScalarField};
+    use plot_state::ScalarField;
+    use solution::{compute_colors_with_range, ColorScheme};
 
     let _ = window.emit(
         "loading-start",
@@ -1638,6 +1899,142 @@ fn compute_solution_colors_sliced(
     Ok(mesh)
 }
 
+/// Compute solution colors on a subset volume from cached grid/solution data.
+#[allow(non_snake_case)]
+#[tauri::command]
+fn compute_solution_colors_subset_by_id(
+    gridId: String,
+    solutionId: String,
+    iStart: Option<u32>,
+    iEnd: Option<u32>,
+    jStart: Option<u32>,
+    jEnd: Option<u32>,
+    kStart: Option<u32>,
+    kEnd: Option<u32>,
+    field: String,
+    colorScheme: String,
+    respect_iblank: Option<bool>,
+    show_fringe_points: Option<bool>,
+    iblank_filter_mode: Option<String>,
+    global_min: Option<f32>,
+    global_max: Option<f32>,
+    window: WebviewWindow,
+) -> Result<MeshGeometry, String> {
+    use plot_state::ScalarField;
+    use solution::{compute_colors_with_range, ColorScheme};
+
+    let _ = window.emit(
+        "loading-start",
+        format!("Computing {} field on subset...", field),
+    );
+
+    let (effective_respect_iblank, effective_show_fringe_points, effective_filter_mode) =
+        normalize_iblank_flags(respect_iblank, show_fringe_points, iblank_filter_mode);
+
+    let (grid, grid_file_path, grid_index) = {
+        let cache = GRID_CACHE
+            .lock()
+            .map_err(|_| "Grid cache lock poisoned".to_string())?;
+        let cached = cache
+            .get(&gridId)
+            .ok_or_else(|| format!("Grid not found in cache: {}", gridId))?;
+        (
+            Arc::clone(&cached.grid),
+            cached.file_path.clone(),
+            cached.grid_index,
+        )
+    };
+
+    let (solution, solution_file_path, solution_grid_index) = {
+        let cache = SOLUTION_CACHE_V2
+            .lock()
+            .map_err(|_| "Solution cache lock poisoned".to_string())?;
+        let cached = cache
+            .get(&solutionId)
+            .ok_or_else(|| format!("Solution not found in cache: {}", solutionId))?;
+        (
+            Arc::clone(&cached.solution),
+            cached.file_path.clone(),
+            cached.grid_index,
+        )
+    };
+
+    if grid_index != solution_grid_index {
+        return Err(format!(
+            "Grid/solution mismatch: grid(id={}, index={}) vs solution(id={}, index={})",
+            gridId, grid_index, solutionId, solution_grid_index
+        ));
+    }
+
+    if grid.dimensions.i != solution.dimensions.i
+        || grid.dimensions.j != solution.dimensions.j
+        || grid.dimensions.k != solution.dimensions.k
+    {
+        return Err(format!(
+            "Grid/solution mismatch: dimensions differ: grid(id={}, dims={}x{}x{}) vs solution(id={}, dims={}x{}x{})",
+            gridId,
+            grid.dimensions.i,
+            grid.dimensions.j,
+            grid.dimensions.k,
+            solutionId,
+            solution.dimensions.i,
+            solution.dimensions.j,
+            solution.dimensions.k
+        ));
+    }
+
+    if grid_file_path != solution_file_path {
+        log_debug(&format!(
+            "Grid/solution file paths differ but pair accepted by index+dimensions: grid(id={}, file={}) solution(id={}, file={})",
+            gridId, grid_file_path, solutionId, solution_file_path
+        ));
+    }
+
+    let field_enum =
+        ScalarField::from_str(&field).ok_or_else(|| format!("Unknown scalar field: {}", field))?;
+    let scheme = ColorScheme::from_str(&colorScheme)
+        .ok_or_else(|| format!("Unknown color scheme: {}", colorScheme))?;
+
+    if solution.rho.len() != grid.total_points() {
+        return Err(format!(
+            "Solution points {} != grid points {}",
+            solution.rho.len(),
+            grid.total_points()
+        ));
+    }
+
+    let (subset_grid, original_indices) =
+        build_subset_grid(&grid, iStart, iEnd, jStart, jEnd, kStart, kEnd)?;
+
+    let mut values = Vec::with_capacity(original_indices.len());
+    for &orig in &original_indices {
+        let point_solution = create_point_solution(&solution, orig);
+        values.push(compute_scalar_field_value(&point_solution, field_enum));
+    }
+
+    let colors = compute_colors_with_range(&values, &scheme, global_min, global_max);
+    let mut mesh = subset_grid.to_mesh_surface_geometry_decimated(
+        effective_respect_iblank,
+        effective_show_fringe_points,
+        effective_filter_mode,
+        1,
+    );
+
+    if colors.len() == mesh.vertices.len() {
+        mesh.colors = Some(colors);
+    } else {
+        log_warn(&format!(
+            "Subset color/vertex length mismatch: colors={} vertices={} (discarding colors)",
+            colors.len(),
+            mesh.vertices.len()
+        ));
+        mesh.colors = None;
+    }
+
+    let _ = window.emit("loading-end", ());
+    Ok(mesh)
+}
+
 /// Helper function to create a point solution from a solution array at a given index
 fn create_point_solution(solution: &Plot3DSolution, index: usize) -> Plot3DSolution {
     Plot3DSolution {
@@ -1670,12 +2067,26 @@ fn compute_solution_colors_arbitrary_plane(
     global_max: Option<f32>,
     window: WebviewWindow,
 ) -> Result<MeshGeometry, String> {
-    use solution::{compute_colors_with_range, ColorScheme, ScalarField};
+    use plot_state::ScalarField;
+    use solution::{compute_colors_with_range, ColorScheme};
+
+    struct LoadingEndGuard {
+        window: WebviewWindow,
+    }
+
+    impl Drop for LoadingEndGuard {
+        fn drop(&mut self) {
+            let _ = self.window.emit("loading-end", ());
+        }
+    }
 
     let _ = window.emit(
         "loading-start",
         format!("Computing {} field on arbitrary plane...", field),
     );
+    let _loading_end_guard = LoadingEndGuard {
+        window: window.clone(),
+    };
 
     let (effective_respect_iblank, effective_show_fringe_points, effective_filter_mode) =
         normalize_iblank_flags(respect_iblank, show_fringe_points, iblank_filter_mode);
@@ -1875,8 +2286,6 @@ fn compute_solution_colors_arbitrary_plane(
     let colors = compute_colors_with_range(&values, &scheme, global_min, global_max);
     mesh.colors = Some(colors);
 
-    let _ = window.emit("loading-end", ());
-
     Ok(mesh)
 }
 
@@ -1894,7 +2303,7 @@ pub struct FieldRange {
 #[allow(non_snake_case)]
 #[tauri::command]
 fn get_solution_field_range(solutionId: String, field: String) -> Result<FieldRange, String> {
-    use solution::ScalarField;
+    use plot_state::ScalarField;
 
     // Load solution from cache
     let solution = {
@@ -1961,6 +2370,402 @@ fn get_solution_field_range(solutionId: String, field: String) -> Result<FieldRa
             Ok(FieldRange { min: 0.0, max: 1.0 })
         }
     }
+}
+
+// ============================================================================
+// Contour Level Resolution
+// ============================================================================
+
+/// Result returned by the `resolve_contour_levels` command.
+#[derive(serde::Serialize)]
+pub struct ContourLevelsResult {
+    pub levels: Vec<f64>,
+    pub diagnostics: Vec<plot_state::Diagnostic>,
+}
+
+/// Resolve the current contour specification to an ordered list of absolute
+/// physical field values for the given solution and scalar field.
+///
+/// This is the canonical resolution path.  The frontend must call this command
+/// rather than implementing its own normalization / de-normalization logic.
+#[allow(non_snake_case)]
+#[tauri::command]
+fn resolve_contour_levels(
+    solutionId: String,
+    scalarField: String,
+) -> Result<ContourLevelsResult, String> {
+    use plot_state::ScalarField;
+
+    // Read current contour spec from shared state.
+    let spec = {
+        let guard = PLOT_STATE
+            .lock()
+            .map_err(|_| "Plot state lock poisoned".to_string())?;
+        guard.contour_spec.clone()
+    };
+
+    // Early-exit for the trivial case — no solution range lookup required.
+    if spec == plot_state::ContourSpec::None {
+        return Ok(ContourLevelsResult {
+            levels: vec![],
+            diagnostics: vec![],
+        });
+    }
+
+    // Parse scalar field.
+    let field_enum = ScalarField::from_str(&scalarField)
+        .ok_or_else(|| format!("Unknown scalar field: {}", scalarField))?;
+
+    // Load solution from cache.
+    let solution = {
+        let cache = SOLUTION_CACHE_V2
+            .lock()
+            .map_err(|_| "Solution cache lock poisoned".to_string())?;
+        let cached = cache
+            .get(&solutionId)
+            .ok_or_else(|| format!("Solution not found in cache: {}", solutionId))?;
+        Arc::clone(&cached.solution)
+    };
+
+    // Compute field range (same logic as get_solution_field_range).
+    let mut min_val: Option<f32> = None;
+    let mut max_val: Option<f32> = None;
+    for idx in 0..solution.rho.len() {
+        let gamma = solution.gamma.as_ref().map(|g| g[idx]);
+        let value = compute_scalar_field_from_components(
+            solution.rho[idx],
+            solution.rhou[idx],
+            solution.rhov[idx],
+            solution.rhow[idx],
+            solution.rhoe[idx],
+            gamma,
+            field_enum,
+        );
+        if !value.is_finite() {
+            continue;
+        }
+        min_val = Some(match min_val {
+            Some(cur) => cur.min(value),
+            None => value,
+        });
+        max_val = Some(match max_val {
+            Some(cur) => cur.max(value),
+            None => value,
+        });
+    }
+    let (min, max) = match (min_val, max_val) {
+        (Some(mn), Some(mx)) => (mn as f64, mx as f64),
+        // Uniform / empty field — use a trivial range so resolve() sees min==max
+        // and emits the appropriate diagnostic.
+        _ => (0.0_f64, 0.0_f64),
+    };
+
+    let (levels, diagnostics) = spec.resolve(min, max);
+    Ok(ContourLevelsResult {
+        levels,
+        diagnostics,
+    })
+}
+
+// ============================================================================
+// Contour Extraction Commands
+// ============================================================================
+
+/// Extract iso-surface from volume data at specified scalar field level
+#[allow(non_snake_case)]
+#[tauri::command]
+fn extract_iso_surface_by_id(
+    gridId: String,
+    solutionId: String,
+    scalarField: String,
+    levelAbsolute: f64,
+    respectIblank: Option<bool>,
+    showFringePoints: Option<bool>,
+    iblankFilterMode: Option<String>,
+    _window: WebviewWindow,
+) -> Result<MeshGeometry, String> {
+    use plot_state::ScalarField;
+
+    let (effective_respect_iblank, effective_show_fringe_points, effective_filter_mode) =
+        normalize_iblank_flags(respectIblank, showFringePoints, iblankFilterMode);
+
+    // Parse scalar field
+    let field_enum = ScalarField::from_str(&scalarField)
+        .ok_or_else(|| format!("Unknown scalar field: {}", scalarField))?;
+
+    // Load grid from cache
+    let grid = {
+        let cache = GRID_CACHE
+            .lock()
+            .map_err(|_| "Grid cache lock poisoned".to_string())?;
+        let cached = cache
+            .get(&gridId)
+            .ok_or_else(|| format!("Grid not found in cache: {}", gridId))?;
+        Arc::clone(&cached.grid)
+    };
+
+    // Load solution from cache
+    let solution = {
+        let cache = SOLUTION_CACHE_V2
+            .lock()
+            .map_err(|_| "Solution cache lock poisoned".to_string())?;
+        let cached = cache
+            .get(&solutionId)
+            .ok_or_else(|| format!("Solution not found in cache: {}", solutionId))?;
+        Arc::clone(&cached.solution)
+    };
+
+    let level = levelAbsolute as f32;
+
+    log_info(&format!(
+        "Extracting iso-surface for grid {} at absolute level {}",
+        gridId, level
+    ));
+
+    // TODO: Call marching cubes implementation (Step 3)
+    grid.extract_iso_surface(
+        &solution,
+        field_enum,
+        level,
+        effective_respect_iblank,
+        effective_show_fringe_points,
+        effective_filter_mode,
+    )
+}
+
+/// Extract contour lines from I/J/K slice at specified level
+#[allow(non_snake_case)]
+#[tauri::command]
+fn extract_slice_contours_by_id(
+    gridId: String,
+    solutionId: String,
+    plane: String,
+    index: usize,
+    scalarField: String,
+    levelAbsolute: f64,
+    respectIblank: Option<bool>,
+    showFringePoints: Option<bool>,
+    iblankFilterMode: Option<String>,
+    _window: WebviewWindow,
+) -> Result<Vec<f32>, String> {
+    use plot_state::ScalarField;
+
+    let (effective_respect_iblank, effective_show_fringe_points, effective_filter_mode) =
+        normalize_iblank_flags(respectIblank, showFringePoints, iblankFilterMode);
+
+    // Parse scalar field
+    let field_enum = ScalarField::from_str(&scalarField)
+        .ok_or_else(|| format!("Unknown scalar field: {}", scalarField))?;
+
+    // Load grid from cache
+    let grid = {
+        let cache = GRID_CACHE
+            .lock()
+            .map_err(|_| "Grid cache lock poisoned".to_string())?;
+        let cached = cache
+            .get(&gridId)
+            .ok_or_else(|| format!("Grid not found in cache: {}", gridId))?;
+        Arc::clone(&cached.grid)
+    };
+
+    // Load solution from cache
+    let solution = {
+        let cache = SOLUTION_CACHE_V2
+            .lock()
+            .map_err(|_| "Solution cache lock poisoned".to_string())?;
+        let cached = cache
+            .get(&solutionId)
+            .ok_or_else(|| format!("Solution not found in cache: {}", solutionId))?;
+        Arc::clone(&cached.solution)
+    };
+
+    let level = levelAbsolute as f32;
+
+    log_info(&format!(
+        "Extracting slice contours for grid {} plane {} index {} at level {}",
+        gridId, plane, index, level
+    ));
+
+    // TODO: Call contour-line extraction implementation (Step 4)
+    grid.extract_slice_contours(
+        &solution,
+        &plane,
+        index,
+        field_enum,
+        level,
+        effective_respect_iblank,
+        effective_show_fringe_points,
+        effective_filter_mode,
+    )
+}
+
+/// Extract contour lines from arbitrary plane at specified level
+#[allow(non_snake_case)]
+#[tauri::command]
+fn extract_arbitrary_plane_contours_by_id(
+    gridId: String,
+    solutionId: String,
+    planePoint: [f32; 3],
+    planeNormal: [f32; 3],
+    scalarField: String,
+    levelAbsolute: f64,
+    respectIblank: Option<bool>,
+    showFringePoints: Option<bool>,
+    iblankFilterMode: Option<String>,
+    _window: WebviewWindow,
+) -> Result<Vec<f32>, String> {
+    use plot_state::ScalarField;
+
+    let (effective_respect_iblank, effective_show_fringe_points, effective_filter_mode) =
+        normalize_iblank_flags(respectIblank, showFringePoints, iblankFilterMode);
+
+    // Parse scalar field
+    let field_enum = ScalarField::from_str(&scalarField)
+        .ok_or_else(|| format!("Unknown scalar field: {}", scalarField))?;
+
+    // Load grid from cache
+    let grid = {
+        let cache = GRID_CACHE
+            .lock()
+            .map_err(|_| "Grid cache lock poisoned".to_string())?;
+        let cached = cache
+            .get(&gridId)
+            .ok_or_else(|| format!("Grid not found in cache: {}", gridId))?;
+        Arc::clone(&cached.grid)
+    };
+
+    // Load solution from cache
+    let solution = {
+        let cache = SOLUTION_CACHE_V2
+            .lock()
+            .map_err(|_| "Solution cache lock poisoned".to_string())?;
+        let cached = cache
+            .get(&solutionId)
+            .ok_or_else(|| format!("Solution not found in cache: {}", solutionId))?;
+        Arc::clone(&cached.solution)
+    };
+
+    let level = levelAbsolute as f32;
+    let cache_key = arbitrary_plane_field_cache_key(
+        &gridId,
+        &solutionId,
+        planePoint,
+        planeNormal,
+        &scalarField,
+        effective_respect_iblank,
+        effective_show_fringe_points,
+        effective_filter_mode,
+    );
+
+    log_info(&format!(
+        "Extracting arbitrary plane contours for grid {} at level {}",
+        gridId, level
+    ));
+
+    let sample = get_or_build_arbitrary_plane_field_sample(
+        &grid,
+        &solution,
+        field_enum,
+        planePoint,
+        planeNormal,
+        effective_respect_iblank,
+        effective_show_fringe_points,
+        effective_filter_mode,
+        &cache_key,
+    )?;
+
+    if sample.scalar_values.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    extract_contour_lines_from_triangles(
+        sample.vertices.as_slice(),
+        sample.triangle_indices.as_slice(),
+        sample.scalar_values.as_slice(),
+        level,
+    )
+}
+
+/// Extract contour lines from arbitrary plane for multiple levels in one pass.
+#[allow(non_snake_case)]
+#[tauri::command]
+fn extract_arbitrary_plane_contours_multi_by_id(
+    gridId: String,
+    solutionId: String,
+    planePoint: [f32; 3],
+    planeNormal: [f32; 3],
+    scalarField: String,
+    levelsAbsolute: Vec<f64>,
+    respectIblank: Option<bool>,
+    showFringePoints: Option<bool>,
+    iblankFilterMode: Option<String>,
+    _window: WebviewWindow,
+) -> Result<Vec<Vec<f32>>, String> {
+    use plot_state::ScalarField;
+
+    let (effective_respect_iblank, effective_show_fringe_points, effective_filter_mode) =
+        normalize_iblank_flags(respectIblank, showFringePoints, iblankFilterMode);
+
+    let field_enum = ScalarField::from_str(&scalarField)
+        .ok_or_else(|| format!("Unknown scalar field: {}", scalarField))?;
+
+    let grid = {
+        let cache = GRID_CACHE
+            .lock()
+            .map_err(|_| "Grid cache lock poisoned".to_string())?;
+        let cached = cache
+            .get(&gridId)
+            .ok_or_else(|| format!("Grid not found in cache: {}", gridId))?;
+        Arc::clone(&cached.grid)
+    };
+
+    let solution = {
+        let cache = SOLUTION_CACHE_V2
+            .lock()
+            .map_err(|_| "Solution cache lock poisoned".to_string())?;
+        let cached = cache
+            .get(&solutionId)
+            .ok_or_else(|| format!("Solution not found in cache: {}", solutionId))?;
+        Arc::clone(&cached.solution)
+    };
+
+    let cache_key = arbitrary_plane_field_cache_key(
+        &gridId,
+        &solutionId,
+        planePoint,
+        planeNormal,
+        &scalarField,
+        effective_respect_iblank,
+        effective_show_fringe_points,
+        effective_filter_mode,
+    );
+
+    let sample = get_or_build_arbitrary_plane_field_sample(
+        &grid,
+        &solution,
+        field_enum,
+        planePoint,
+        planeNormal,
+        effective_respect_iblank,
+        effective_show_fringe_points,
+        effective_filter_mode,
+        &cache_key,
+    )?;
+
+    if sample.scalar_values.is_empty() {
+        return Ok(vec![Vec::new(); levelsAbsolute.len()]);
+    }
+
+    let mut all = Vec::with_capacity(levelsAbsolute.len());
+    for level in levelsAbsolute.iter() {
+        all.push(extract_contour_lines_from_triangles(
+            sample.vertices.as_slice(),
+            sample.triangle_indices.as_slice(),
+            sample.scalar_values.as_slice(),
+            *level as f32,
+        )?);
+    }
+    Ok(all)
 }
 
 // ============================================================================
@@ -2068,6 +2873,9 @@ fn clear_grid_cache() -> Result<(), String> {
 
     let count = cache.len();
     cache.clear();
+    if let Ok(mut arbitrary_cache) = ARBITRARY_PLANE_FIELD_CACHE.lock() {
+        arbitrary_cache.clear();
+    }
     log_info(&format!("Cleared {} grids from cache", count));
     Ok(())
 }
@@ -2081,6 +2889,9 @@ fn clear_solution_cache_v2() -> Result<(), String> {
 
     let count = cache.len();
     cache.clear();
+    if let Ok(mut arbitrary_cache) = ARBITRARY_PLANE_FIELD_CACHE.lock() {
+        arbitrary_cache.clear();
+    }
     log_info(&format!("Cleared {} solutions from cache", count));
     Ok(())
 }
@@ -2093,6 +2904,9 @@ fn unload_grid(grid_id: String) -> Result<(), String> {
         .map_err(|_| "Grid cache lock poisoned".to_string())?;
 
     if cache.remove(&grid_id).is_some() {
+        if let Ok(mut arbitrary_cache) = ARBITRARY_PLANE_FIELD_CACHE.lock() {
+            arbitrary_cache.retain(|k, _| !k.starts_with(&format!("{}|", grid_id)));
+        }
         log_info(&format!("Unloaded grid from cache: {}", grid_id));
         Ok(())
     } else {
@@ -2108,6 +2922,9 @@ fn unload_solution(solution_id: String) -> Result<(), String> {
         .map_err(|_| "Solution cache lock poisoned".to_string())?;
 
     if cache.remove(&solution_id).is_some() {
+        if let Ok(mut arbitrary_cache) = ARBITRARY_PLANE_FIELD_CACHE.lock() {
+            arbitrary_cache.retain(|k, _| !k.contains(&format!("|{}|", solution_id)));
+        }
         log_info(&format!("Unloaded solution from cache: {}", solution_id));
         Ok(())
     } else {
@@ -2207,18 +3024,99 @@ fn write_text_file(path: String, contents: String) -> Result<(), String> {
     use std::fs;
     use std::io::Write;
 
-    let mut file =
-        fs::File::create(&path).map_err(|e| format!("Failed to create file {}: {}", path, e))?;
+    let normalized_path = normalize_dialog_path(&path);
+
+    let mut file = fs::File::create(&normalized_path)
+        .map_err(|e| format!("Failed to create file {}: {}", normalized_path, e))?;
 
     file.write_all(contents.as_bytes())
-        .map_err(|e| format!("Failed to write to file {}: {}", path, e))?;
+        .map_err(|e| format!("Failed to write to file {}: {}", normalized_path, e))?;
 
     log_info(&format!(
         "Successfully wrote {} bytes to {}",
         contents.len(),
-        path
+        normalized_path
     ));
     Ok(())
+}
+
+/// Open save file dialog for PNG export
+#[tauri::command]
+async fn save_png_file_dialog(
+    app: tauri::AppHandle,
+    default_name: Option<String>,
+) -> Result<Option<String>, String> {
+    let file_name = default_name.unwrap_or_else(|| "plot_output.png".to_string());
+
+    let file_path = app
+        .dialog()
+        .file()
+        .add_filter("PNG Images", &["png"])
+        .add_filter("All Files", &["*"])
+        .set_file_name(&file_name)
+        .blocking_save_file();
+
+    Ok(file_path.map(|f| f.to_string()))
+}
+
+/// Write binary PNG data to a file
+#[tauri::command]
+fn write_png_file(path: String, png_data: Vec<u8>) -> Result<String, String> {
+    use std::fs;
+    use std::io::Write;
+
+    let normalized_path = normalize_dialog_path(&path);
+
+    let mut file = fs::File::create(&normalized_path)
+        .map_err(|e| format!("Failed to create file {}: {}", normalized_path, e))?;
+
+    file.write_all(&png_data)
+        .map_err(|e| format!("Failed to write to file {}: {}", normalized_path, e))?;
+
+    file.flush()
+        .map_err(|e| format!("Failed to flush file {}: {}", normalized_path, e))?;
+
+    let metadata = fs::metadata(&normalized_path)
+        .map_err(|e| format!("Failed to stat file {}: {}", normalized_path, e))?;
+    if metadata.len() == 0 {
+        return Err(format!(
+            "PNG export produced empty file at {}",
+            normalized_path
+        ));
+    }
+
+    log_info(&format!(
+        "Successfully wrote PNG file {} ({} bytes)",
+        normalized_path,
+        png_data.len()
+    ));
+    Ok(normalized_path)
+}
+
+fn normalize_dialog_path(path: &str) -> String {
+    if let Some(without_scheme) = path.strip_prefix("file://") {
+        // Dialog paths can be returned as file URLs; decode common URL escapes.
+        let decoded = without_scheme
+            .replace("%20", " ")
+            .replace("%5B", "[")
+            .replace("%5D", "]")
+            .replace("%28", "(")
+            .replace("%29", ")")
+            .replace("%2C", ",")
+            .replace("%23", "#")
+            .replace("%25", "%");
+
+        #[cfg(target_os = "windows")]
+        {
+            if decoded.starts_with('/') && decoded.chars().nth(2) == Some(':') {
+                return decoded[1..].to_string();
+            }
+        }
+
+        return decoded;
+    }
+
+    path.to_string()
 }
 
 /// Print frontend debug messages to the terminal
@@ -2246,6 +3144,269 @@ async fn open_about_window(app: tauri::AppHandle) -> Result<(), String> {
     }
 }
 
+/// Return the current `PlotState` for dev inspection and parity verification.
+/// This command is intentionally read-only; mutations go through
+/// `apply_plot_action`.
+#[tauri::command]
+fn get_plot_state() -> Result<PlotState, String> {
+    PLOT_STATE
+        .lock()
+        .map(|s| s.clone())
+        .map_err(|e| format!("Failed to lock plot state: {e}"))
+}
+
+/// Apply a `PlotAction` to the shared `PlotState` and return the resulting
+/// state together with any diagnostics produced by the transition.
+///
+/// The frontend should call this instead of mutating state directly so that
+/// script execution and GUI interactions always share the same state path.
+#[tauri::command]
+fn apply_plot_action(action: PlotAction) -> Result<ApplyActionResult, String> {
+    let mut guard = PLOT_STATE
+        .lock()
+        .map_err(|e| format!("Failed to lock plot state: {e}"))?;
+    let current = guard.clone();
+    let (new_state, diagnostics) = apply_action(current, action);
+    *guard = new_state.clone();
+    Ok(ApplyActionResult {
+        state: new_state,
+        diagnostics,
+    })
+}
+
+/// Convenience command: set scalar field via a stable argument shape.
+#[tauri::command]
+fn set_plot_scalar_field(field: plot_state::ScalarField) -> Result<ApplyActionResult, String> {
+    apply_plot_action(PlotAction::SetScalarField(field))
+}
+
+/// Convenience command: set plot family (contour vs function-surface) via a stable argument shape.
+#[tauri::command]
+fn set_plot_family(family: plot_state::PlotFamily) -> Result<ApplyActionResult, String> {
+    apply_plot_action(PlotAction::SetPlotFamily(family))
+}
+
+/// Convenience command: set camera viewpoint via a stable argument shape.
+#[tauri::command]
+fn set_plot_viewpoint(vp: plot_state::ViewPoint) -> Result<ApplyActionResult, String> {
+    apply_plot_action(PlotAction::SetViewpoint(vp))
+}
+
+/// Convenience command: set named camera axis view via a stable argument shape.
+#[tauri::command]
+fn set_plot_axis_view(view: plot_state::AxisView) -> Result<ApplyActionResult, String> {
+    apply_plot_action(PlotAction::SetAxisView(view))
+}
+
+/// Resolve a single `IndexRange` field, converting negative 1-based-from-end
+/// indices to explicit positive 1-based indices using `dim` (the axis size).
+fn resolve_index_range(range: &plot_state::IndexRange, dim: u32) -> plot_state::IndexRange {
+    let dim = dim as i32;
+    let resolve = |n: i32| -> i32 {
+        if n < 0 {
+            (dim + n + 1).max(1)
+        } else {
+            n
+        }
+    };
+    plot_state::IndexRange {
+        start: resolve(range.start),
+        end: range.end.map(resolve),
+    }
+}
+
+/// Replace any negative indices in a `GridSubset` with explicit positive
+/// 1-based values derived from the cached grid's dimensions.
+fn resolve_subset_negatives(
+    subset: plot_state::GridSubset,
+    cache: &HashMap<String, CachedGrid>,
+) -> plot_state::GridSubset {
+    let grid_num = subset.grid as usize;
+    let dims = cache
+        .values()
+        .find(|cg| cg.grid_index + 1 == grid_num)
+        .map(|cg| cg.grid.dimensions.clone());
+
+    if let Some(dims) = dims {
+        plot_state::GridSubset {
+            grid: subset.grid,
+            gui_managed: subset.gui_managed,
+            i_range: subset.i_range.map(|r| resolve_index_range(&r, dims.i)),
+            j_range: subset.j_range.map(|r| resolve_index_range(&r, dims.j)),
+            k_range: subset.k_range.map(|r| resolve_index_range(&r, dims.k)),
+        }
+    } else {
+        subset
+    }
+}
+
+/// Convenience command: replace plot subsets via a stable argument shape.
+#[tauri::command]
+fn set_plot_subsets(subsets: Vec<plot_state::GridSubset>) -> Result<ApplyActionResult, String> {
+    let resolved = {
+        let cache = GRID_CACHE
+            .lock()
+            .map_err(|e| format!("Failed to lock grid cache: {e}"))?;
+        subsets
+            .into_iter()
+            .map(|s| resolve_subset_negatives(s, &cache))
+            .collect()
+    };
+    apply_plot_action(PlotAction::SetSubsets(resolved))
+}
+
+/// Convenience command: replace plot walls via a stable argument shape.
+#[tauri::command]
+fn set_plot_walls(walls: Vec<plot_state::GridSubset>) -> Result<ApplyActionResult, String> {
+    let resolved = {
+        let cache = GRID_CACHE
+            .lock()
+            .map_err(|e| format!("Failed to lock grid cache: {e}"))?;
+        walls
+            .into_iter()
+            .map(|s| resolve_subset_negatives(s, &cache))
+            .collect()
+    };
+    apply_plot_action(PlotAction::SetWalls(resolved))
+}
+
+/// Convenience command: set or clear FSURFACE specification.
+#[tauri::command]
+fn set_plot_fsurface(
+    fsurface: Option<plot_state::FsurfaceSpec>,
+) -> Result<ApplyActionResult, String> {
+    apply_plot_action(PlotAction::SetFsurface(fsurface))
+}
+
+/// Convenience command: add one text annotation.
+#[tauri::command]
+fn add_plot_text_annotation(text: plot_state::PlotText) -> Result<ApplyActionResult, String> {
+    apply_plot_action(PlotAction::AddTextAnnotation(text))
+}
+
+/// Convenience command: clear all text annotations.
+#[tauri::command]
+fn clear_plot_text_annotations() -> Result<ApplyActionResult, String> {
+    apply_plot_action(PlotAction::ClearTextAnnotations)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ShowStatusResult {
+    status: String,
+    state: PlotState,
+    diagnostics: Vec<plot_state::Diagnostic>,
+}
+
+/// Execute SHOW status against current PlotState and return formatted summary.
+#[tauri::command]
+fn show_plot_status() -> Result<ShowStatusResult, String> {
+    let guard = PLOT_STATE
+        .lock()
+        .map_err(|e| format!("Failed to lock plot state: {e}"))?;
+    let current = guard.clone();
+    let (state, diagnostics) = apply_action(current, PlotAction::ShowStatus);
+    let status = format!(
+        "SHOW: field={:?}, family={:?}, axis_view={:?}, text_annotations={}, walls={}, subsets={}",
+        state.scalar_field,
+        state.plot_family,
+        state.axis_view,
+        state.text_annotations.len(),
+        state.walls.len(),
+        state.subsets.len()
+    );
+    Ok(ShowStatusResult {
+        status,
+        state,
+        diagnostics,
+    })
+}
+
+/// Convenience command: set a single manual contour level.
+#[tauri::command]
+fn set_plot_contour_level(level: f64) -> Result<ApplyActionResult, String> {
+    apply_plot_action(PlotAction::SetContourSpec(
+        plot_state::ContourSpec::Manual {
+            entries: vec![plot_state::ContourEntry {
+                value: level,
+                color: None,
+            }],
+        },
+    ))
+}
+
+/// Convenience command: set the full contour specification (any mode).
+#[tauri::command]
+fn set_plot_contour_spec(spec: plot_state::ContourSpec) -> Result<ApplyActionResult, String> {
+    apply_plot_action(PlotAction::SetContourSpec(spec))
+}
+
+/// Convenience command: set the contour visual rendering attribute.
+#[tauri::command]
+fn set_plot_contour_attribute(
+    attribute: plot_state::ContourAttribute,
+) -> Result<ApplyActionResult, String> {
+    apply_plot_action(PlotAction::SetContourAttribute(attribute))
+}
+
+/// Convenience command: commit current plot state boundary.
+#[tauri::command]
+fn commit_plot() -> Result<ApplyActionResult, String> {
+    apply_plot_action(PlotAction::CommitPlot)
+}
+
+/// Parse and execute a legacy `.com` file against shared `PlotState`.
+///
+/// This command applies all parsed actions in order, emits render intents on
+/// `PLOT`, captures `SHOW` output, and persists final state into `PLOT_STATE`.
+#[tauri::command]
+fn execute_com_script(path: String) -> Result<ScriptExecutionResult, String> {
+    let parsed = com_parser::parse_com_file(PathBuf::from(&path).as_path())?;
+
+    let mut guard = PLOT_STATE
+        .lock()
+        .map_err(|e| format!("Failed to lock plot state: {e}"))?;
+    let current = guard.clone();
+    let result = execute_parsed_script(current, &parsed);
+    *guard = result.final_state.clone();
+    Ok(result)
+}
+
+/// Execute command text entered from the in-app PLOT3D command window.
+#[tauri::command]
+fn execute_plot3d_commands(commands: String) -> Result<ScriptExecutionResult, String> {
+    let mut parsed = com_parser::parse_com_text(&commands, "<command-window>");
+
+    // Resolve negative indices in SetSubsets/SetWalls before applying actions.
+    {
+        let cache = GRID_CACHE
+            .lock()
+            .map_err(|e| format!("Failed to lock grid cache: {e}"))?;
+        for action in &mut parsed.actions {
+            match action {
+                PlotAction::SetSubsets(subsets)
+                | PlotAction::SetWalls(subsets)
+                | PlotAction::AddSubsets(subsets)
+                | PlotAction::AddWalls(subsets) => {
+                    let resolved: Vec<_> = subsets
+                        .drain(..)
+                        .map(|s| resolve_subset_negatives(s, &cache))
+                        .collect();
+                    *subsets = resolved;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let mut guard = PLOT_STATE
+        .lock()
+        .map_err(|e| format!("Failed to lock plot state: {e}"))?;
+    let current = guard.clone();
+    let result = execute_parsed_script(current, &parsed);
+    *guard = result.final_state.clone();
+    Ok(result)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Initialize logging
@@ -2268,11 +3429,18 @@ pub fn run() {
             convert_grid_to_mesh,
             convert_grid_to_mesh_by_id,
             slice_grid_by_id,
+            subset_grid_by_id,
             slice_arbitrary_plane_by_id,
             compute_solution_colors,
             compute_solution_colors_sliced,
+            compute_solution_colors_subset_by_id,
             compute_solution_colors_arbitrary_plane,
             get_solution_field_range,
+            resolve_contour_levels,
+            extract_iso_surface_by_id,
+            extract_slice_contours_by_id,
+            extract_arbitrary_plane_contours_by_id,
+            extract_arbitrary_plane_contours_multi_by_id,
             list_cached_grids,
             list_cached_solutions,
             get_grid_metadata,
@@ -2288,8 +3456,28 @@ pub fn run() {
             export_logs_to_file,
             save_log_file_dialog,
             write_text_file,
+            save_png_file_dialog,
+            write_png_file,
             frontend_log,
             open_about_window,
+            get_plot_state,
+            apply_plot_action,
+            set_plot_scalar_field,
+            set_plot_family,
+            set_plot_viewpoint,
+            set_plot_axis_view,
+            set_plot_subsets,
+            set_plot_walls,
+            set_plot_fsurface,
+            add_plot_text_annotation,
+            clear_plot_text_annotations,
+            set_plot_contour_level,
+            set_plot_contour_spec,
+            set_plot_contour_attribute,
+            show_plot_status,
+            commit_plot,
+            execute_com_script,
+            execute_plot3d_commands,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
