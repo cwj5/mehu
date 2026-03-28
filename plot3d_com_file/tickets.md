@@ -24,10 +24,11 @@ None.
 Completed since last update:
 
 11. TKT-011 (headless CLI PNG export)
+12. TKT-012 (hardening and governance)
 
 Remaining:
 
-1. TKT-012 (hardening and governance)
+None.
 
 This ticket set breaks the work into milestones and implementation-sized tasks. It is written so another agent can pick up the work with minimal additional context.
 
@@ -832,7 +833,9 @@ Relevant decisions:
 
 ## Milestone D: Hardening and governance
 
-### TKT-012: Add parity tests, CI gates, and ADRs ⏳ NOT STARTED
+### ~~TKT-012: Add parity tests, CI gates, and ADRs~~ ✅ COMPLETE
+
+Completed: 2026-03-28. Sub-tickets TKT-012A through TKT-012F complete, including parity governance validation, backend parity fixtures, cross-path parity integration tests, unified parity CI gate, ADR pack, and parity docs hardening.
 
 Execution metadata:
 
