@@ -1,0 +1,36 @@
+name: Headless Regression
+
+on:
+  push:
+    branches: [main, develop, plot3d-com-file]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  headless-regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            src-tauri
+            headless-export
+
+      - name: Run headless regression hash matrix
+        run: |
+          chmod +x headless-export/fixtures/regression/check_regression.sh
+          headless-export/fixtures/regression/check_regression.sh
+
+      - name: Upload regression outputs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: headless-regression-out
+          path: headless-export/fixtures/regression/out/
+          if-no-files-found: warn

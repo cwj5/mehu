@@ -704,6 +704,7 @@ Current verification baseline (as of 2026-03-27):
 1. `cargo test --manifest-path headless-export/Cargo.toml --bin overview-export` passes.
 2. CI smoke export runs `headless-export/fixtures/smoke.com` and asserts multi-PLOT outputs are generated.
 3. Temporary regression hash checks pass for fourteen synthetic cases, including format variants, oblique custom-view fixtures, multi-layer custom-view fixtures, thin-slab function-surface fixtures, and explicit `PLOT/UP` orientation fixtures.
+4. Dedicated CI workflow gate at [.github/workflows/headless-regression.yml](.github/workflows/headless-regression.yml) runs the full synthetic regression matrix and uploads generated `out/` images as artifacts on failure.
 
 Phase 2 plan (original):
 

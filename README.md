@@ -122,6 +122,8 @@ What it does:
 
 This is a temporary baseline to catch unintended renderer drift while TKT-011 is still evolving. When a more representative reference set exists, this can be replaced with richer image-diff regression coverage.
 
+CI now enforces this baseline in a dedicated workflow at [.github/workflows/headless-regression.yml](.github/workflows/headless-regression.yml). On failure, generated outputs under [headless-export/fixtures/regression/out](headless-export/fixtures/regression/out) are uploaded as an artifact (`headless-regression-out`) for diagnosis.
+
 ## Testing
 
 This project maintains high code quality with comprehensive automated tests:
