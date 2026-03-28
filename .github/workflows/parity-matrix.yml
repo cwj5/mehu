@@ -11,11 +11,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      - name: Validate parity matrix format
-        run: node scripts/validate-parity-matrix.mjs
+      - name: Validate parity matrix governance
+        run: npm run validate:parity-matrix
