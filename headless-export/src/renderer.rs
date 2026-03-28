@@ -6,9 +6,13 @@
 ///  3. A thin frame border.
 ///
 /// The output is intentionally close to the in-app Three.js renderer for
-/// axis-aligned views.  Documented deviations: no anti-aliasing, no lighting
-/// model, orthographic (no perspective), and function-surface mode is a
-/// bounded filled MVP rather than a full Three.js-equivalent mesh/material path.
+/// axis-aligned views.  Documented deviations (see `legacy_translation_layer.md` § 3.7–3.10):
+/// - No anti-aliasing (§ 3.8)
+/// - Flat Lambert shading only; no full lighting model (§ 3.9)
+/// - Perspective projection only for `AxisView::Custom` + explicit VPOINT; all
+///   named axis views use orthographic (§ 3.7)
+/// - Iso-contour lines are not drawn on function-surface meshes; `ContourSpec`
+///   is ignored with a warning in `FunctionSurface` mode (§ 3.10)
 use image::{Rgba, RgbaImage};
 
 use crate::colormap;

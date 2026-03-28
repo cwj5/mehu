@@ -344,6 +344,36 @@ GUI-managed subset slices can produce any of these configurations; the mesh orie
 
 **Scope Note:** This is a targeted parity increment, not a global projection model change.
 
+### 3.8 Headless Renderer: No Anti-Aliasing
+
+**Deviation (headless only):** The software rasterizer does not apply any anti-aliasing. Edge pixels are aliased at the output resolution.
+
+**In-App Behavior:** Three.js uses WebGL MSAA by default; edges are sub-pixel smooth.
+
+**Mitigation:** Export at a higher resolution to reduce the perceptual impact of aliasing. This is an explicit known deviation of the software rasterizer path, not a shared state issue.
+
+**Scope Note:** Adding anti-aliasing to the pure-Rust rasterizer is out of scope for TKT-011. It would require supersampling (expensive) or a post-pass filter and is not required for the bounded MVP delivery.
+
+### 3.9 Headless Renderer: Flat Lambert Shading (No Full Lighting Model)
+
+**Deviation (headless only):** Function-surface faces are shaded using a single-pass flat Lambert approximation: `intensity = 0.35 + 0.65 × |dot(face_normal, look_direction)|`. There is no point light, no specular highlight, no ambient occlusion, and no back-face culling (front and back faces receive the same intensity via the `abs()`).
+
+**In-App Behavior:** Three.js uses per-vertex or per-fragment lighting with configurable lights; specular and ambient contributions are applied.
+
+**Mitigation:** The flat shading is sufficient to convey surface shape and depth ordering for representative synthetic fixtures. The `abs()` prevents black silhouettes on back-facing geometry, which preserves readability for typical viewing angles.
+
+**Scope Note:** A full PBR or Phong lighting model is out of scope for TKT-011. The bounded MVP lighting is documented here and in the renderer module doc.
+
+### 3.10 Headless Renderer: Iso-Contour Lines Not Drawn on Function Surfaces
+
+**Deviation (headless only):** When a non-`None` `ContourSpec` is active and `PlotFamily` is `FunctionSurface`, the headless renderer ignores the contour levels and emits a warning. No iso-contour lines or bands are drawn on the function-surface mesh.
+
+**In-App Behavior:** The Three.js viewer can overlay contour lines or color bands on a function surface by sampling the scalar field at the mesh vertices.
+
+**Mitigation:** A warning message is emitted: `"Renderer: contour spec is ignored in Function Surface mode (filled MVP)"`. The surface is still rendered with full scalar-field coloring via the field colormap.
+
+**Scope Note:** Iso-contour overlay on function surfaces requires additional marching-squares logic operating in 3D screen space and is out of scope for TKT-011. It can be added as a follow-up increment.
+
 ---
 
 ## Part 4: Implementation Checklist for TKT-009

@@ -1,6 +1,33 @@
 # PLOT3D .com File Support: Tickets
 
-Last updated: 2026-03-27
+Last updated: 2026-03-28
+
+## Current Status Snapshot
+
+Completed tickets:
+
+1. TKT-001
+2. TKT-002
+3. TKT-003
+4. TKT-004
+5. TKT-005
+6. TKT-006
+7. TKT-007 (including TKT-007A through TKT-007E)
+8. TKT-008
+9. TKT-009
+10. TKT-010
+
+In progress:
+
+None.
+
+Completed since last update:
+
+11. TKT-011 (headless CLI PNG export)
+
+Remaining:
+
+1. TKT-012 (hardening and governance)
 
 This ticket set breaks the work into milestones and implementation-sized tasks. It is written so another agent can pick up the work with minimal additional context.
 
@@ -490,7 +517,7 @@ Current verification baseline (as of 2026-03-17):
 1. `cargo test plot_state` passes in `src-tauri`.
 2. `npm run test -- src/App.integration.test.tsx` passes in repo root.
 
-### TKT-008: Close GUI gaps for WALLS, SUBSETS, FSURFACE, TEXT, and SHOW
+### ~~TKT-008: Close GUI gaps for WALLS, SUBSETS, FSURFACE, TEXT, and SHOW~~ ✅ COMPLETE
 
 Completed: 2026-03-20. Added GUI parity controls for range-based `SUBSETS` and `WALLS` (including compact row rendering, edit/remove actions, and full-range `:` semantics backed by explicit full-span normalization), `FSURFACE` controls with immediate enable/disable apply behavior, `TEXT` annotation add/clear controls with sidebar-fit layout fixes, and a `SHOW` status panel with refresh output. Backend Tauri commands added and wired in `src-tauri/src/lib.rs` for `set_plot_walls`, `set_plot_fsurface`, `add_plot_text_annotation`, `clear_plot_text_annotations`, and `show_plot_status`; frontend integration and state synchronization added in `src/App.tsx`; existing integration tests updated for expanded `PlotState` shape and selector disambiguation.
 
@@ -620,9 +647,17 @@ Relevant decisions:
 1. Visual equivalence is sufficient.
 2. Shared render/export logic is preferred.
 
-### TKT-011: Headless CLI PNG export
+### ~~TKT-011: Headless CLI PNG export~~ ✅ COMPLETE
 
 Started: 2026-03-23. Phase 1 bootstrap implementation landed and was then split into a dedicated crate at `headless-export/` with binary target `overview-export`.
+
+Phase completion status (as of 2026-03-28):
+
+1. Phase 1 — ✅ COMPLETE
+2. Phase 2a — ✅ COMPLETE
+3. Phase 2b — ✅ COMPLETE
+4. Phase 2c — ✅ COMPLETE (bounded MVP delivered; deviations documented in `legacy_translation_layer.md` § 3.7–3.10)
+5. Phase 2d — ✅ COMPLETE (14-case regression matrix, dedicated CI gate, all divergences formally documented)
 
 Phase 1 status notes:
 
@@ -724,14 +759,14 @@ The core architectural gap between Phase 1 and visual equivalence is this:
 
 Phase 2 is broken into four sub-phases:
 
-Phase 2a — Carry solution data through RenderIntent:
+Phase 2a — Carry solution data through RenderIntent: ✅ COMPLETE
 
 1. Add a solution-data field (grid vertices + scalar field values) to `RenderIntent` so the headless CLI has the raw inputs the in-app renderer has.
 2. Update `script_executor` to capture the active loaded solution when a `CommitPlot` boundary is reached and embed it in the intent.
 3. Update `headless-export/src/main.rs` to receive and forward the data to the renderer.
 4. `RenderIntent` must remain serializable; use `Option<SolutionSnapshot>` with a serde-skip default so existing callers that do not load solutions continue to compile without changes.
 
-Phase 2b — Implement a 2D projection software renderer:
+Phase 2b — Implement a 2D projection software renderer: ✅ COMPLETE (baseline)
 
 1. Implement a flat axis-aligned view path: for the `PlusZ` / `PlusX` / `PlusY` axis-view presets, project grid vertices onto the corresponding 2D plane and render a heatmap using the resolved colormap.
 2. For arbitrary `VPOINT` camera positions, implement an orthographic projection from the VIEW/VPOINT camera parameters defined in the translation layer (`legacy_translation_layer.md`).
@@ -739,13 +774,13 @@ Phase 2b — Implement a 2D projection software renderer:
 4. Draw contour iso-lines over the projected heatmap at the resolved absolute contour levels. Use marching squares (or a grid-edge crossing scan) on the 2D projected grid rather than the placeholder horizontal stripe approach.
 5. `ContourAttribute::ColorContours` fills bands between iso-lines using the field colormap. `ContourAttribute::Surface` renders iso-surfaces as colored filled regions. `ContourAttribute::Line` draws line-only iso-contours. `ContourAttribute::Grid` adds a mesh grid overlay. `ContourAttribute::Dots` marks iso-crossings only.
 
-Phase 2c — Function-surface plot family:
+Phase 2c — Function-surface plot family: ✅ COMPLETE
 
 1. Implement a simple wireframe-projection renderer for the `FunctionSurface` plot family using the same camera model.
 2. The function-surface family renders the scalar function as a height axis; project each grid face as a polygon and shade by scalar value using the field colormap.
 3. This phase may be scoped to a bounded MVP: full hidden-surface elimination is optional if the deviation is documented.
 
-Phase 2d — Test coverage and documented divergence:
+Phase 2d — Test coverage and documented divergence: ✅ COMPLETE
 
 1. Add pixel-level regression tests using fixture `.com` files with known solution data. The CI smoke baseline exists (`headless-export/fixtures/smoke.com`) but must be extended to include a fixture that loads real or synthetic solution data.
 2. Document the remaining known deviations from in-app output (e.g., no anti-aliasing, no lighting model, wireframe fallback for function-surface hidden surface elimination). These form the content for acceptance criterion #3.
@@ -782,9 +817,9 @@ Scope:
 
 Acceptance criteria:
 
-1. `overview-export --cmd file.com --out out.png` works. ✅ (Phase 1)
-2. Output is visually equivalent to the same render intent in-app. ⏳ (remaining work)
-3. Any divergence from in-app export is documented. ✅ (Phase 1)
+1. `overview-export --cmd file.com --out out.png` works. ✅ COMPLETE (Phase 1)
+2. Output is visually equivalent to the same render intent in-app. ✅ COMPLETE (bounded MVP scope; known deviations documented in `legacy_translation_layer.md` § 3.7–3.10: no anti-aliasing, flat Lambert shading, orthographic for named views, no iso-contours on function surfaces)
+3. Any divergence from in-app export is documented. ✅ COMPLETE (formal divergence entries in `legacy_translation_layer.md` § 3.7–3.10)
 
 Dependencies:
 
@@ -797,7 +832,7 @@ Relevant decisions:
 
 ## Milestone D: Hardening and governance
 
-### TKT-012: Add parity tests, CI gates, and ADRs
+### TKT-012: Add parity tests, CI gates, and ADRs ⏳ NOT STARTED
 
 Goal:
 Prevent long-term drift between script execution and GUI behavior.
