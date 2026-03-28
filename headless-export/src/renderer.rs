@@ -8,7 +8,7 @@
 /// The output is intentionally close to the in-app Three.js renderer for
 /// axis-aligned views.  Documented deviations: no anti-aliasing, no lighting
 /// model, orthographic (no perspective), and function-surface mode is a
-/// bounded wireframe MVP rather than a hidden-surface-shaded mesh.
+/// bounded filled MVP rather than a full Three.js-equivalent mesh/material path.
 use image::{Rgba, RgbaImage};
 
 use crate::colormap;
@@ -51,7 +51,7 @@ pub fn render_snapshot(
         );
         if !matches!(state.contour_spec, ContourSpec::None) {
             render_warnings.push(
-                "Renderer: contour spec is ignored in Function Surface mode (wireframe MVP)"
+                "Renderer: contour spec is ignored in Function Surface mode (filled MVP)"
                     .to_string(),
             );
         }
@@ -87,7 +87,7 @@ pub fn render_snapshot(
     draw_frame_border(img);
 }
 
-// ─── Function-surface wireframe MVP ──────────────────────────────────────────
+// ─── Function-surface filled MVP (depth-buffer) ─────────────────────────────
 
 fn render_function_surface(
     img: &mut RgbaImage,
@@ -136,6 +136,7 @@ fn render_function_surface(
         camera_basis_for_state(state)
     };
 
+    let mut world_points = Vec::with_capacity(ni * nj);
     let mut projected = Vec::with_capacity(ni * nj);
     let mut scalars = Vec::with_capacity(ni * nj);
 
@@ -145,6 +146,7 @@ fn render_function_surface(
             let t = ((snap.scalar[idx] - field_min) / field_span).clamp(0.0, 1.0);
             let height = (t - 0.5) * 2.0 * domain_scale;
             let point = (snap.x[idx], snap.y[idx], height);
+            world_points.push(point);
             projected.push(project_point(point, camera));
             scalars.push(snap.scalar[idx]);
         }
@@ -152,7 +154,8 @@ fn render_function_surface(
 
     let img_w = img.width();
     let img_h = img.height();
-    let (min_u, max_u, min_v, max_v) = bbox(&projected);
+    let projected_uv: Vec<(f32, f32)> = projected.iter().map(|p| (p.0, p.1)).collect();
+    let (min_u, max_u, min_v, max_v) = bbox(&projected_uv);
     let range_u = (max_u - min_u).max(1e-20);
     let range_v = (max_v - min_v).max(1e-20);
     let draw_w = img_w.saturating_sub(2 * margin) as f32;
@@ -161,52 +164,113 @@ fn render_function_surface(
         return;
     }
 
-    let uv_to_px = |u: f32, v: f32| -> (i32, i32) {
-        let px = margin as f32 + (u - min_u) / range_u * draw_w;
-        let py = margin as f32 + (v - min_v) / range_v * draw_h;
-        (px.round() as i32, py.round() as i32)
+    let uv_to_screen = |u: f32, v: f32| -> (f32, f32) {
+        let sx = margin as f32 + (u - min_u) / range_u * draw_w;
+        let sy = margin as f32 + (v - min_v) / range_v * draw_h;
+        (sx, sy)
     };
 
-    // Horizontal wireframe segments.
-    for j in 0..nj {
+    let mut screen_verts = Vec::with_capacity(ni * nj);
+    for idx in 0..(ni * nj) {
+        let (sx, sy) = uv_to_screen(projected[idx].0, projected[idx].1);
+        screen_verts.push(SurfaceVertex {
+            x: sx,
+            y: sy,
+            depth: projected[idx].2,
+            scalar: scalars[idx],
+        });
+    }
+
+    // Filled rasterization with hidden-surface handling via z-buffer.
+    let mut zbuf = vec![f32::INFINITY; (img.width() as usize) * (img.height() as usize)];
+
+    for j in 0..(nj - 1) {
         for i in 0..(ni - 1) {
             let a = i + j * ni;
             let b = (i + 1) + j * ni;
-            let color = surface_segment_color(
+            let c = i + (j + 1) * ni;
+            let d = (i + 1) + (j + 1) * ni;
+
+            let i0 = face_intensity(world_points[a], world_points[b], world_points[d], camera.2);
+            rasterize_triangle_z(
+                img,
+                &mut zbuf,
+                screen_verts[a],
+                screen_verts[b],
+                screen_verts[d],
                 &state.contour_attribute,
-                0.5 * (scalars[a] + scalars[b]),
                 field_min,
                 field_max,
+                i0,
             );
-            let (x0, y0) = uv_to_px(projected[a].0, projected[a].1);
-            let (x1, y1) = uv_to_px(projected[b].0, projected[b].1);
-            draw_line(img, x0, y0, x1, y1, color);
+
+            let i1 = face_intensity(world_points[a], world_points[d], world_points[c], camera.2);
+            rasterize_triangle_z(
+                img,
+                &mut zbuf,
+                screen_verts[a],
+                screen_verts[d],
+                screen_verts[c],
+                &state.contour_attribute,
+                field_min,
+                field_max,
+                i1,
+            );
         }
     }
 
-    // Vertical wireframe segments.
-    for j in 0..(nj - 1) {
-        for i in 0..ni {
-            let a = i + j * ni;
-            let b = i + (j + 1) * ni;
-            let color = surface_segment_color(
-                &state.contour_attribute,
-                0.5 * (scalars[a] + scalars[b]),
-                field_min,
-                field_max,
-            );
-            let (x0, y0) = uv_to_px(projected[a].0, projected[a].1);
-            let (x1, y1) = uv_to_px(projected[b].0, projected[b].1);
-            draw_line(img, x0, y0, x1, y1, color);
+    // Attribute-specific overlays.
+    if matches!(
+        state.contour_attribute,
+        ContourAttribute::Line | ContourAttribute::Grid
+    ) {
+        for j in 0..nj {
+            for i in 0..(ni - 1) {
+                let a = i + j * ni;
+                let b = (i + 1) + j * ni;
+                let color = surface_segment_color(
+                    &state.contour_attribute,
+                    0.5 * (scalars[a] + scalars[b]),
+                    field_min,
+                    field_max,
+                );
+                draw_line(
+                    img,
+                    screen_verts[a].x.round() as i32,
+                    screen_verts[a].y.round() as i32,
+                    screen_verts[b].x.round() as i32,
+                    screen_verts[b].y.round() as i32,
+                    color,
+                );
+            }
+        }
+        for j in 0..(nj - 1) {
+            for i in 0..ni {
+                let a = i + j * ni;
+                let b = i + (j + 1) * ni;
+                let color = surface_segment_color(
+                    &state.contour_attribute,
+                    0.5 * (scalars[a] + scalars[b]),
+                    field_min,
+                    field_max,
+                );
+                draw_line(
+                    img,
+                    screen_verts[a].x.round() as i32,
+                    screen_verts[a].y.round() as i32,
+                    screen_verts[b].x.round() as i32,
+                    screen_verts[b].y.round() as i32,
+                    color,
+                );
+            }
         }
     }
 
     if matches!(state.contour_attribute, ContourAttribute::Dots) {
-        for (idx, &(u, v)) in projected.iter().enumerate() {
+        for (idx, vtx) in screen_verts.iter().enumerate() {
             let color =
                 surface_segment_color(&state.contour_attribute, scalars[idx], field_min, field_max);
-            let (x, y) = uv_to_px(u, v);
-            paint_dot(img, x, y, color);
+            paint_dot(img, vtx.x.round() as i32, vtx.y.round() as i32, color);
         }
     }
 }
@@ -219,7 +283,7 @@ fn xy_extent(snap: &SolutionSnapshot) -> f32 {
     (max_x - min_x).abs().max((max_y - min_y).abs())
 }
 
-type CameraBasis = ((f32, f32, f32), (f32, f32, f32));
+type CameraBasis = ((f32, f32, f32), (f32, f32, f32), (f32, f32, f32));
 
 fn camera_basis_for_state(state: &PlotState) -> CameraBasis {
     if let Some(vp) = &state.viewpoint {
@@ -286,13 +350,117 @@ fn camera_basis_from_viewpoint(vp: &ViewPoint) -> CameraBasis {
     };
     let right = normalize(cross((lx, ly, lz), (wx, wy, wz)));
     let up = normalize(cross(right, (lx, ly, lz)));
-    (right, up)
+    (right, up, (lx, ly, lz))
 }
 
-fn project_point(point: (f32, f32, f32), camera: CameraBasis) -> (f32, f32) {
+fn project_point(point: (f32, f32, f32), camera: CameraBasis) -> (f32, f32, f32) {
     let u = point.0 * (camera.0).0 + point.1 * (camera.0).1 + point.2 * (camera.0).2;
     let v = point.0 * (camera.1).0 + point.1 * (camera.1).1 + point.2 * (camera.1).2;
-    (u, v)
+    let depth = point.0 * (camera.2).0 + point.1 * (camera.2).1 + point.2 * (camera.2).2;
+    (u, v, depth)
+}
+
+#[derive(Copy, Clone)]
+struct SurfaceVertex {
+    x: f32,
+    y: f32,
+    depth: f32,
+    scalar: f32,
+}
+
+fn face_intensity(
+    p0: (f32, f32, f32),
+    p1: (f32, f32, f32),
+    p2: (f32, f32, f32),
+    look: (f32, f32, f32),
+) -> f32 {
+    let e1 = (p1.0 - p0.0, p1.1 - p0.1, p1.2 - p0.2);
+    let e2 = (p2.0 - p0.0, p2.1 - p0.1, p2.2 - p0.2);
+    let n = normalize(cross(e1, e2));
+    let view = (-look.0, -look.1, -look.2);
+    let lambert = dot(n, view).abs().clamp(0.0, 1.0);
+    0.35 + 0.65 * lambert
+}
+
+fn surface_fill_color(
+    attr: &ContourAttribute,
+    scalar: f32,
+    field_min: f32,
+    field_max: f32,
+    intensity: f32,
+) -> Rgba<u8> {
+    let t = ((scalar - field_min) / (field_max - field_min).max(1e-20)).clamp(0.0, 1.0);
+    let base = match attr {
+        ContourAttribute::Surface | ContourAttribute::ColorContours => colormap::apply(t),
+        ContourAttribute::Line => colormap::grayscale(0.45 + 0.4 * t),
+        ContourAttribute::Grid => colormap::grayscale(0.35 + 0.35 * t),
+        ContourAttribute::Dots => colormap::grayscale(0.4 + 0.35 * t),
+    };
+    let k = intensity.clamp(0.0, 1.0);
+    Rgba([
+        (base[0] as f32 * k).clamp(0.0, 255.0) as u8,
+        (base[1] as f32 * k).clamp(0.0, 255.0) as u8,
+        (base[2] as f32 * k).clamp(0.0, 255.0) as u8,
+        255,
+    ])
+}
+
+fn rasterize_triangle_z(
+    img: &mut RgbaImage,
+    zbuf: &mut [f32],
+    v0: SurfaceVertex,
+    v1: SurfaceVertex,
+    v2: SurfaceVertex,
+    attr: &ContourAttribute,
+    field_min: f32,
+    field_max: f32,
+    intensity: f32,
+) {
+    let w = img.width() as i32;
+    let h = img.height() as i32;
+
+    let min_x = v0.x.min(v1.x).min(v2.x).floor().max(0.0) as i32;
+    let max_x = v0.x.max(v1.x).max(v2.x).ceil().min((w - 1) as f32) as i32;
+    let min_y = v0.y.min(v1.y).min(v2.y).floor().max(0.0) as i32;
+    let max_y = v0.y.max(v1.y).max(v2.y).ceil().min((h - 1) as f32) as i32;
+
+    if min_x > max_x || min_y > max_y {
+        return;
+    }
+
+    let area = edge_fn(v0.x, v0.y, v1.x, v1.y, v2.x, v2.y);
+    if area.abs() < 1e-12 {
+        return;
+    }
+
+    for py in min_y..=max_y {
+        for px in min_x..=max_x {
+            let x = px as f32 + 0.5;
+            let y = py as f32 + 0.5;
+            let w0 = edge_fn(v1.x, v1.y, v2.x, v2.y, x, y) / area;
+            let w1 = edge_fn(v2.x, v2.y, v0.x, v0.y, x, y) / area;
+            let w2 = edge_fn(v0.x, v0.y, v1.x, v1.y, x, y) / area;
+
+            if w0 >= -1e-6 && w1 >= -1e-6 && w2 >= -1e-6 {
+                let depth = w0 * v0.depth + w1 * v1.depth + w2 * v2.depth;
+                let idx = py as usize * img.width() as usize + px as usize;
+                if depth < zbuf[idx] {
+                    zbuf[idx] = depth;
+                    let scalar = w0 * v0.scalar + w1 * v1.scalar + w2 * v2.scalar;
+                    let color = surface_fill_color(attr, scalar, field_min, field_max, intensity);
+                    img.put_pixel(px as u32, py as u32, color);
+                }
+            }
+        }
+    }
+}
+
+fn edge_fn(x0: f32, y0: f32, x1: f32, y1: f32, x: f32, y: f32) -> f32 {
+    (x - x0) * (y1 - y0) - (y - y0) * (x1 - x0)
+}
+
+fn dot(a: (f32, f32, f32), b: (f32, f32, f32)) -> f32 {
+    a.0 * b.0 + a.1 * b.1 + a.2 * b.2
 }
 
 fn surface_segment_color(

@@ -6,21 +6,33 @@ OUT_DIR="$ROOT/out"
 REF_DIR="$ROOT/reference"
 mkdir -p "$OUT_DIR"
 
-cargo run --manifest-path "$ROOT/../../Cargo.toml" --bin overview-export -- \
-  --cmd "$ROOT/synthetic_4x4.com" \
-  --out "$OUT_DIR/synthetic_4x4.png" \
-  --width 320 \
-  --height 200 >/dev/null
+check_case() {
+  local name="$1"
+  local cmd_file="$ROOT/${name}.com"
+  local out_file="$OUT_DIR/${name}.png"
+  local ref_hash_file="$REF_DIR/${name}.sha256"
 
-actual="$(shasum -a 256 "$OUT_DIR/synthetic_4x4.png" | awk '{print $1}')"
-expected="$(cat "$REF_DIR/synthetic_4x4.sha256")"
+  cargo run --manifest-path "$ROOT/../../Cargo.toml" --bin overview-export -- \
+    --cmd "$cmd_file" \
+    --out "$out_file" \
+    --width 320 \
+    --height 200 >/dev/null
 
-if [[ "$actual" == "$expected" ]]; then
-  echo "PASS: regression image hash matches reference"
-  echo "hash: $actual"
-else
-  echo "FAIL: regression image hash mismatch"
-  echo "expected: $expected"
-  echo "actual:   $actual"
-  exit 1
-fi
+  local actual
+  local expected
+  actual="$(shasum -a 256 "$out_file" | awk '{print $1}')"
+  expected="$(cat "$ref_hash_file")"
+
+  if [[ "$actual" == "$expected" ]]; then
+    echo "PASS: ${name} hash matches reference"
+    echo "hash: $actual"
+  else
+    echo "FAIL: ${name} hash mismatch"
+    echo "expected: $expected"
+    echo "actual:   $actual"
+    exit 1
+  fi
+}
+
+check_case "synthetic_4x4"
+check_case "synthetic_4x4_surface"

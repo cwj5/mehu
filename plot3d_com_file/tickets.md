@@ -645,13 +645,16 @@ Update: 2026-03-27 (temporary regression reference added)
 2. Captured a reference output image at `headless-export/fixtures/regression/reference/synthetic_4x4.png`.
 3. Stored the baseline hash in `headless-export/fixtures/regression/reference/synthetic_4x4.sha256`.
 4. Added helper script `headless-export/fixtures/regression/check_regression.sh` to regenerate output and assert hash equality for quick local regression checks.
+5. Added a second function-surface regression fixture `synthetic_4x4_surface.com` with reference output `reference/synthetic_4x4_surface.png` and hash `reference/synthetic_4x4_surface.sha256`.
+6. Expanded the regression check script so CI now validates both contour and function-surface synthetic baselines.
 
 Update: 2026-03-27 (Phase 2c bounded MVP started)
 
 1. `FunctionSurface` no longer falls through to the contour heatmap path only; the headless renderer now has a bounded wireframe-projection MVP for function-surface plots.
 2. The MVP uses orthographic projection with an oblique fallback camera for top/custom views that would otherwise collapse the height axis.
-3. Function-surface rendering is still not parity-complete: there is no hidden-surface elimination, no lighting/shading model, and no filled-surface rasterization yet.
-4. Added test coverage verifying that function-surface renders produce visible output, differ from contour renders, and emit a warning when the oblique fallback camera is used.
+3. Function-surface rendering now includes a depth-buffer filled-surface pass (bounded hidden-surface-aware rasterization) plus attribute-specific overlays (`LINE`/`GRID` wireframe and `DOTS` markers).
+4. Function-surface rendering is still not parity-complete: there is no perspective camera model, no physically based lighting/material model, and no full Three.js-equivalent mesh pipeline yet.
+5. Added test coverage verifying that function-surface renders produce visible output, differ from contour renders, and emit a warning when the oblique fallback camera is used.
 
 Current verification baseline (as of 2026-03-23):
 

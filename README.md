@@ -93,9 +93,14 @@ Included assets:
 
 - Synthetic grid fixture: [headless-export/fixtures/regression/synthetic_4x4.xyz](headless-export/fixtures/regression/synthetic_4x4.xyz)
 - Synthetic solution fixture: [headless-export/fixtures/regression/synthetic_4x4.q](headless-export/fixtures/regression/synthetic_4x4.q)
-- Command file: [headless-export/fixtures/regression/synthetic_4x4.com](headless-export/fixtures/regression/synthetic_4x4.com)
-- Reference PNG: [headless-export/fixtures/regression/reference/synthetic_4x4.png](headless-export/fixtures/regression/reference/synthetic_4x4.png)
-- Reference hash: [headless-export/fixtures/regression/reference/synthetic_4x4.sha256](headless-export/fixtures/regression/reference/synthetic_4x4.sha256)
+- Contour command fixture: [headless-export/fixtures/regression/synthetic_4x4.com](headless-export/fixtures/regression/synthetic_4x4.com)
+- Function-surface command fixture: [headless-export/fixtures/regression/synthetic_4x4_surface.com](headless-export/fixtures/regression/synthetic_4x4_surface.com)
+- Contour reference PNG/hash:
+  [headless-export/fixtures/regression/reference/synthetic_4x4.png](headless-export/fixtures/regression/reference/synthetic_4x4.png),
+  [headless-export/fixtures/regression/reference/synthetic_4x4.sha256](headless-export/fixtures/regression/reference/synthetic_4x4.sha256)
+- Function-surface reference PNG/hash:
+  [headless-export/fixtures/regression/reference/synthetic_4x4_surface.png](headless-export/fixtures/regression/reference/synthetic_4x4_surface.png),
+  [headless-export/fixtures/regression/reference/synthetic_4x4_surface.sha256](headless-export/fixtures/regression/reference/synthetic_4x4_surface.sha256)
 
 Run the local regression check from repo root:
 
@@ -105,9 +110,9 @@ headless-export/fixtures/regression/check_regression.sh
 
 What it does:
 
-- Re-runs the exporter on the synthetic fixture.
+- Re-runs the exporter on both synthetic fixtures (contour + function-surface).
 - Writes a fresh output under `headless-export/fixtures/regression/out/`.
-- Compares the generated PNG SHA-256 against the checked-in reference hash.
+- Compares each generated PNG SHA-256 against its checked-in reference hash.
 
 This is a temporary baseline to catch unintended renderer drift while TKT-011 is still evolving. When a more representative reference set exists, this can be replaced with richer image-diff regression coverage.
 
