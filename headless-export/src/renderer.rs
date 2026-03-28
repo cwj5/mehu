@@ -147,7 +147,11 @@ fn render_function_surface(
             let height = (t - 0.5) * 2.0 * domain_scale;
             let point = (snap.x[idx], snap.y[idx], height);
             world_points.push(point);
-            projected.push(project_point(point, camera));
+            let mut p = project_point(point, camera);
+            if is_swapped_plane_view(state.axis_view) {
+                p = (p.1, p.0, p.2);
+            }
+            projected.push(p);
             scalars.push(snap.scalar[idx]);
         }
     }
@@ -284,6 +288,13 @@ fn xy_extent(snap: &SolutionSnapshot) -> f32 {
 }
 
 type CameraBasis = ((f32, f32, f32), (f32, f32, f32), (f32, f32, f32));
+
+fn is_swapped_plane_view(view: AxisView) -> bool {
+    matches!(
+        view,
+        AxisView::PlaneYX | AxisView::PlaneZX | AxisView::PlaneZY
+    )
+}
 
 fn camera_basis_for_state(state: &PlotState) -> CameraBasis {
     if let Some(vp) = &state.viewpoint {
@@ -510,11 +521,18 @@ fn extract_face_slab(
 
     match &state.axis_view {
         // ── Looking down Z, seeing X-Y ──────────────────────────────────────
-        AxisView::PlusZ | AxisView::PlaneXY | AxisView::PlaneYX => {
+        AxisView::PlusZ | AxisView::PlaneXY => {
             let k = nk - 1;
             face_slab(snap, ni, nj, |i, j| {
                 let idx = i + j * ni + k * ni * nj;
                 ((snap.x[idx], snap.y[idx]), snap.scalar[idx])
+            })
+        }
+        AxisView::PlaneYX => {
+            let k = nk - 1;
+            face_slab(snap, ni, nj, |i, j| {
+                let idx = i + j * ni + k * ni * nj;
+                ((snap.y[idx], snap.x[idx]), snap.scalar[idx])
             })
         }
         AxisView::MinusZ => {
@@ -526,11 +544,18 @@ fn extract_face_slab(
         }
 
         // ── Looking from +X, seeing Y-Z ─────────────────────────────────────
-        AxisView::PlusX | AxisView::PlaneYZ | AxisView::PlaneZY => {
+        AxisView::PlusX | AxisView::PlaneYZ => {
             let i = ni - 1;
             face_slab(snap, nj, nk, |j, k| {
                 let idx = i + j * ni + k * ni * nj;
                 ((snap.y[idx], snap.z[idx]), snap.scalar[idx])
+            })
+        }
+        AxisView::PlaneZY => {
+            let i = ni - 1;
+            face_slab(snap, nj, nk, |j, k| {
+                let idx = i + j * ni + k * ni * nj;
+                ((snap.z[idx], snap.y[idx]), snap.scalar[idx])
             })
         }
         AxisView::MinusX => {
@@ -542,11 +567,18 @@ fn extract_face_slab(
         }
 
         // ── Looking from +Y, seeing X-Z ─────────────────────────────────────
-        AxisView::PlusY | AxisView::PlaneXZ | AxisView::PlaneZX => {
+        AxisView::PlusY | AxisView::PlaneXZ => {
             let j = nj - 1;
             face_slab(snap, ni, nk, |i, k| {
                 let idx = i + j * ni + k * ni * nj;
                 ((snap.x[idx], snap.z[idx]), snap.scalar[idx])
+            })
+        }
+        AxisView::PlaneZX => {
+            let j = nj - 1;
+            face_slab(snap, ni, nk, |i, k| {
+                let idx = i + j * ni + k * ni * nj;
+                ((snap.z[idx], snap.x[idx]), snap.scalar[idx])
             })
         }
         AxisView::MinusY => {
@@ -1184,5 +1216,86 @@ mod tests {
         assert!(warnings
             .iter()
             .any(|w| w.contains("oblique fallback camera")));
+    }
+
+    #[test]
+    fn face_slab_plane_yx_swaps_axes() {
+        let snap = SolutionSnapshot {
+            ni: 2,
+            nj: 2,
+            nk: 1,
+            x: vec![10.0, 20.0, 30.0, 40.0],
+            y: vec![1.0, 2.0, 3.0, 4.0],
+            z: vec![0.0, 0.0, 0.0, 0.0],
+            scalar: vec![0.0, 1.0, 2.0, 3.0],
+            field_min: 0.0,
+            field_max: 3.0,
+        };
+        let state = PlotState {
+            axis_view: AxisView::PlaneYX,
+            ..PlotState::default()
+        };
+        let mut w = Vec::new();
+        let (uvs, _scalars, sw, sh) = extract_face_slab(&snap, &state, &mut w);
+
+        assert_eq!((sw, sh), (2, 2));
+        assert_eq!(uvs[0], (1.0, 10.0));
+        assert_eq!(uvs[1], (2.0, 20.0));
+        assert_eq!(uvs[2], (3.0, 30.0));
+        assert_eq!(uvs[3], (4.0, 40.0));
+    }
+
+    #[test]
+    fn face_slab_plane_zx_swaps_axes() {
+        let snap = SolutionSnapshot {
+            ni: 2,
+            nj: 2,
+            nk: 2,
+            x: vec![0.0, 1.0, 0.0, 1.0, 10.0, 20.0, 30.0, 40.0],
+            y: vec![0.0, 0.0, 1.0, 1.0, 5.0, 5.0, 5.0, 5.0],
+            z: vec![7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0],
+            scalar: vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
+            field_min: 0.0,
+            field_max: 7.0,
+        };
+        let state = PlotState {
+            axis_view: AxisView::PlaneZX,
+            ..PlotState::default()
+        };
+        let mut w = Vec::new();
+        let (uvs, _scalars, sw, sh) = extract_face_slab(&snap, &state, &mut w);
+
+        assert_eq!((sw, sh), (2, 2));
+        assert_eq!(uvs[0], (9.0, 0.0));
+        assert_eq!(uvs[1], (10.0, 1.0));
+        assert_eq!(uvs[2], (13.0, 30.0));
+        assert_eq!(uvs[3], (14.0, 40.0));
+    }
+
+    #[test]
+    fn face_slab_plane_zy_swaps_axes() {
+        let snap = SolutionSnapshot {
+            ni: 2,
+            nj: 2,
+            nk: 2,
+            x: vec![0.0, 99.0, 0.0, 99.0, 10.0, 20.0, 30.0, 40.0],
+            y: vec![1.0, 2.0, 3.0, 4.0, 11.0, 12.0, 13.0, 14.0],
+            z: vec![5.0, 6.0, 7.0, 8.0, 15.0, 16.0, 17.0, 18.0],
+            scalar: vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
+            field_min: 0.0,
+            field_max: 7.0,
+        };
+        let state = PlotState {
+            axis_view: AxisView::PlaneZY,
+            ..PlotState::default()
+        };
+        let mut w = Vec::new();
+        let (uvs, _scalars, sw, sh) = extract_face_slab(&snap, &state, &mut w);
+
+        assert_eq!((sw, sh), (2, 2));
+        assert_eq!(uvs[0], (6.0, 2.0));
+        assert_eq!(uvs[1], (8.0, 4.0));
+        assert_eq!(uvs[2], (16.0, 12.0));
+        assert_eq!(uvs[3], (18.0, 14.0));
     }
 }

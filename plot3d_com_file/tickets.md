@@ -665,6 +665,12 @@ Update: 2026-03-27 (Phase 2c bounded MVP started)
 4. Function-surface rendering is still not parity-complete: there is no perspective camera model, no physically based lighting/material model, and no full Three.js-equivalent mesh pipeline yet.
 5. Added test coverage verifying that function-surface renders produce visible output, differ from contour renders, and emit a warning when the oblique fallback camera is used.
 
+Update: 2026-03-27 (camera/projection parity increment)
+
+1. Headless renderer now honors swapped plane-view semantics for `VIEW YX`, `VIEW ZX`, and `VIEW ZY` rather than treating them as unswapped aliases.
+2. The swap behavior is applied to contour slab extraction and function-surface projection so horizontal/vertical axis order follows legacy plane-token intent.
+3. Added renderer unit tests covering `PlaneYX`, `PlaneZX`, and `PlaneZY` slab-axis ordering.
+
 Current verification baseline (as of 2026-03-27):
 
 1. `cargo test --manifest-path headless-export/Cargo.toml --bin overview-export` passes.
