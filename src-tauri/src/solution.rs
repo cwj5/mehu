@@ -128,7 +128,11 @@ pub fn compute_scalar_field(solution: &Plot3DSolution, field: ScalarField) -> Ve
 
         // Placeholder fields are recognized for legacy FUNCTION mapping, but
         // equations are intentionally not guessed here.
-        _ => {}
+        // equations are intentionally not guessed here. We still return a
+        // vector with one value per grid point to preserve length invariants.
+        _ => {
+            result = vec![0.0; total_points];
+        }
     }
 
     result

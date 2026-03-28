@@ -100,7 +100,7 @@ npm run tauri build
 
 ## Headless CLI Export (TKT-011 Phase 1)
 
-For backnode and automation workflows, a standalone Rust CLI exporter is now available.
+For backend and automation workflows, a standalone Rust CLI exporter is now available.
 
 Key properties:
 

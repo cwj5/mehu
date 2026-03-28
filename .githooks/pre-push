@@ -19,7 +19,7 @@ cd "$REPO_ROOT"
 
 # Run Tauri build
 echo "Building Tauri app..."
-if (cd "${REPO_ROOT}/src-tauri" && npm run tauri build > /dev/null 2>&1); then
+if npm run tauri build > /dev/null 2>&1; then
     echo -e "${GREEN}✓ Tauri build succeeded${NC}"
 else
     echo -e "${RED}✗ Tauri build failed${NC}"

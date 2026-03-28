@@ -484,7 +484,7 @@ pub fn map_legacy_function_number(number: u16) -> (Option<ScalarField>, Vec<Diag
         );
     }
 
-    if number <= 299 {
+    if number >= 200 && number <= 299 {
         return (
             None,
             vec![Diagnostic::warning(

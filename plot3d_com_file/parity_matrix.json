@@ -16,9 +16,9 @@
         },
         {
             "id": "FUNCTION",
-            "status": "not-supported",
+            "status": "script-only",
             "ticket": "TKT-003",
-            "notes": "Legacy function-number mapping not implemented"
+            "notes": "Legacy function-number mapping implemented in script executor"
         },
         {
             "id": "VIEW",
@@ -46,9 +46,9 @@
         },
         {
             "id": "PLOT",
-            "status": "not-supported",
+            "status": "script-only",
             "ticket": "TKT-005",
-            "notes": "RenderIntent commit pipeline pending"
+            "notes": "RenderIntent emitted on CommitPlot; GUI integration pending"
         },
         {
             "id": "WALLS",

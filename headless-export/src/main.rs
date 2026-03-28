@@ -48,7 +48,7 @@ fn is_hidden_iblank_point(
         if respect_iblank && iblank_data[idx] == 0 {
             return true;
         }
-        if !show_fringe_points && iblank_data[idx] != 1 {
+            if !show_fringe_points && iblank_data[idx] < 0 {
             return true;
         }
     }

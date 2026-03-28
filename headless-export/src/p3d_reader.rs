@@ -176,4 +176,90 @@ mod tests {
         // p = (gamma-1) * rhoe = 0.5 * 2.0 = 1.0
         assert!((vals[0] - 1.0).abs() < 1e-5, "pressure={}", vals[0]);
     }
+
+        #[test]
+        fn compute_scalar_u_velocity() {
+            let q = QData {
+                rho: vec![2.0, 4.0],
+                rhou: vec![4.0, 12.0],
+                rhov: vec![0.0; 2],
+                rhow: vec![0.0; 2],
+                rhoe: vec![0.0; 2],
+                gamma: None,
+            };
+            let (vals, _, _) = compute_scalar(&q, &crate::plot_state::ScalarField::UVelocity);
+            // u[0] = rhou[0] / rho[0] = 4.0 / 2.0 = 2.0
+            // u[1] = rhou[1] / rho[1] = 12.0 / 4.0 = 3.0
+            assert_eq!(vals.len(), 2);
+            assert!((vals[0] - 2.0).abs() < 1e-5, "u[0]={}", vals[0]);
+            assert!((vals[1] - 3.0).abs() < 1e-5, "u[1]={}", vals[1]);
+        }
+
+        #[test]
+        fn compute_scalar_v_velocity() {
+            let q = QData {
+                rho: vec![1.0, 2.0],
+                rhou: vec![0.0; 2],
+                rhov: vec![5.0, 8.0],
+                rhow: vec![0.0; 2],
+                rhoe: vec![0.0; 2],
+                gamma: None,
+            };
+            let (vals, _, _) = compute_scalar(&q, &crate::plot_state::ScalarField::VVelocity);
+            // v[0] = rhov[0] / rho[0] = 5.0 / 1.0 = 5.0
+            // v[1] = rhov[1] / rho[1] = 8.0 / 2.0 = 4.0
+            assert_eq!(vals.len(), 2);
+            assert!((vals[0] - 5.0).abs() < 1e-5, "v[0]={}", vals[0]);
+            assert!((vals[1] - 4.0).abs() < 1e-5, "v[1]={}", vals[1]);
+        }
+
+        #[test]
+        fn compute_scalar_w_velocity() {
+            let q = QData {
+                rho: vec![1.0, 2.0],
+                rhou: vec![0.0; 2],
+                rhov: vec![0.0; 2],
+                rhow: vec![3.0, 10.0],
+                rhoe: vec![0.0; 2],
+                gamma: None,
+            };
+            let (vals, _, _) = compute_scalar(&q, &crate::plot_state::ScalarField::WVelocity);
+            // w[0] = rhow[0] / rho[0] = 3.0 / 1.0 = 3.0
+            // w[1] = rhow[1] / rho[1] = 10.0 / 2.0 = 5.0
+            assert_eq!(vals.len(), 2);
+            assert!((vals[0] - 3.0).abs() < 1e-5, "w[0]={}", vals[0]);
+            assert!((vals[1] - 5.0).abs() < 1e-5, "w[1]={}", vals[1]);
+        }
+
+        #[test]
+        fn compute_scalar_velocity_fields_handle_zero_density() {
+            let q = QData {
+                rho: vec![1.0, 0.0, -1.0],
+                rhou: vec![2.0, 2.0, 2.0],
+                rhov: vec![3.0, 3.0, 3.0],
+                rhow: vec![4.0, 4.0, 4.0],
+                rhoe: vec![0.0; 3],
+                gamma: None,
+            };
+            // Test UVelocity with zero and negative density
+            let (u_vals, _, _) = compute_scalar(&q, &crate::plot_state::ScalarField::UVelocity);
+            assert_eq!(u_vals.len(), 3);
+            assert!((u_vals[0] - 2.0).abs() < 1e-5, "u[0]={}", u_vals[0]);
+            assert_eq!(u_vals[1], 0.0, "u[1] should be 0 for zero density");
+            assert_eq!(u_vals[2], 0.0, "u[2] should be 0 for negative density");
+
+            // Test VVelocity with zero and negative density
+            let (v_vals, _, _) = compute_scalar(&q, &crate::plot_state::ScalarField::VVelocity);
+            assert_eq!(v_vals.len(), 3);
+            assert!((v_vals[0] - 3.0).abs() < 1e-5, "v[0]={}", v_vals[0]);
+            assert_eq!(v_vals[1], 0.0, "v[1] should be 0 for zero density");
+            assert_eq!(v_vals[2], 0.0, "v[2] should be 0 for negative density");
+
+            // Test WVelocity with zero and negative density
+            let (w_vals, _, _) = compute_scalar(&q, &crate::plot_state::ScalarField::WVelocity);
+            assert_eq!(w_vals.len(), 3);
+            assert!((w_vals[0] - 4.0).abs() < 1e-5, "w[0]={}", w_vals[0]);
+            assert_eq!(w_vals[1], 0.0, "w[1] should be 0 for zero density");
+            assert_eq!(w_vals[2], 0.0, "w[2] should be 0 for negative density");
+        }
 }
