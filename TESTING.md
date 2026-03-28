@@ -55,6 +55,47 @@ The repository's parity policy is split into stable CI checks so contributors ca
 
 The first three checks are defined in [.github/workflows/parity-matrix.yml](.github/workflows/parity-matrix.yml). `Headless Regression` remains a separate required workflow because export-path drift is intentionally tracked outside the GUI/script parity suite.
 
+## Parity Validation Sequence (Local)
+
+Use this exact sequence from repo root to mirror required checks:
+
+```bash
+npm run validate:parity-matrix
+npm run test:parity-backend
+npm run test:parity-cross-path
+headless-export/fixtures/regression/check_regression.sh
+```
+
+Expected success indicators:
+
+- `validate:parity-matrix`: `[parity-matrix] OK: ... capability rows validated`
+- `test:parity-backend`: `backend_parity_fixtures_match_expected_outputs ... ok`
+- `test:parity-cross-path`: `Test Files  1 passed` and all parity tests green
+- `check_regression.sh`: hash comparison passes with no mismatch errors
+
+## When PRs Must Update Parity Matrix
+
+Update [plot3d_com_file/parity_matrix.json](plot3d_com_file/parity_matrix.json) in the same PR when you change:
+
+- capability support status
+- ticket linkage, rationale, or notes for any capability row
+- parser/executor behavior or GUI behavior that affects parity capability semantics
+- parity scope assumptions in docs that would make matrix metadata stale
+
+The parity governance check enforces freshness and will fail if capability-affecting code changed after `lastUpdated`.
+
+## Parity Troubleshooting
+
+- `Parity Governance` failure:
+  - Run `npm run validate:parity-matrix` locally.
+  - Fix schema/governance errors and refresh `lastUpdated` after reviewing parity impact.
+- `Backend Parity Fixtures` failure:
+  - Run `npm run test:parity-backend` and inspect expected vs actual fixture outputs in backend tests.
+- `Cross-Path Parity` failure:
+  - Run `npm run test:parity-cross-path` and inspect the failing case in `src/App.integration.test.tsx`.
+- `Headless Regression` failure:
+  - Re-run `headless-export/fixtures/regression/check_regression.sh` and compare generated outputs under `headless-export/fixtures/regression/out`.
+
 ## Test Structure
 
 ### TypeScript/Frontend Tests

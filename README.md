@@ -21,6 +21,43 @@ A modern, cross-platform application for visualizing CFD (Computational Fluid Dy
 - **Multi-Grid Support**: Handle multiple computational grids
 - **Cross-Platform**: Runs on Linux, Windows, and macOS
 
+## PLOT3D .com Parity Scope
+
+Source of truth: [plot3d_com_file/parity_matrix.json](plot3d_com_file/parity_matrix.json) (lastUpdated: `2026-03-28`).
+
+Current capability status snapshot:
+
+| Capability | Status | Tracking Ticket | Notes |
+|---|---|---|---|
+| READ | not-supported | TKT-004 | Parser/executor implementation pending |
+| FUNCTION | not-supported | TKT-003 | Legacy function-number mapping not implemented |
+| VIEW | not-supported | TKT-009 | Legacy-to-Three.js translation layer pending |
+| VPOINT | not-supported | TKT-009 | Legacy-to-Three.js translation layer pending |
+| MINMAX | not-supported | TKT-002 | Shared PlotState model pending |
+| CONTOURS | not-supported | TKT-007 | Absolute multi-level contour model pending |
+| PLOT | not-supported | TKT-005 | RenderIntent commit pipeline pending |
+| WALLS | not-supported | TKT-008 | Range-based WALLS GUI and state model pending |
+| SUBSETS | not-supported | TKT-008 | Range-based SUBSETS GUI and state model pending |
+| FSURFACE | not-supported | TKT-008 | FSURFACE controls and execution semantics pending |
+| TEXT | not-supported | TKT-008 | Plot text state and GUI controls pending |
+| SHOW | not-supported | TKT-008 | SHOW status output and GUI display pending |
+
+Commands currently out of scope:
+
+- HELP
+- LIST
+- MAP
+- CLEAR
+- EXIT
+- QUIT
+- VECTORS
+- RAKES
+
+## Known Limitations and Deviations
+
+- Known legacy-to-modern rendering translation behavior and deviations are tracked in [plot3d_com_file/legacy_translation_layer.md](plot3d_com_file/legacy_translation_layer.md).
+- Headless export determinism and known divergence from in-app rendering are tracked in [plot3d_com_file/legacy_translation_layer.md](plot3d_com_file/legacy_translation_layer.md) and regression fixtures under [headless-export/fixtures/regression](headless-export/fixtures/regression).
+
 ## Tech Stack
 
 - **Frontend**: React + TypeScript + Three.js
@@ -157,6 +194,14 @@ headless-export/fixtures/regression/check_regression.sh
 ```
 
 Update [plot3d_com_file/parity_matrix.json](plot3d_com_file/parity_matrix.json) whenever a change affects capability status, rationale, or freshness of parity coverage. The validator will fail if the matrix is stale relative to parity-affecting code changes.
+
+Update the parity matrix in the same PR when you change any of the following:
+
+- Supported state of a capability (`supported`, `script-only`, `gui-only`, `not-supported`)
+- Ticket reference, rationale, or notes for a capability
+- Parser/executor behavior for `READ`, `FUNCTION`, `VIEW`, `VPOINT`, `MINMAX`, `CONTOURS`, `PLOT`, `WALLS`, `SUBSETS`, `FSURFACE`, `TEXT`, or `SHOW`
+- Frontend GUI paths that change parity-relevant behavior for the capabilities above
+- Parity CI/check policy documentation that would make matrix metadata stale
 
 ### Running Tests
 
