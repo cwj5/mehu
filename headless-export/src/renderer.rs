@@ -13,7 +13,7 @@ use image::{Rgba, RgbaImage};
 
 use crate::colormap;
 use crate::plot_state::{
-    AxisView, ContourAttribute, ContourSpec, PlotFamily, PlotState, ViewPoint,
+    AxisView, ContourAttribute, ContourSpec, PlotFamily, PlotState, PlotUpAxis, ViewPoint,
 };
 use crate::script_executor::SolutionSnapshot;
 
@@ -127,13 +127,26 @@ fn render_function_surface(
     }
 
     let camera = if oblique_fallback {
-        camera_basis_from_viewpoint(&ViewPoint {
-            x: 2.2,
-            y: 1.8,
-            z: 1.4,
-        })
+        if let Some(plot_up) = state.plot_up {
+            camera_basis_from_viewpoint(
+                &ViewPoint {
+                    x: 2.2,
+                    y: 1.8,
+                    z: 1.4,
+                },
+                plot_up,
+                true,
+                warnings,
+            )
+        } else {
+            camera_basis_from_viewpoint_default(&ViewPoint {
+                x: 2.2,
+                y: 1.8,
+                z: 1.4,
+            })
+        }
     } else {
-        camera_basis_for_state(state)
+        camera_basis_for_state(state, warnings)
     };
 
     let mut world_points = Vec::with_capacity(u_dim * v_dim);
@@ -396,6 +409,194 @@ fn axis_view_aligns_with_function_height(view: AxisView, axis: SpatialAxis) -> b
     }
 }
 
+#[derive(Copy, Clone)]
+struct AxisDirection {
+    axis: SpatialAxis,
+    sign: f32,
+}
+
+fn plot_up_axis_direction(axis: PlotUpAxis) -> AxisDirection {
+    match axis {
+        PlotUpAxis::PositiveX => AxisDirection {
+            axis: SpatialAxis::X,
+            sign: 1.0,
+        },
+        PlotUpAxis::PositiveY => AxisDirection {
+            axis: SpatialAxis::Y,
+            sign: 1.0,
+        },
+        PlotUpAxis::PositiveZ => AxisDirection {
+            axis: SpatialAxis::Z,
+            sign: 1.0,
+        },
+        PlotUpAxis::NegativeX => AxisDirection {
+            axis: SpatialAxis::X,
+            sign: -1.0,
+        },
+        PlotUpAxis::NegativeY => AxisDirection {
+            axis: SpatialAxis::Y,
+            sign: -1.0,
+        },
+        PlotUpAxis::NegativeZ => AxisDirection {
+            axis: SpatialAxis::Z,
+            sign: -1.0,
+        },
+    }
+}
+
+fn default_contour_axes_for_view(view: AxisView) -> (AxisDirection, AxisDirection) {
+    match view {
+        AxisView::PlusZ | AxisView::PlaneXY => (
+            AxisDirection {
+                axis: SpatialAxis::X,
+                sign: 1.0,
+            },
+            AxisDirection {
+                axis: SpatialAxis::Y,
+                sign: 1.0,
+            },
+        ),
+        AxisView::PlaneYX => (
+            AxisDirection {
+                axis: SpatialAxis::Y,
+                sign: 1.0,
+            },
+            AxisDirection {
+                axis: SpatialAxis::X,
+                sign: 1.0,
+            },
+        ),
+        AxisView::MinusZ => (
+            AxisDirection {
+                axis: SpatialAxis::X,
+                sign: -1.0,
+            },
+            AxisDirection {
+                axis: SpatialAxis::Y,
+                sign: 1.0,
+            },
+        ),
+        AxisView::PlusX | AxisView::PlaneYZ => (
+            AxisDirection {
+                axis: SpatialAxis::Y,
+                sign: 1.0,
+            },
+            AxisDirection {
+                axis: SpatialAxis::Z,
+                sign: 1.0,
+            },
+        ),
+        AxisView::PlaneZY => (
+            AxisDirection {
+                axis: SpatialAxis::Z,
+                sign: 1.0,
+            },
+            AxisDirection {
+                axis: SpatialAxis::Y,
+                sign: 1.0,
+            },
+        ),
+        AxisView::MinusX => (
+            AxisDirection {
+                axis: SpatialAxis::Y,
+                sign: -1.0,
+            },
+            AxisDirection {
+                axis: SpatialAxis::Z,
+                sign: 1.0,
+            },
+        ),
+        AxisView::PlusY | AxisView::PlaneXZ => (
+            AxisDirection {
+                axis: SpatialAxis::X,
+                sign: 1.0,
+            },
+            AxisDirection {
+                axis: SpatialAxis::Z,
+                sign: 1.0,
+            },
+        ),
+        AxisView::PlaneZX => (
+            AxisDirection {
+                axis: SpatialAxis::Z,
+                sign: 1.0,
+            },
+            AxisDirection {
+                axis: SpatialAxis::X,
+                sign: 1.0,
+            },
+        ),
+        AxisView::MinusY => (
+            AxisDirection {
+                axis: SpatialAxis::X,
+                sign: -1.0,
+            },
+            AxisDirection {
+                axis: SpatialAxis::Z,
+                sign: 1.0,
+            },
+        ),
+        AxisView::Custom => (
+            AxisDirection {
+                axis: SpatialAxis::X,
+                sign: 1.0,
+            },
+            AxisDirection {
+                axis: SpatialAxis::Y,
+                sign: 1.0,
+            },
+        ),
+    }
+}
+
+fn resolve_contour_axes_for_view(
+    view: AxisView,
+    plot_up: Option<PlotUpAxis>,
+    warnings: &mut Vec<String>,
+) -> (AxisDirection, AxisDirection) {
+    let (default_horizontal, default_vertical) = default_contour_axes_for_view(view);
+    let Some(desired_vertical) = plot_up.map(plot_up_axis_direction) else {
+        return (default_horizontal, default_vertical);
+    };
+
+    if desired_vertical.axis == default_vertical.axis {
+        return (
+            default_horizontal,
+            AxisDirection {
+                axis: desired_vertical.axis,
+                sign: desired_vertical.sign,
+            },
+        );
+    }
+
+    if desired_vertical.axis == default_horizontal.axis {
+        return (
+            AxisDirection {
+                axis: default_vertical.axis,
+                sign: 1.0,
+            },
+            AxisDirection {
+                axis: desired_vertical.axis,
+                sign: desired_vertical.sign,
+            },
+        );
+    }
+
+    warnings.push(
+        "Renderer: PLOT/UP axis is not visible for the selected contour view; using default view orientation"
+            .to_string(),
+    );
+    (default_horizontal, default_vertical)
+}
+
+fn axis_value(axis: SpatialAxis, x: f32, y: f32, z: f32) -> f32 {
+    match axis {
+        SpatialAxis::X => x,
+        SpatialAxis::Y => y,
+        SpatialAxis::Z => z,
+    }
+}
+
 fn axis_extent(values: &[f32]) -> f32 {
     let min_value = values.iter().copied().fold(f32::INFINITY, f32::min);
     let max_value = values.iter().copied().fold(f32::NEG_INFINITY, f32::max);
@@ -422,67 +623,121 @@ fn is_swapped_plane_view(view: AxisView) -> bool {
     )
 }
 
-fn camera_basis_for_state(state: &PlotState) -> CameraBasis {
+fn camera_basis_for_state(state: &PlotState, warnings: &mut Vec<String>) -> CameraBasis {
     if let Some(vp) = &state.viewpoint {
-        return camera_basis_from_viewpoint(vp);
+        return if let Some(plot_up) = state.plot_up {
+            camera_basis_from_viewpoint(vp, plot_up, true, warnings)
+        } else {
+            camera_basis_from_viewpoint_default(vp)
+        };
     }
 
-    match state.axis_view {
-        AxisView::PlusX => camera_basis_from_viewpoint(&ViewPoint {
+    let viewpoint = match state.axis_view {
+        AxisView::PlusX => ViewPoint {
             x: 1.0,
             y: 0.0,
             z: 0.0,
-        }),
-        AxisView::MinusX => camera_basis_from_viewpoint(&ViewPoint {
+        },
+        AxisView::MinusX => ViewPoint {
             x: -1.0,
             y: 0.0,
             z: 0.0,
-        }),
-        AxisView::PlusY => camera_basis_from_viewpoint(&ViewPoint {
+        },
+        AxisView::PlusY => ViewPoint {
             x: 0.0,
             y: 1.0,
             z: 0.0,
-        }),
-        AxisView::MinusY => camera_basis_from_viewpoint(&ViewPoint {
+        },
+        AxisView::MinusY => ViewPoint {
             x: 0.0,
             y: -1.0,
             z: 0.0,
-        }),
-        AxisView::PlusZ | AxisView::PlaneXY | AxisView::PlaneYX => {
-            camera_basis_from_viewpoint(&ViewPoint {
-                x: 0.0,
-                y: 0.0,
-                z: 1.0,
-            })
-        }
-        AxisView::MinusZ => camera_basis_from_viewpoint(&ViewPoint {
+        },
+        AxisView::PlusZ | AxisView::PlaneXY | AxisView::PlaneYX => ViewPoint {
+            x: 0.0,
+            y: 0.0,
+            z: 1.0,
+        },
+        AxisView::MinusZ => ViewPoint {
             x: 0.0,
             y: 0.0,
             z: -1.0,
-        }),
-        AxisView::PlaneXZ | AxisView::PlaneZX => camera_basis_from_viewpoint(&ViewPoint {
+        },
+        AxisView::PlaneXZ | AxisView::PlaneZX => ViewPoint {
             x: 0.0,
             y: 1.0,
             z: 0.0,
-        }),
-        AxisView::PlaneYZ | AxisView::PlaneZY => camera_basis_from_viewpoint(&ViewPoint {
+        },
+        AxisView::PlaneYZ | AxisView::PlaneZY => ViewPoint {
             x: 1.0,
             y: 0.0,
             z: 0.0,
-        }),
-        AxisView::Custom => camera_basis_from_viewpoint(&ViewPoint {
+        },
+        AxisView::Custom => ViewPoint {
             x: 1.6,
             y: 1.2,
             z: 1.1,
-        }),
+        },
+    };
+
+    if let Some(plot_up) = state.plot_up {
+        camera_basis_from_viewpoint(&viewpoint, plot_up, true, warnings)
+    } else {
+        camera_basis_from_viewpoint_default(&viewpoint)
     }
 }
 
-fn camera_basis_from_viewpoint(vp: &ViewPoint) -> CameraBasis {
+fn camera_basis_from_viewpoint_default(vp: &ViewPoint) -> CameraBasis {
     let (lx, ly, lz) = normalize((-vp.x as f32, -vp.y as f32, -vp.z as f32));
     let (wx, wy, wz) = if ly.abs() > 0.9 {
         (0.0f32, 0.0, 1.0)
     } else {
+        (0.0, 1.0, 0.0)
+    };
+    let right = normalize(cross((lx, ly, lz), (wx, wy, wz)));
+    let up = normalize(cross(right, (lx, ly, lz)));
+    (right, up, (lx, ly, lz))
+}
+
+fn camera_basis_from_viewpoint(
+    vp: &ViewPoint,
+    preferred_up: PlotUpAxis,
+    warn_on_fallback: bool,
+    warnings: &mut Vec<String>,
+) -> CameraBasis {
+    let (lx, ly, lz) = normalize((-vp.x as f32, -vp.y as f32, -vp.z as f32));
+    let preferred = plot_up_axis_direction(preferred_up);
+    let up_hint = match preferred.axis {
+        SpatialAxis::X => (preferred.sign, 0.0, 0.0),
+        SpatialAxis::Y => (0.0, preferred.sign, 0.0),
+        SpatialAxis::Z => (0.0, 0.0, preferred.sign),
+    };
+    let projected_up = (
+        up_hint.0 - dot(up_hint, (lx, ly, lz)) * lx,
+        up_hint.1 - dot(up_hint, (lx, ly, lz)) * ly,
+        up_hint.2 - dot(up_hint, (lx, ly, lz)) * lz,
+    );
+    let projected_len = (projected_up.0 * projected_up.0
+        + projected_up.1 * projected_up.1
+        + projected_up.2 * projected_up.2)
+        .sqrt();
+    let (wx, wy, wz) = if projected_len > 1e-6 {
+        normalize(projected_up)
+    } else if ly.abs() > 0.9 {
+        if warn_on_fallback {
+            warnings.push(
+                "Renderer: PLOT/UP is parallel to the camera look direction; using fallback camera up vector"
+                    .to_string(),
+            );
+        }
+        (0.0f32, 0.0, 1.0)
+    } else {
+        if warn_on_fallback {
+            warnings.push(
+                "Renderer: PLOT/UP is parallel to the camera look direction; using fallback camera up vector"
+                    .to_string(),
+            );
+        }
         (0.0, 1.0, 0.0)
     };
     let right = normalize(cross((lx, ly, lz), (wx, wy, wz)));
@@ -645,73 +900,63 @@ fn extract_face_slab(
         }
     }
 
+    let (horizontal_axis, vertical_axis) =
+        resolve_contour_axes_for_view(state.axis_view, state.plot_up, warnings);
+    let point_uv = |idx: usize| {
+        (
+            horizontal_axis.sign
+                * axis_value(horizontal_axis.axis, snap.x[idx], snap.y[idx], snap.z[idx]),
+            vertical_axis.sign
+                * axis_value(vertical_axis.axis, snap.x[idx], snap.y[idx], snap.z[idx]),
+        )
+    };
+
     match &state.axis_view {
         // ── Looking down Z, seeing X-Y ──────────────────────────────────────
-        AxisView::PlusZ | AxisView::PlaneXY => {
+        AxisView::PlusZ | AxisView::PlaneXY | AxisView::PlaneYX => {
             let k = nk - 1;
             face_slab(snap, ni, nj, |i, j| {
                 let idx = i + j * ni + k * ni * nj;
-                ((snap.x[idx], snap.y[idx]), snap.scalar[idx])
-            })
-        }
-        AxisView::PlaneYX => {
-            let k = nk - 1;
-            face_slab(snap, ni, nj, |i, j| {
-                let idx = i + j * ni + k * ni * nj;
-                ((snap.y[idx], snap.x[idx]), snap.scalar[idx])
+                (point_uv(idx), snap.scalar[idx])
             })
         }
         AxisView::MinusZ => {
             let k = 0;
             face_slab(snap, ni, nj, |i, j| {
                 let idx = i + j * ni + k * ni * nj;
-                ((-snap.x[idx], snap.y[idx]), snap.scalar[idx]) // mirror X
+                (point_uv(idx), snap.scalar[idx])
             })
         }
 
         // ── Looking from +X, seeing Y-Z ─────────────────────────────────────
-        AxisView::PlusX | AxisView::PlaneYZ => {
+        AxisView::PlusX | AxisView::PlaneYZ | AxisView::PlaneZY => {
             let i = ni - 1;
             face_slab(snap, nj, nk, |j, k| {
                 let idx = i + j * ni + k * ni * nj;
-                ((snap.y[idx], snap.z[idx]), snap.scalar[idx])
-            })
-        }
-        AxisView::PlaneZY => {
-            let i = ni - 1;
-            face_slab(snap, nj, nk, |j, k| {
-                let idx = i + j * ni + k * ni * nj;
-                ((snap.z[idx], snap.y[idx]), snap.scalar[idx])
+                (point_uv(idx), snap.scalar[idx])
             })
         }
         AxisView::MinusX => {
             let i = 0;
             face_slab(snap, nj, nk, |j, k| {
                 let idx = i + j * ni + k * ni * nj;
-                ((-snap.y[idx], snap.z[idx]), snap.scalar[idx]) // mirror Y
+                (point_uv(idx), snap.scalar[idx])
             })
         }
 
         // ── Looking from +Y, seeing X-Z ─────────────────────────────────────
-        AxisView::PlusY | AxisView::PlaneXZ => {
+        AxisView::PlusY | AxisView::PlaneXZ | AxisView::PlaneZX => {
             let j = nj - 1;
             face_slab(snap, ni, nk, |i, k| {
                 let idx = i + j * ni + k * ni * nj;
-                ((snap.x[idx], snap.z[idx]), snap.scalar[idx])
-            })
-        }
-        AxisView::PlaneZX => {
-            let j = nj - 1;
-            face_slab(snap, ni, nk, |i, k| {
-                let idx = i + j * ni + k * ni * nj;
-                ((snap.z[idx], snap.x[idx]), snap.scalar[idx])
+                (point_uv(idx), snap.scalar[idx])
             })
         }
         AxisView::MinusY => {
             let j = 0;
             face_slab(snap, ni, nk, |i, k| {
                 let idx = i + j * ni + k * ni * nj;
-                ((-snap.x[idx], snap.z[idx]), snap.scalar[idx]) // mirror X
+                (point_uv(idx), snap.scalar[idx])
             })
         }
 
@@ -721,7 +966,7 @@ fn extract_face_slab(
             let k = nk - 1;
             face_slab(snap, ni, nj, |i, j| {
                 let idx = i + j * ni + k * ni * nj;
-                ((snap.x[idx], snap.y[idx]), snap.scalar[idx])
+                (point_uv(idx), snap.scalar[idx])
             })
         }
     }
@@ -773,7 +1018,7 @@ fn project_orthographic(
     state: &PlotState,
     warnings: &mut Vec<String>,
 ) -> (Vec<(f32, f32)>, Vec<f32>, usize, usize) {
-    let camera = camera_basis_for_state(state);
+    let camera = camera_basis_for_state(state, warnings);
     let look = camera.2;
     let abs_x = look.0.abs();
     let abs_y = look.1.abs();
@@ -1192,7 +1437,7 @@ fn bbox(uvs: &[(f32, f32)]) -> (f32, f32, f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plot_state::{ContourEntry, ContourSpec, PlotFamily};
+    use crate::plot_state::{ContourEntry, ContourSpec, PlotFamily, PlotUpAxis};
     use crate::script_executor::SolutionSnapshot;
 
     /// Build a synthetic 4×4×1 snapshot with a simple gradient scalar field.
@@ -1562,6 +1807,78 @@ mod tests {
         assert_eq!(uvs[1], (8.0, 4.0));
         assert_eq!(uvs[2], (16.0, 12.0));
         assert_eq!(uvs[3], (18.0, 14.0));
+    }
+
+    #[test]
+    fn face_slab_plot_up_negative_y_flips_vertical_axis() {
+        let snap = SolutionSnapshot {
+            ni: 2,
+            nj: 2,
+            nk: 1,
+            x: vec![10.0, 20.0, 30.0, 40.0],
+            y: vec![1.0, 2.0, 3.0, 4.0],
+            z: vec![0.0, 0.0, 0.0, 0.0],
+            scalar: vec![0.0, 1.0, 2.0, 3.0],
+            field_min: 0.0,
+            field_max: 3.0,
+        };
+        let state = PlotState {
+            axis_view: AxisView::PlaneXY,
+            plot_up: Some(PlotUpAxis::NegativeY),
+            ..PlotState::default()
+        };
+        let mut w = Vec::new();
+        let (uvs, _scalars, sw, sh) = extract_face_slab(&snap, &state, &mut w);
+
+        assert_eq!((sw, sh), (2, 2));
+        assert_eq!(uvs[0], (10.0, -1.0));
+        assert_eq!(uvs[3], (40.0, -4.0));
+    }
+
+    #[test]
+    fn face_slab_plot_up_positive_x_swaps_xy_without_plane_token() {
+        let snap = SolutionSnapshot {
+            ni: 2,
+            nj: 2,
+            nk: 1,
+            x: vec![10.0, 20.0, 30.0, 40.0],
+            y: vec![1.0, 2.0, 3.0, 4.0],
+            z: vec![0.0, 0.0, 0.0, 0.0],
+            scalar: vec![0.0, 1.0, 2.0, 3.0],
+            field_min: 0.0,
+            field_max: 3.0,
+        };
+        let state = PlotState {
+            axis_view: AxisView::PlaneXY,
+            plot_up: Some(PlotUpAxis::PositiveX),
+            ..PlotState::default()
+        };
+        let mut w = Vec::new();
+        let (uvs, _scalars, sw, sh) = extract_face_slab(&snap, &state, &mut w);
+
+        assert_eq!((sw, sh), (2, 2));
+        assert_eq!(uvs[0], (1.0, 10.0));
+        assert_eq!(uvs[3], (4.0, 40.0));
+    }
+
+    #[test]
+    fn camera_basis_honors_explicit_plot_up_axis() {
+        let state = PlotState {
+            axis_view: AxisView::Custom,
+            viewpoint: Some(ViewPoint {
+                x: 3.0,
+                y: 2.0,
+                z: 1.0,
+            }),
+            plot_up: Some(PlotUpAxis::PositiveX),
+            ..PlotState::default()
+        };
+        let mut warnings = Vec::new();
+        let camera = camera_basis_for_state(&state, &mut warnings);
+
+        assert!(camera.1 .0 > camera.1 .1);
+        assert!(camera.1 .0 > camera.1 .2);
+        assert!(warnings.is_empty());
     }
 
     #[test]

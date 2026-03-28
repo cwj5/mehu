@@ -691,11 +691,17 @@ Update: 2026-03-27 (thin-slab function-surface parity increment)
 2. Height-axis placement now depends on the collapsed dimension (`k -> z`, `i -> x`, `j -> y`), and the oblique fallback camera is triggered whenever the requested view would otherwise look straight down that height axis.
 3. Added thin-slab synthetic regression fixtures: `synthetic_1x4x4_surface.com` and `synthetic_4x1x4_surface.com`, with corresponding generated datasets and reference PNG/hash baselines.
 
+Update: 2026-03-27 (PLOT/UP orientation increment)
+
+1. Shared `PlotState` now carries `PLOT/UP` as an explicit signed axis, and the parser maps `/UP=X`, `/UP=-Y`, etc. into that state instead of dropping them as unknown qualifiers.
+2. The headless renderer now applies `plot_up` to contour slab orientation and projected camera bases, covering both axis-aligned views and custom/function-surface camera paths.
+3. Added renderer unit tests plus two regression fixtures, `synthetic_4x4_up_neg_y.com` and `synthetic_4x4_surface_up_neg_z.com`, to lock in non-default orientation behavior.
+
 Current verification baseline (as of 2026-03-27):
 
 1. `cargo test --manifest-path headless-export/Cargo.toml --bin overview-export` passes.
 2. CI smoke export runs `headless-export/fixtures/smoke.com` and asserts multi-PLOT outputs are generated.
-3. Temporary regression hash checks pass for twelve synthetic cases, including format variants, oblique custom-view fixtures, multi-layer custom-view fixtures, and thin-slab function-surface fixtures.
+3. Temporary regression hash checks pass for fourteen synthetic cases, including format variants, oblique custom-view fixtures, multi-layer custom-view fixtures, thin-slab function-surface fixtures, and explicit `PLOT/UP` orientation fixtures.
 
 Phase 2 plan (original):
 

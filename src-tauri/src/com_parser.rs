@@ -2,7 +2,7 @@ use crate::function_mapping::map_legacy_function_number;
 use crate::plot_state::{
     cap, spherical_to_cartesian, AxisBounds, AxisView, ContourAttribute, ContourEntry, ContourSpec,
     DatasetRef, Diagnostic, DiagnosticSeverity, FsurfaceSpec, GridSubset, IndexRange,
-    MinMaxOverride, PlotAction, PlotFamily, PlotText, ScalarField, ViewPoint,
+    MinMaxOverride, PlotAction, PlotFamily, PlotText, PlotUpAxis, ScalarField, ViewPoint,
 };
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -662,7 +662,7 @@ fn parse_contours(args: &[String], file: &Path, line: u32, out: &mut ParsedScrip
 
 fn parse_plot(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {
     for arg in args {
-        if let Some((name, _)) = parse_qualifier(arg) {
+        if let Some((name, value)) = parse_qualifier(arg) {
             match name.as_str() {
                 // SURFACE / CARPET / LINE are all function-surface family
                 // (in 2D, LINE is the degenerate case of CARPET/SURFACE).
@@ -672,6 +672,20 @@ fn parse_plot(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {
                 "CONTOUR" => out
                     .actions
                     .push(PlotAction::SetPlotFamily(PlotFamily::Contour)),
+                "UP" => match value.as_deref().and_then(parse_plot_up_axis) {
+                    Some(axis) => out.actions.push(PlotAction::SetPlotUpAxis(axis)),
+                    None => out.diagnostics.push(diagnostic(
+                        cap::PLOT,
+                        DiagnosticSeverity::Warning,
+                        Some(file.to_string_lossy().to_string()),
+                        Some(line),
+                        Some(1),
+                        format!(
+                            "Invalid PLOT /UP qualifier '{}' (expected X/Y/Z or signed axis like -Y)",
+                            value.as_deref().unwrap_or("")
+                        ),
+                    )),
+                },
                 // /2D and /3D are accepted without effect on shared state.
                 "2D" | "3D" => {}
                 _ => out.diagnostics.push(diagnostic(
@@ -687,6 +701,18 @@ fn parse_plot(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {
     }
 
     out.actions.push(PlotAction::CommitPlot);
+}
+
+fn parse_plot_up_axis(value: &str) -> Option<PlotUpAxis> {
+    match value.to_uppercase().as_str() {
+        "X" | "+X" => Some(PlotUpAxis::PositiveX),
+        "Y" | "+Y" => Some(PlotUpAxis::PositiveY),
+        "Z" | "+Z" => Some(PlotUpAxis::PositiveZ),
+        "-X" => Some(PlotUpAxis::NegativeX),
+        "-Y" => Some(PlotUpAxis::NegativeY),
+        "-Z" => Some(PlotUpAxis::NegativeZ),
+        _ => None,
+    }
 }
 
 fn parse_text(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {
@@ -1713,6 +1739,36 @@ fn minmax_y_qualifier_only() {
     } else {
         panic!("expected SetMinMax, got {:?}", parsed.actions[0]);
     }
+}
+
+#[test]
+fn plot_up_qualifier_sets_plot_orientation() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("plot_up.com");
+    fs::write(&file, "PLOT/UP=-Y /CONTOUR\n").expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+    assert_eq!(parsed.actions.len(), 3);
+    assert_eq!(parsed.actions[0], PlotAction::SetPlotUpAxis(PlotUpAxis::NegativeY));
+    assert_eq!(parsed.actions[1], PlotAction::SetPlotFamily(PlotFamily::Contour));
+    assert_eq!(parsed.actions[2], PlotAction::CommitPlot);
+}
+
+#[test]
+fn invalid_plot_up_qualifier_warns_and_continues() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("plot_up_invalid.com");
+    fs::write(&file, "PLOT/UP=SIDE /CONTOUR\n").expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+    assert!(parsed
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("Invalid PLOT /UP qualifier")));
+    assert!(parsed
+        .actions
+        .iter()
+        .any(|action| matches!(action, PlotAction::CommitPlot)));
 }
 
 // ── READ qualifier form ───────────────────────────────────────────────────

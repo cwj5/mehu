@@ -63,6 +63,14 @@ type BackendAxisView =
   | 'plane_zy'
   | 'custom';
 
+type BackendPlotUpAxis =
+  | 'positive_x'
+  | 'positive_y'
+  | 'positive_z'
+  | 'negative_x'
+  | 'negative_y'
+  | 'negative_z';
+
 const AXIS_VIEW_OPTIONS: Array<{ value: BackendAxisView; label: string }> = [
   { value: 'custom', label: 'Custom' },
   { value: 'plus_x', label: '+X (Right)' },
@@ -84,6 +92,7 @@ interface BackendPlotState {
   plot_family: BackendPlotFamily;
   contour_attribute: BackendContourAttribute;
   axis_view: BackendAxisView;
+  plot_up?: BackendPlotUpAxis | null;
   contour_spec: unknown;
   walls: BackendGridSubset[];
   subsets: BackendGridSubset[];

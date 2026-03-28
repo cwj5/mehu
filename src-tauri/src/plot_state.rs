@@ -307,6 +307,18 @@ pub struct ViewPoint {
     pub z: f64,
 }
 
+/// Preferred vertical orientation for `PLOT/UP`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlotUpAxis {
+    PositiveX,
+    PositiveY,
+    PositiveZ,
+    NegativeX,
+    NegativeY,
+    NegativeZ,
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // MINMAX overrides
 // ──────────────────────────────────────────────────────────────────────────────
@@ -473,6 +485,9 @@ pub struct PlotState {
     // VPOINT
     pub viewpoint: Option<ViewPoint>,
 
+    // PLOT/UP
+    pub plot_up: Option<PlotUpAxis>,
+
     // MINMAX
     pub minmax: MinMaxOverride,
 
@@ -518,6 +533,9 @@ pub enum PlotAction {
 
     // VPOINT: set an explicit camera look-from point.
     SetViewpoint(ViewPoint),
+
+    // PLOT/UP: set the preferred vertical plot axis.
+    SetPlotUpAxis(PlotUpAxis),
 
     // MINMAX: override the color-map scalar range.
     SetMinMax(MinMaxOverride),
@@ -728,6 +746,10 @@ pub fn apply_action(mut state: PlotState, action: PlotAction) -> (PlotState, Vec
             state.viewpoint = Some(vp);
             // Explicit viewpoint supersedes a named axis preset.
             state.axis_view = AxisView::Custom;
+        }
+
+        PlotAction::SetPlotUpAxis(axis) => {
+            state.plot_up = Some(axis);
         }
 
         PlotAction::SetMinMax(mm) => {
@@ -974,6 +996,15 @@ mod tests {
         let (new_state, diags) = apply_action(state, PlotAction::SetViewpoint(vp.clone()));
         assert_eq!(new_state.axis_view, AxisView::Custom);
         assert_eq!(new_state.viewpoint, Some(vp));
+        assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn set_plot_up_axis_stores_orientation() {
+        let state = default_state();
+        let (new_state, diags) =
+            apply_action(state, PlotAction::SetPlotUpAxis(PlotUpAxis::NegativeY));
+        assert_eq!(new_state.plot_up, Some(PlotUpAxis::NegativeY));
         assert!(diags.is_empty());
     }
 
@@ -1299,6 +1330,12 @@ mod tests {
     fn plot_family_defaults_to_contour() {
         let state = default_state();
         assert_eq!(state.plot_family, PlotFamily::Contour);
+    }
+
+    #[test]
+    fn plot_up_defaults_to_none() {
+        let state = default_state();
+        assert_eq!(state.plot_up, None);
     }
 
     #[test]

@@ -104,10 +104,11 @@ pub fn execute_parsed_script(
 
 fn format_show_output(state: &PlotState) -> String {
     format!(
-        "SHOW: field={:?}, family={:?}, axis_view={:?}, text_annotations={}, walls={}, subsets={}",
+        "SHOW: field={:?}, family={:?}, axis_view={:?}, plot_up={:?}, text_annotations={}, walls={}, subsets={}",
         state.scalar_field,
         state.plot_family,
         state.axis_view,
+        state.plot_up,
         state.text_annotations.len(),
         state.walls.len(),
         state.subsets.len()
