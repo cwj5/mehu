@@ -130,7 +130,9 @@ z = radius * sin(θ_rad)
 
 ### 1.5 UP Qualifier and Axis Orientation
 
-**Current Status (TKT-009):** The `/UP` qualifier parsing exists in the parser but is not yet wired into the rendering path.
+**Current Status (2026-03-27):** The `/UP` qualifier is parsed into shared `PlotState` and wired into both rendering paths:
+1. Headless export applies `plot_up` to contour slab orientation and camera basis construction.
+2. GUI camera synchronization applies backend `plot_up` to the Three.js camera up vector for axis presets and custom viewpoints.
 
 **Semantics:**
 
@@ -146,10 +148,10 @@ The `/UP` qualifier specifies which spatial axis is oriented vertically on the r
      - `/UP=Y` is nonsensical in the legacy implementation and is likely ignored or produces undefined behavior.
      - **Documented deviation:** We currently honor the VIEW plane orientation and treat `/UP=Y` relative to the omitted axis; this may differ from legacy.
 
-**Implementation Path (Future):**
-- Store the `/UP` axis choice in shared state (not yet added to `PlotState`).
-- In the viewer, apply a post-camera rotation that oriented the "up" vector accordingly.
-- For now, `/UP` is parsed and diagnostics are issued, but rendering ignores it.
+**Implementation Notes:**
+- The shared state carries `/UP` as an explicit signed axis enum.
+- If `/UP` is not provided, default camera-up behavior is preserved to keep historical regression baselines stable.
+- Remaining parity work is visual equivalence tuning (for example shading/lighting differences), not `/UP` state propagation.
 
 ---
 
