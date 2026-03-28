@@ -834,6 +834,13 @@ Relevant decisions:
 
 ### TKT-012: Add parity tests, CI gates, and ADRs ⏳ NOT STARTED
 
+Execution metadata:
+
+1. Estimated effort: L
+2. Primary owner role: Test/governance lead
+3. Suggested contributors: backend owner, frontend owner, docs owner
+4. Exit condition: all TKT-012A through TKT-012F acceptance criteria satisfied
+
 Goal:
 Prevent long-term drift between script execution and GUI behavior.
 
@@ -861,6 +868,160 @@ Relevant decisions:
 
 1. TDD/prefer-tests-first approach.
 2. ADRs are mandatory for fragile architecture choices.
+
+### TKT-012 implementation breakdown (recommended)
+
+#### TKT-012A: Parity matrix governance and freshness checks
+
+Goal:
+Prevent parity-matrix drift by validating semantic quality, not only JSON shape.
+
+Scope:
+
+1. Extend `scripts/validate-parity-matrix.mjs` with governance checks beyond schema validation.
+2. Require each capability row to include current ticket reference and non-empty notes.
+3. Add guardrails so `script-only` and `gui-only` rows require explicit rationale text.
+4. Add a freshness policy for `lastUpdated` when capability-affecting files change.
+5. Keep `.github/workflows/parity-matrix.yml` as a required CI gate.
+
+Acceptance criteria:
+
+1. CI fails on stale or semantically incomplete parity-matrix rows.
+2. Capability status drift cannot merge without updating matrix metadata.
+3. Validator error messages are actionable for contributors.
+
+Dependencies:
+
+1. None (can start immediately)
+
+#### TKT-012B: Backend parity-equivalence fixture suite
+
+Goal:
+Lock deterministic script-path behavior at parser, state, and render-intent boundaries.
+
+Scope:
+
+1. Add fixture-driven Rust tests for parser and executor parity-critical paths.
+2. Assert deterministic final `PlotState` and `RenderIntent` for representative command files.
+3. Cover capability families: `FUNCTION`, `VIEW`/`VPOINT`, `MINMAX`, `CONTOURS`, `PLOT`, `WALLS`, `SUBSETS`, `FSURFACE`, `TEXT`, `SHOW`.
+4. Add targeted edge-case fixtures for historical regressions (`PLOT/UP`, contour mode variants, thin-slab function-surface behavior).
+
+Acceptance criteria:
+
+1. Backend parity fixtures fail on behavior drift in parser/state/render-intent outputs.
+2. Tests are deterministic across platforms in CI.
+3. New capability changes require fixture updates or explicit justification.
+
+Dependencies:
+
+1. TKT-012A (recommended, not mandatory)
+
+#### TKT-012C: Cross-path parity tests (script path vs GUI action path)
+
+Goal:
+Ensure equivalent user intent yields equivalent shared-state outcomes regardless of entry path.
+
+Scope:
+
+1. Add integration tests that compare script-executed final state to GUI-dispatched action state.
+2. Cover core round-trips for contour specs, plot family, view/orientation, subsets/walls, and annotations.
+3. Assert parity at `PlotState` and `RenderIntent` boundaries; avoid pixel-level requirements here.
+
+Acceptance criteria:
+
+1. Script and GUI paths produce equivalent canonical state for equivalent scenarios.
+2. Parity regressions fail in CI with focused diagnostics.
+
+Dependencies:
+
+1. TKT-012B
+
+#### TKT-012D: Unified parity CI gate
+
+Goal:
+Make parity a merge-blocking requirement, not a best-effort signal.
+
+Scope:
+
+1. Add or update a dedicated CI workflow that runs parity matrix validation, backend parity fixtures, and cross-path parity tests.
+2. Keep existing headless regression matrix in required-check policy to prevent export-path drift.
+3. Ensure CI reports clearly separate governance failures from behavioral parity failures.
+
+Acceptance criteria:
+
+1. PRs cannot merge when parity governance or equivalence tests fail.
+2. Required checks are documented and stable for contributors.
+
+Dependencies:
+
+1. TKT-012A
+2. TKT-012B
+3. TKT-012C
+
+#### TKT-012E: ADR pack for locked architecture decisions
+
+Goal:
+Record non-negotiable design choices so future work does not re-litigate fragile decisions.
+
+Scope:
+
+1. Add ADR index and naming convention.
+2. Add ADRs for: shared `PlotState` authority, `PLOT` commit boundary semantics, unsupported-command soft-fail policy, absolute contour model, legacy-to-modern translation determinism, and export determinism/known divergence policy.
+3. Link ADRs from relevant planning docs.
+
+Acceptance criteria:
+
+1. All listed fragile decisions have ADR coverage.
+2. ADRs are discoverable from repository documentation.
+
+Dependencies:
+
+1. TKT-012A (recommended)
+
+#### TKT-012F: Documentation hardening for parity support and limitations
+
+Goal:
+Ensure a new engineer can understand supported scope, known gaps, and verification workflow quickly.
+
+Scope:
+
+1. Update `README.md` with current supported scope summary derived from parity matrix.
+2. Update `README.md` and `TESTING.md` with parity test and CI-gate workflows.
+3. Link known rendering/export deviations to `plot3d_com_file/legacy_translation_layer.md`.
+4. Add contributor guidance for when parity-matrix updates are mandatory.
+
+Acceptance criteria:
+
+1. Supported scope and known limitations are clear from top-level docs.
+2. A contributor can run parity checks locally using documented commands.
+3. Doc updates stay aligned with CI-required parity checks.
+
+Dependencies:
+
+1. TKT-012D
+2. TKT-012E
+
+### TKT-012 sequencing guidance
+
+1. Start with TKT-012A to make matrix governance enforceable.
+2. Land TKT-012B before TKT-012C to establish backend parity baseline.
+3. Land TKT-012D once A/B/C are stable enough to be required checks.
+4. TKT-012E can run in parallel with B/C, but should complete before final docs.
+5. Finish with TKT-012F after CI and ADR structure are finalized.
+
+### Suggested PR slicing for TKT-012
+
+1. PR-1: TKT-012A (validator + parity-matrix CI policy updates)
+2. PR-2: TKT-012B (backend fixture parity tests)
+3. PR-3: TKT-012C + TKT-012D (cross-path tests + required gate wiring)
+4. PR-4: TKT-012E + TKT-012F (ADR pack + docs hardening)
+
+### Recommended completion evidence for TKT-012
+
+1. CI logs showing required parity gate blocks regressions.
+2. Test artifacts proving deterministic parity fixture execution.
+3. ADR index plus linked decision records for locked architecture choices.
+4. Updated `README.md` and `TESTING.md` showing supported scope, limits, and local parity commands.
 
 ## Recommended Milestone Ordering
 
