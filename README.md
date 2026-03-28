@@ -108,6 +108,12 @@ Run the local regression check from repo root:
 headless-export/fixtures/regression/check_regression.sh
 ```
 
+Regenerate all synthetic regression `*.xyz`/`*.q` fixtures with one command:
+
+```bash
+gfortran headless-export/fixtures/regression/generate_additional_synthetic_formats.f90 -o /tmp/overview-generate-synthetic-formats && /tmp/overview-generate-synthetic-formats
+```
+
 What it does:
 
 - Re-runs the exporter on both synthetic fixtures (contour + function-surface).

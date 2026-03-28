@@ -36,3 +36,7 @@ check_case() {
 
 check_case "synthetic_4x4"
 check_case "synthetic_4x4_surface"
+check_case "synthetic_4x4_le_f64"
+check_case "synthetic_4x4_le_f64_surface"
+check_case "synthetic_4x4_be_f32"
+check_case "synthetic_4x4_be_f32_surface"

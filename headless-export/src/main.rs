@@ -14,10 +14,15 @@ use std::io::Cursor;
 mod com_parser;
 #[path = "../../src-tauri/src/function_mapping.rs"]
 mod function_mapping;
+mod logger;
+#[path = "../../src-tauri/src/plot3d.rs"]
+mod plot3d;
 #[path = "../../src-tauri/src/plot_state.rs"]
 mod plot_state;
 #[path = "../../src-tauri/src/script_executor.rs"]
 mod script_executor;
+#[path = "../../src-tauri/src/solution.rs"]
+mod solution;
 
 mod colormap;
 mod p3d_reader;
@@ -25,6 +30,30 @@ mod renderer;
 
 use plot_state::{ContourAttribute, ContourSpec, PlotFamily, PlotState};
 use script_executor::{RenderIntent, SolutionSnapshot};
+
+/// IBLANK filter mode shim required by shared `plot3d` module APIs.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum IblankFilterMode {
+    Vertex,
+    Cell,
+}
+
+fn is_hidden_iblank_point(
+    iblank: Option<&Vec<i32>>,
+    idx: usize,
+    respect_iblank: bool,
+    show_fringe_points: bool,
+) -> bool {
+    if let Some(iblank_data) = iblank {
+        if respect_iblank && iblank_data[idx] == 0 {
+            return true;
+        }
+        if !show_fringe_points && iblank_data[idx] != 1 {
+            return true;
+        }
+    }
+    false
+}
 
 #[derive(Debug, Parser)]
 #[command(

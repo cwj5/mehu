@@ -1,253 +1,115 @@
-/// Minimal PLOT3D binary file reader for the headless CLI.
+/// Adapter over the shared PLOT3D reader stack from `src-tauri`.
 ///
-/// Supports the most common case: single-precision (f32), little-endian,
-/// Fortran unformatted binary, single-grid files.  Returns `Err` for anything
-/// it cannot parse so callers can fall back gracefully to the placeholder
-/// renderer.
-///
-/// This is intentionally a standalone module — it does not depend on `rayon`
-/// or other heavy deps from `src-tauri/src/plot3d.rs`.
-
-use std::fs::File;
-use std::io::{self, BufReader, Read};
+/// This intentionally reuses the same byte-order / precision detection used
+/// by the GUI path to avoid divergence in file-format support.
+use std::io;
 use std::path::Path;
 
-// ─── Low-level I/O helpers ──────────────────────────────────────────────────
-
-fn read_u32_le(r: &mut impl Read) -> io::Result<u32> {
-    let mut b = [0u8; 4];
-    r.read_exact(&mut b)?;
-    Ok(u32::from_le_bytes(b))
-}
-
-fn bytes_to_i32s_le(bytes: &[u8]) -> Vec<i32> {
-    bytes
-        .chunks_exact(4)
-        .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-        .collect()
-}
-
-fn bytes_to_f32s_le(bytes: &[u8]) -> Vec<f32> {
-    bytes
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-        .collect()
-}
-
-/// Read one Fortran unformatted record (little-endian record markers).
-/// Returns the raw payload bytes.
-fn read_record(r: &mut impl Read) -> io::Result<Vec<u8>> {
-    let len = read_u32_le(r)? as usize;
-    let mut buf = vec![0u8; len];
-    r.read_exact(&mut buf)?;
-    let end = read_u32_le(r)? as usize;
-    if len != end {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("Fortran record marker mismatch: start={len} end={end}"),
-        ));
-    }
-    Ok(buf)
-}
-
-// ─── Grid reader ────────────────────────────────────────────────────────────
-
-/// Read a single-precision, little-endian, Fortran-unformatted PLOT3D grid
-/// file.  Only first grid of a multi-grid file is read.
-///
-/// Returns `(ni, nj, nk, x_coords, y_coords, z_coords)`.
-pub fn read_grid(path: &Path) -> io::Result<(u32, u32, u32, Vec<f32>, Vec<f32>, Vec<f32>)> {
-    let mut r = BufReader::new(File::open(path)?);
-
-    // Record 1: ngrids
-    let rec1 = read_record(&mut r)?;
-    let ngrids_vals = bytes_to_i32s_le(&rec1);
-    if ngrids_vals.is_empty() || ngrids_vals[0] <= 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Invalid ngrids in grid file",
-        ));
-    }
-
-    // Record 2: ni, nj, nk for each grid (we read the first grid only)
-    let rec2 = read_record(&mut r)?;
-    let dims = bytes_to_i32s_le(&rec2);
-    if dims.len() < 3 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Not enough dimension data in grid file",
-        ));
-    }
-    let ni = dims[0] as u32;
-    let nj = dims[1] as u32;
-    let nk = dims[2] as u32;
-    if ni == 0 || nj == 0 || nk == 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("Zero dimension in grid file: {ni}×{nj}×{nk}"),
-        ));
-    }
-
-    let total = (ni as usize) * (nj as usize) * (nk as usize);
-
-    // Record 3: coordinate data for grid 0 (X sequential, then Y, then Z)
-    let rec3 = read_record(&mut r)?;
-    let coords = bytes_to_f32s_le(&rec3);
-    if coords.len() < total * 3 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "Grid coordinate record too short: expected ≥{} f32 values, got {}",
-                total * 3,
-                coords.len()
-            ),
-        ));
-    }
-
-    let x = coords[..total].to_vec();
-    let y = coords[total..2 * total].to_vec();
-    let z = coords[2 * total..3 * total].to_vec();
-
-    Ok((ni, nj, nk, x, y, z))
-}
-
-// ─── Q (solution) reader ────────────────────────────────────────────────────
-
-/// Raw conservative variable arrays from a PLOT3D Q file.
+/// Conservative variable arrays extracted for a single grid.
 pub struct QData {
     pub rho: Vec<f32>,
     pub rhou: Vec<f32>,
     pub rhov: Vec<f32>,
     pub rhow: Vec<f32>,
     pub rhoe: Vec<f32>,
+    pub gamma: Option<Vec<f32>>,
 }
 
-/// Read a single-precision, little-endian, Fortran-unformatted PLOT3D Q file.
-/// Only the first grid is read.  `total` must equal ni×nj×nk from the grid.
+/// Read first grid from a PLOT3D grid file using shared auto-detection.
+///
+/// Returns `(ni, nj, nk, x_coords, y_coords, z_coords)`.
+pub fn read_grid(path: &Path) -> io::Result<(u32, u32, u32, Vec<f32>, Vec<f32>, Vec<f32>)> {
+    let grids = match crate::plot3d::read_plot3d_grid(path) {
+        Ok(v) => v,
+        Err(binary_err) => crate::plot3d::read_plot3d_grid_ascii(path).map_err(|ascii_err| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Failed to parse grid as binary ({binary_err}) or ASCII ({ascii_err})"),
+            )
+        })?,
+    };
+
+    let grid = grids.into_iter().next().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidData, "Grid file contained no grids")
+    })?;
+
+    Ok((
+        grid.dimensions.i,
+        grid.dimensions.j,
+        grid.dimensions.k,
+        grid.x_coords,
+        grid.y_coords,
+        grid.z_coords,
+    ))
+}
+
+/// Read first grid from a PLOT3D solution file using shared auto-detection.
+///
+/// `total` must equal `ni * nj * nk` for the selected grid.
 pub fn read_q(path: &Path, total: usize) -> io::Result<QData> {
-    let mut r = BufReader::new(File::open(path)?);
+    let solutions = match crate::plot3d::read_plot3d_solution(path) {
+        Ok(v) => v,
+        Err(binary_err) => {
+            crate::plot3d::read_plot3d_solution_ascii(path).map_err(|ascii_err| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("Failed to parse Q as binary ({binary_err}) or ASCII ({ascii_err})"),
+                )
+            })?
+        }
+    };
 
-    // Record 1: ngrids — skip
-    let _ = read_record(&mut r)?;
-    // Record 2: dimensions — skip (we already have them from the grid file)
-    let _ = read_record(&mut r)?;
-    // Record 3: metadata (refmach, alpha, rey, time, …) — skip
-    let _ = read_record(&mut r)?;
+    let sol = solutions.into_iter().next().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Q file contained no solution grids",
+        )
+    })?;
 
-    // Record 4: q data (rho, rhou, rhov, rhow, rhoe, sequential in blocks of `total`)
-    let rec4 = read_record(&mut r)?;
-    let q = bytes_to_f32s_le(&rec4);
-    if q.len() < total * 5 {
+    let got = sol.rho.len();
+    if got != total {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
-                "Q record too short: expected ≥{} f32 values, got {}",
-                total * 5,
-                q.len()
+                "Q/grid dimension mismatch: expected {total} points, got {got} in first solution grid"
             ),
         ));
     }
 
     Ok(QData {
-        rho: q[..total].to_vec(),
-        rhou: q[total..2 * total].to_vec(),
-        rhov: q[2 * total..3 * total].to_vec(),
-        rhow: q[3 * total..4 * total].to_vec(),
-        rhoe: q[4 * total..5 * total].to_vec(),
+        rho: sol.rho,
+        rhou: sol.rhou,
+        rhov: sol.rhov,
+        rhow: sol.rhow,
+        rhoe: sol.rhoe,
+        gamma: sol.gamma,
     })
 }
 
-// ─── Scalar field computation ───────────────────────────────────────────────
-
-/// Compute a scalar field from conservative variables.
+/// Compute scalar field values using shared solution equations.
 ///
-/// Mirrors `src-tauri/src/solution.rs::compute_scalar_field`.  Returns
-/// `(values, field_min, field_max)`.  Unknown/unimplemented fields fall back
-/// to density so the renderer always produces output.
-pub fn compute_scalar(
-    q: &QData,
-    field: &crate::plot_state::ScalarField,
-) -> (Vec<f32>, f32, f32) {
-    use crate::plot_state::ScalarField;
+/// Returns `(values, field_min, field_max)`.
+pub fn compute_scalar(q: &QData, field: &crate::plot_state::ScalarField) -> (Vec<f32>, f32, f32) {
+    let total = q.rho.len();
+    let solution = crate::plot3d::Plot3DSolution {
+        grid_index: 0,
+        dimensions: crate::plot3d::GridDimensions {
+            i: total as u32,
+            j: 1,
+            k: 1,
+        },
+        rho: q.rho.clone(),
+        rhou: q.rhou.clone(),
+        rhov: q.rhov.clone(),
+        rhow: q.rhow.clone(),
+        rhoe: q.rhoe.clone(),
+        gamma: q.gamma.clone(),
+        metadata: None,
+    };
 
-    let n = q.rho.len();
-    let mut result = Vec::with_capacity(n);
-
-    match field {
-        ScalarField::Density => result = q.rho.clone(),
-
-        ScalarField::UVelocity => {
-            for i in 0..n {
-                result.push(if q.rho[i] > 0.0 {
-                    q.rhou[i] / q.rho[i]
-                } else {
-                    0.0
-                });
-            }
-        }
-
-        ScalarField::VVelocity => {
-            for i in 0..n {
-                result.push(if q.rho[i] > 0.0 {
-                    q.rhov[i] / q.rho[i]
-                } else {
-                    0.0
-                });
-            }
-        }
-
-        ScalarField::WVelocity => {
-            for i in 0..n {
-                result.push(if q.rho[i] > 0.0 {
-                    q.rhow[i] / q.rho[i]
-                } else {
-                    0.0
-                });
-            }
-        }
-
-        ScalarField::VelocityMagnitude => {
-            for i in 0..n {
-                let r = q.rho[i];
-                if r > 0.0 {
-                    let u = q.rhou[i] / r;
-                    let v = q.rhov[i] / r;
-                    let w = q.rhow[i] / r;
-                    result.push((u * u + v * v + w * w).sqrt());
-                } else {
-                    result.push(0.0);
-                }
-            }
-        }
-
-        ScalarField::Pressure => {
-            const GAMMA: f32 = 1.4;
-            for i in 0..n {
-                let r = q.rho[i];
-                if r > 0.0 {
-                    let u = q.rhou[i] / r;
-                    let v = q.rhov[i] / r;
-                    let w = q.rhow[i] / r;
-                    let ke = 0.5 * r * (u * u + v * v + w * w);
-                    result.push((GAMMA - 1.0) * (q.rhoe[i] - ke));
-                } else {
-                    result.push(0.0);
-                }
-            }
-        }
-
-        ScalarField::Energy => result = q.rhoe.clone(),
-        ScalarField::MomentumX => result = q.rhou.clone(),
-        ScalarField::MomentumY => result = q.rhov.clone(),
-        ScalarField::MomentumZ => result = q.rhow.clone(),
-
-        // All other variants fall back to density so the renderer always has
-        // something to display.
-        _ => result = q.rho.clone(),
-    }
-
-    let (fmin, fmax) = finite_range(&result);
-    (result, fmin, fmax)
+    let values = crate::solution::compute_scalar_field(&solution, field.clone());
+    let (fmin, fmax) = finite_range(&values);
+    (values, fmin, fmax)
 }
 
 fn finite_range(values: &[f32]) -> (f32, f32) {
@@ -260,11 +122,10 @@ fn finite_range(values: &[f32]) -> (f32, f32) {
         }
     }
     if mn > mx {
-        // All values were non-finite or slice was empty
-        mn = 0.0;
-        mx = 1.0;
+        (0.0, 1.0)
+    } else {
+        (mn, mx)
     }
-    (mn, mx)
 }
 
 #[cfg(test)]
@@ -293,6 +154,7 @@ mod tests {
             rhov: vec![0.0; 3],
             rhow: vec![0.0; 3],
             rhoe: vec![0.0; 3],
+            gamma: None,
         };
         let (vals, mn, mx) = compute_scalar(&q, &crate::plot_state::ScalarField::Density);
         assert_eq!(vals, vec![1.0, 2.0, 3.0]);
@@ -301,24 +163,17 @@ mod tests {
     }
 
     #[test]
-    fn compute_scalar_pressure_positive() {
-        // Simple case: zero velocity, so p = (gamma-1) * rhoe
-        let n = 4;
-        let rho = vec![1.0f32; n];
-        let rho0 = vec![0.0f32; n];
-        let rhoe = vec![2.5f32; n]; // p = 0.4 * 2.5 = 1.0
+    fn compute_scalar_pressure_uses_gamma_if_present() {
         let q = QData {
-            rho: rho.clone(),
-            rhou: rho0.clone(),
-            rhov: rho0.clone(),
-            rhow: rho0.clone(),
-            rhoe,
+            rho: vec![1.0],
+            rhou: vec![0.0],
+            rhov: vec![0.0],
+            rhow: vec![0.0],
+            rhoe: vec![2.0],
+            gamma: Some(vec![1.5]),
         };
-        let (vals, mn, mx) = compute_scalar(&q, &crate::plot_state::ScalarField::Pressure);
-        for v in &vals {
-            assert!((*v - 1.0).abs() < 1e-5, "pressure={v}");
-        }
-        assert!((mn - 1.0).abs() < 1e-5);
-        assert!((mx - 1.0).abs() < 1e-5);
+        let (vals, _, _) = compute_scalar(&q, &crate::plot_state::ScalarField::Pressure);
+        // p = (gamma-1) * rhoe = 0.5 * 2.0 = 1.0
+        assert!((vals[0] - 1.0).abs() < 1e-5, "pressure={}", vals[0]);
     }
 }
