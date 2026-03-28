@@ -699,6 +699,12 @@ Update: 2026-03-27 (PLOT/UP orientation increment)
 2. The headless renderer now applies `plot_up` to contour slab orientation and projected camera bases, covering both axis-aligned views and custom/function-surface camera paths.
 3. Added renderer unit tests plus two regression fixtures, `synthetic_4x4_up_neg_y.com` and `synthetic_4x4_surface_up_neg_z.com`, to lock in non-default orientation behavior.
 
+Update: 2026-03-27 (function-surface custom-VPOINT perspective increment)
+
+1. Function-surface rendering now uses a bounded perspective projection when an explicit custom `VPOINT` is active (`AxisView::Custom` with a viewpoint), narrowing the largest remaining visual-equivalence gap without changing axis-preset baselines.
+2. Axis-aligned/preset views and oblique fallback-camera paths remain orthographic to preserve existing deterministic behavior and reference stability.
+3. Added renderer unit coverage for perspective foreshortening and activation behavior, and refreshed the two affected regression references: `synthetic_4x4_vpoint_oblique_surface` and `synthetic_4x4x2_vpoint_plusx_surface`.
+
 Current verification baseline (as of 2026-03-27):
 
 1. `cargo test --manifest-path headless-export/Cargo.toml --bin overview-export` passes.

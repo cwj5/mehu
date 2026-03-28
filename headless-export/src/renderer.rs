@@ -126,6 +126,18 @@ fn render_function_surface(
         );
     }
 
+    // Narrow parity gap: explicit custom VPOINT now uses a bounded perspective
+    // projection for Function Surface renders.
+    let use_perspective = matches!(state.axis_view, AxisView::Custom)
+        && state.viewpoint.is_some()
+        && !oblique_fallback;
+    if use_perspective {
+        warnings.push(
+            "Renderer: using bounded perspective projection for custom Function Surface viewpoint"
+                .to_string(),
+        );
+    }
+
     let camera = if oblique_fallback {
         if let Some(plot_up) = state.plot_up {
             camera_basis_from_viewpoint(
@@ -152,6 +164,10 @@ fn render_function_surface(
     let mut world_points = Vec::with_capacity(u_dim * v_dim);
     let mut projected = Vec::with_capacity(u_dim * v_dim);
     let mut scalars = Vec::with_capacity(u_dim * v_dim);
+    let camera_origin = state
+        .viewpoint
+        .as_ref()
+        .map(|vp| (vp.x as f32, vp.y as f32, vp.z as f32));
 
     for v in 0..v_dim {
         for u in 0..u_dim {
@@ -160,7 +176,16 @@ fn render_function_surface(
             let height = (t - 0.5) * 2.0 * domain_scale;
             let point = function_surface_world_point(snap, orientation, idx, height);
             world_points.push(point);
-            let mut p = project_point(point, camera);
+            let mut p = if use_perspective {
+                project_point_perspective(
+                    point,
+                    camera,
+                    camera_origin.expect("camera origin required for perspective mode"),
+                    55.0,
+                )
+            } else {
+                project_point(point, camera)
+            };
             if is_swapped_plane_view(state.axis_view) {
                 p = (p.1, p.0, p.2);
             }
@@ -750,6 +775,27 @@ fn project_point(point: (f32, f32, f32), camera: CameraBasis) -> (f32, f32, f32)
     let v = point.0 * (camera.1).0 + point.1 * (camera.1).1 + point.2 * (camera.1).2;
     let depth = point.0 * (camera.2).0 + point.1 * (camera.2).1 + point.2 * (camera.2).2;
     (u, v, depth)
+}
+
+fn project_point_perspective(
+    point: (f32, f32, f32),
+    camera: CameraBasis,
+    camera_origin: (f32, f32, f32),
+    fov_y_degrees: f32,
+) -> (f32, f32, f32) {
+    let rel = (
+        point.0 - camera_origin.0,
+        point.1 - camera_origin.1,
+        point.2 - camera_origin.2,
+    );
+    let u = rel.0 * (camera.0).0 + rel.1 * (camera.0).1 + rel.2 * (camera.0).2;
+    let v = rel.0 * (camera.1).0 + rel.1 * (camera.1).1 + rel.2 * (camera.1).2;
+    let depth = rel.0 * (camera.2).0 + rel.1 * (camera.2).1 + rel.2 * (camera.2).2;
+
+    let z = depth.max(1e-3);
+    let tan_half_fov = (0.5 * fov_y_degrees.to_radians()).tan().max(1e-6);
+    let scale = 1.0 / (z * tan_half_fov);
+    (u * scale, v * scale, z)
 }
 
 #[derive(Copy, Clone)]
@@ -1974,5 +2020,45 @@ mod tests {
         assert!(warnings
             .iter()
             .any(|w| w.contains("dominant face is degenerate")));
+    }
+
+    #[test]
+    fn perspective_projection_has_foreshortening() {
+        let camera = camera_basis_from_viewpoint_default(&ViewPoint {
+            x: 3.0,
+            y: 0.0,
+            z: 0.0,
+        });
+        let origin = (3.0f32, 0.0, 0.0);
+
+        // Same lateral offset with different depths: near point should project larger.
+        let near = project_point_perspective((2.0, 0.0, 1.0), camera, origin, 55.0);
+        let far = project_point_perspective((0.0, 0.0, 1.0), camera, origin, 55.0);
+
+        assert!(near.0.abs() > far.0.abs());
+        assert!(near.2 < far.2);
+    }
+
+    #[test]
+    fn function_surface_custom_vpoint_enables_perspective_warning() {
+        let snap = synthetic_snapshot();
+        let state = PlotState {
+            plot_family: PlotFamily::FunctionSurface,
+            axis_view: AxisView::Custom,
+            viewpoint: Some(ViewPoint {
+                x: 2.4,
+                y: 1.6,
+                z: 1.1,
+            }),
+            ..PlotState::default()
+        };
+
+        let mut img = RgbaImage::new(120, 80);
+        let mut warnings = Vec::new();
+        render_snapshot(&mut img, &snap, &state, &mut warnings);
+
+        assert!(warnings
+            .iter()
+            .any(|w| w.contains("bounded perspective projection")));
     }
 }

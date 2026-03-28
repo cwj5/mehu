@@ -286,13 +286,13 @@ GUI-managed subset slices can produce any of these configurations; the mesh orie
 
 ### 3.2 UP Qualifier on 3D Isometric Views
 
-**Deviation:** The `/UP` qualifier is parsed but not yet wired into the 3D camera transformation.
+**Status:** Implemented.
 
-**Legacy Behavior:** `/UP=X` rotates the isometric view so that the X-axis points upward on screen.
+`/UP` is parsed in the shared command path, stored in state, consumed by GUI camera orientation, and honored in headless rendering.
 
-**Mitigation:** Emit a diagnostic when `/UP` is used; the plot renders with the default `/UP=Z` behavior.
+**Residual Deviation:** For degenerate combinations (for example, when the requested up-vector becomes parallel to the view direction), the implementation applies a deterministic fallback up-vector to keep rendering stable.
 
-**Implementation Path:** Store `/UP` in shared state and apply a post-camera rotation in the viewer during TKT-009 follow-up work.
+**Rationale:** This fallback avoids undefined camera frames and keeps parity behavior reproducible across GUI and headless paths.
 
 ### 3.3 Plane-View Axis Mapping for 2D Plots
 
@@ -333,6 +333,16 @@ GUI-managed subset slices can produce any of these configurations; the mesh orie
 **Mitigation:** Use consistent line properties (thickness, color) across all wall renderings; make adjustments via CSS or future GUI settings.
 
 **Scope Note:** Line styling is a local viewer consideration (not shared parity state) per TKT-006 and TKT-007.
+
+### 3.7 Function-Surface Custom VPOINT Projection
+
+**Deviation:** Function-surface rendering now enables bounded perspective projection only when a custom `VPOINT` is explicitly active. Axis-aligned/preset VIEW paths remain orthographic.
+
+**Legacy Behavior:** Legacy output for custom viewpoints exhibits perspective-like foreshortening in representative parity fixtures.
+
+**Mitigation:** Restrict perspective activation to explicit custom viewpoint cases and keep orthographic projection elsewhere to avoid unintended baseline drift.
+
+**Scope Note:** This is a targeted parity increment, not a global projection model change.
 
 ---
 
@@ -385,16 +395,16 @@ GUI-managed subset slices can produce any of these configurations; the mesh orie
 - Legacy PLOT3D likely auto-scales; plots with very large or very small coordinate ranges may require manual zoom adjustment.
 - User UX is not materially affected (zoom is always available).
 
-### Decision: /UP Deferred to Follow-Up Work
+### Decision: /UP Support with Stable Fallback
 
-**Chosen:** Parse and emit diagnostics; do not yet apply to camera transformation.
+**Chosen:** Fully support `/UP` in shared parser/state, GUI camera transforms, and headless rendering with a deterministic fallback for degenerate camera frames.
 
 **Rationale:**
-- Orthogonal viewing planes (TOP, SIDE, FRONT) already provide common `/UP=Z` use cases.
-- Full `/UP` support requires post-camera rotation logic and additional testing.
-- TKT-009 prioritizes documentation of the *intended* behavior over full implementation.
+- Brings command semantics in line with legacy expectations for rotated isometric views.
+- Keeps both render paths behaviorally aligned.
+- Preserves stability in mathematically ill-conditioned view/up combinations.
 
-**Future:** A follow-up ticket can wire `/UP` into the viewer by storing it in `PlotState` and applying a roll/pitch/yaw transformation at render time.
+**Future:** Refinements can improve diagnostics and expose advanced controls for explicit camera-roll tuning.
 
 ### Decision: Plane Views Are Orthogonal Projections
 
