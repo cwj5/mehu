@@ -630,10 +630,89 @@ Phase 1 status notes:
 4. PNG generation is intentionally dependency-light (pure Rust crates only) to keep backnode deployment simple and avoid unusual system libraries.
 5. Visual output is deterministic but currently a headless fallback renderer, not full Three.js-equivalent rendering yet.
 
+Update: 2026-03-23 (Phase 2 implementation started)
+
+1. Phase 2a baseline landed: `RenderIntent` now has an optional in-memory `SolutionSnapshot` field (non-serialized) so the CLI can render with real grid/solution scalar data when available.
+2. The CLI now attempts to resolve `READ` dataset paths relative to the `.com` script directory and load a single-grid PLOT3D binary `(XYZ + Q)` snapshot for each `PLOT` intent.
+3. Phase 2b baseline landed: a projection-based software renderer now draws a data-driven heatmap and marching-squares iso-contour overlays when a snapshot is available.
+4. Fallback behavior remains: if no dataset is available (or parsing fails), exporter still emits deterministic placeholder PNGs (preserving current smoke-test reliability).
+5. Added unit coverage for colormap interpolation, scalar computation, slab extraction, contour-level resolution, and marching-squares crossing detection.
+6. Known current constraint: binary reader currently targets the common single-precision little-endian Fortran-unformatted path and first-grid extraction only; broader format coverage remains follow-up work.
+
+Update: 2026-03-27 (temporary regression reference added)
+
+1. Added temporary regression fixture set under `headless-export/fixtures/regression/`: `synthetic_4x4.xyz`, `synthetic_4x4.q`, and `synthetic_4x4.com`.
+2. Captured a reference output image at `headless-export/fixtures/regression/reference/synthetic_4x4.png`.
+3. Stored the baseline hash in `headless-export/fixtures/regression/reference/synthetic_4x4.sha256`.
+4. Added helper script `headless-export/fixtures/regression/check_regression.sh` to regenerate output and assert hash equality for quick local regression checks.
+
+Update: 2026-03-27 (Phase 2c bounded MVP started)
+
+1. `FunctionSurface` no longer falls through to the contour heatmap path only; the headless renderer now has a bounded wireframe-projection MVP for function-surface plots.
+2. The MVP uses orthographic projection with an oblique fallback camera for top/custom views that would otherwise collapse the height axis.
+3. Function-surface rendering is still not parity-complete: there is no hidden-surface elimination, no lighting/shading model, and no filled-surface rasterization yet.
+4. Added test coverage verifying that function-surface renders produce visible output, differ from contour renders, and emit a warning when the oblique fallback camera is used.
+
 Current verification baseline (as of 2026-03-23):
 
 1. `cargo test --manifest-path headless-export/Cargo.toml --bin overview-export` passes.
 2. CI smoke export runs `headless-export/fixtures/smoke.com` and asserts multi-PLOT outputs are generated.
+3. Temporary regression hash check passes for `headless-export/fixtures/regression/reference/synthetic_4x4.png`.
+
+Phase 2 plan (original):
+
+The Phase 1 renderer is a placeholder: it draws a gradient background, a signature band from a `PlotState` hash, and schematic contour lines. It does not load solution data and does not attempt 3D rendering. Acceptance criterion #2 ("Output is visually equivalent to the same render intent in-app") cannot be satisfied without a more complete renderer.
+
+The core architectural gap between Phase 1 and visual equivalence is this:
+
+1. `RenderIntent` only carries `PlotState` (configuration: function number, contour levels, view angle, etc.). It carries no solution data (grid geometry or scalar field values). The in-app renderer has already loaded solution data via the `READ` command before `PLOT` is reached. The headless CLI currently has no hook to receive that data.
+
+2. The in-app renderer runs Three.js on a GPU. A headless CLI cannot use Three.js without a browser context. Achieving equivalence requires either a pure-Rust software renderer fed with the same data, or a headless browser/node runtime that can execute Three.js code.
+
+Phase 2 is broken into four sub-phases:
+
+Phase 2a — Carry solution data through RenderIntent:
+
+1. Add a solution-data field (grid vertices + scalar field values) to `RenderIntent` so the headless CLI has the raw inputs the in-app renderer has.
+2. Update `script_executor` to capture the active loaded solution when a `CommitPlot` boundary is reached and embed it in the intent.
+3. Update `headless-export/src/main.rs` to receive and forward the data to the renderer.
+4. `RenderIntent` must remain serializable; use `Option<SolutionSnapshot>` with a serde-skip default so existing callers that do not load solutions continue to compile without changes.
+
+Phase 2b — Implement a 2D projection software renderer:
+
+1. Implement a flat axis-aligned view path: for the `PlusZ` / `PlusX` / `PlusY` axis-view presets, project grid vertices onto the corresponding 2D plane and render a heatmap using the resolved colormap.
+2. For arbitrary `VPOINT` camera positions, implement an orthographic projection from the VIEW/VPOINT camera parameters defined in the translation layer (`legacy_translation_layer.md`).
+3. Apply the same color-mapping function used in-app (`src/utils/colorMapping.ts`) but re-implemented in Rust — the mapping tables are already partially available in the frontend and can be ported.
+4. Draw contour iso-lines over the projected heatmap at the resolved absolute contour levels. Use marching squares (or a grid-edge crossing scan) on the 2D projected grid rather than the placeholder horizontal stripe approach.
+5. `ContourAttribute::ColorContours` fills bands between iso-lines using the field colormap. `ContourAttribute::Surface` renders iso-surfaces as colored filled regions. `ContourAttribute::Line` draws line-only iso-contours. `ContourAttribute::Grid` adds a mesh grid overlay. `ContourAttribute::Dots` marks iso-crossings only.
+
+Phase 2c — Function-surface plot family:
+
+1. Implement a simple wireframe-projection renderer for the `FunctionSurface` plot family using the same camera model.
+2. The function-surface family renders the scalar function as a height axis; project each grid face as a polygon and shade by scalar value using the field colormap.
+3. This phase may be scoped to a bounded MVP: full hidden-surface elimination is optional if the deviation is documented.
+
+Phase 2d — Test coverage and documented divergence:
+
+1. Add pixel-level regression tests using fixture `.com` files with known solution data. The CI smoke baseline exists (`headless-export/fixtures/smoke.com`) but must be extended to include a fixture that loads real or synthetic solution data.
+2. Document the remaining known deviations from in-app output (e.g., no anti-aliasing, no lighting model, wireframe fallback for function-surface hidden surface elimination). These form the content for acceptance criterion #3.
+3. Update `headless-export/fixtures/` with a `regression/` subdirectory containing reference PNG outputs. Add a CI step that compares new outputs against reference images using a pixel-difference threshold.
+
+Decision points to resolve before starting Phase 2:
+
+1. Whether to carry full solution data in `RenderIntent` or keep it as a side-channel (e.g., a resolved file path). Full carry is simpler for correctness; side-channel avoids large memory copies for big solutions.
+2. Whether Phase 2c (function-surface 3D projection) is in scope for the MVP visual-equivalence target, or whether the documented fallback from Phase 1 is acceptable for the function-surface family.
+3. The acceptable pixel-difference threshold for the regression-comparison CI step.
+4. Long-term: whether a headless Node.js + headless WebGL path (running the actual Three.js renderer) is preferable to the pure-Rust software rasterizer path. The pure-Rust path keeps the crate fully self-contained; the Node path achieves exact parity at the cost of an additional runtime dependency.
+
+Code touchpoints for Phase 2:
+
+1. `src-tauri/src/script_executor.rs`: add `SolutionSnapshot` field to `RenderIntent`; populate it on `CommitPlot`.
+2. `src-tauri/src/solution.rs` or similar: define `SolutionSnapshot` struct (grid vertices, scalar field values, field range).
+3. `src-tauri/src/lib.rs`: plumb loaded solution data into executor context.
+4. `headless-export/src/main.rs`: replace placeholder renderer with projection-based software renderer.
+5. `src/utils/colorMapping.ts`: reference for color-ramp tables to port to Rust.
+6. `headless-export/fixtures/`: expand with solution-bearing `.com` fixtures and reference PNGs.
 
 Goal:
 Create a standalone export path for command files without launching the full GUI.

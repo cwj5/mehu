@@ -85,6 +85,32 @@ Notes:
 - If the script emits multiple `PLOT` intents, output files are suffixed automatically.
 - This is a bootstrap headless renderer for deterministic automation. Visual output is not yet fully equivalent to the in-app Three.js export path and is tracked under TKT-011.
 
+### Temporary Regression Reference
+
+There is now a temporary regression baseline for the headless CLI under [headless-export/fixtures/regression](headless-export/fixtures/regression).
+
+Included assets:
+
+- Synthetic grid fixture: [headless-export/fixtures/regression/synthetic_4x4.xyz](headless-export/fixtures/regression/synthetic_4x4.xyz)
+- Synthetic solution fixture: [headless-export/fixtures/regression/synthetic_4x4.q](headless-export/fixtures/regression/synthetic_4x4.q)
+- Command file: [headless-export/fixtures/regression/synthetic_4x4.com](headless-export/fixtures/regression/synthetic_4x4.com)
+- Reference PNG: [headless-export/fixtures/regression/reference/synthetic_4x4.png](headless-export/fixtures/regression/reference/synthetic_4x4.png)
+- Reference hash: [headless-export/fixtures/regression/reference/synthetic_4x4.sha256](headless-export/fixtures/regression/reference/synthetic_4x4.sha256)
+
+Run the local regression check from repo root:
+
+```bash
+headless-export/fixtures/regression/check_regression.sh
+```
+
+What it does:
+
+- Re-runs the exporter on the synthetic fixture.
+- Writes a fresh output under `headless-export/fixtures/regression/out/`.
+- Compares the generated PNG SHA-256 against the checked-in reference hash.
+
+This is a temporary baseline to catch unintended renderer drift while TKT-011 is still evolving. When a more representative reference set exists, this can be replaced with richer image-diff regression coverage.
+
 ## Testing
 
 This project maintains high code quality with comprehensive automated tests:
@@ -113,6 +139,9 @@ cargo run --manifest-path headless-export/Cargo.toml --bin overview-export -- \
   --out /tmp/overview-cli-smoke/smoke.png \
   --width 320 \
   --height 200
+
+# Run temporary headless CLI regression check
+headless-export/fixtures/regression/check_regression.sh
 
 # Generate Rust coverage report
 cd src-tauri && cargo tarpaulin --lib --timeout 300

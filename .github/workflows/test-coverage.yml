@@ -84,6 +84,11 @@ jobs:
           test -s /tmp/overview-cli-smoke/smoke_001.png
           test -s /tmp/overview-cli-smoke/smoke_002.png
 
+      - name: Run headless CLI regression hash check
+        run: |
+          chmod +x headless-export/fixtures/regression/check_regression.sh
+          headless-export/fixtures/regression/check_regression.sh
+
       - name: Generate Rust coverage
         working-directory: src-tauri
         run: cargo tarpaulin --lib --timeout 300 --out Xml

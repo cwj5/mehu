@@ -6,14 +6,48 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RenderIntent {
     pub state: PlotState,
+    /// Loaded solution data captured at this PLOT boundary.
+    ///
+    /// Populated by the headless CLI after executing the script; never
+    /// present in in-app IPC payloads (the app has its own grid cache).
+    /// `serde(skip)` keeps serialized `RenderIntent` values compact.
+    #[serde(skip)]
+    pub snapshot: Option<SolutionSnapshot>,
 }
 
 impl RenderIntent {
     fn from_state(state: &PlotState) -> Self {
         Self {
             state: state.clone(),
+            snapshot: None,
         }
     }
+}
+
+/// A resolved snapshot of grid geometry and a computed scalar field,
+/// captured at a single PLOT commit boundary.
+///
+/// All coordinate and scalar arrays are flat with ordering
+/// `idx = i + j*ni + k*ni*nj` where `i ∈ [0, ni)`, `j ∈ [0, nj)`,
+/// `k ∈ [0, nk)`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SolutionSnapshot {
+    /// Grid point counts along each axis.
+    pub ni: u32,
+    pub nj: u32,
+    pub nk: u32,
+    /// Flat grid X coordinates, length = ni × nj × nk.
+    pub x: Vec<f32>,
+    /// Flat grid Y coordinates, same length as `x`.
+    pub y: Vec<f32>,
+    /// Flat grid Z coordinates, same length as `x`.
+    pub z: Vec<f32>,
+    /// Computed scalar field values, same length as `x`.
+    pub scalar: Vec<f32>,
+    /// Minimum finite scalar value in this snapshot.
+    pub field_min: f32,
+    /// Maximum finite scalar value in this snapshot.
+    pub field_max: f32,
 }
 
 /// Result of executing a parsed script against PlotState.
