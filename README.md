@@ -128,6 +128,30 @@ CI now enforces this baseline in a dedicated workflow at [.github/workflows/head
 
 This project maintains high code quality with comprehensive automated tests:
 
+### Parity Gate
+
+Parity changes are merge-gated by the workflow at [.github/workflows/parity-matrix.yml](.github/workflows/parity-matrix.yml). The stable required check names are:
+
+- `Parity Governance`
+- `Backend Parity Fixtures`
+- `Cross-Path Parity`
+- `Headless Regression`
+
+Local parity commands from the repo root:
+
+```bash
+# Run the full parity gate locally
+npm run test:parity
+
+# Or run the gate components individually
+npm run validate:parity-matrix
+npm run test:parity-backend
+npm run test:parity-cross-path
+headless-export/fixtures/regression/check_regression.sh
+```
+
+Update [plot3d_com_file/parity_matrix.json](plot3d_com_file/parity_matrix.json) whenever a change affects capability status, rationale, or freshness of parity coverage. The validator will fail if the matrix is stale relative to parity-affecting code changes.
+
 ### Running Tests
 
 ```bash
@@ -142,6 +166,12 @@ npm run test:watch
 
 # Run Rust library tests
 cd src-tauri && cargo test --lib
+
+# Run backend parity fixture equivalence test
+cd .. && npm run test:parity-backend
+
+# Run frontend cross-path parity tests
+npm run test:parity-cross-path
 
 # Run headless CLI crate tests
 cargo test --manifest-path headless-export/Cargo.toml --bin overview-export

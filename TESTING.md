@@ -16,6 +16,18 @@ This configures git to automatically run tests before each commit.
 ### Running Tests
 
 ```bash
+# Run the parity gate locally
+npm run test:parity
+
+# Run parity matrix governance only
+npm run validate:parity-matrix
+
+# Run backend parity fixtures only
+npm run test:parity-backend
+
+# Run frontend cross-path parity only
+npm run test:parity-cross-path
+
 # Run all TypeScript tests
 npm test
 
@@ -27,7 +39,21 @@ npm run test:watch
 
 # Run Rust backend tests
 cd src-tauri && cargo test --lib
+
+# Run headless regression check required by branch protection
+cd .. && headless-export/fixtures/regression/check_regression.sh
 ```
+
+## Required Parity Checks
+
+The repository's parity policy is split into stable CI checks so contributors can diagnose failures quickly:
+
+- `Parity Governance`: validates `plot3d_com_file/parity_matrix.json` freshness and governance rules.
+- `Backend Parity Fixtures`: runs the Rust fixture-based parity equivalence test in `src-tauri/src/script_executor.rs`.
+- `Cross-Path Parity`: runs the frontend integration parity coverage in `src/App.integration.test.tsx`.
+- `Headless Regression`: runs the hash-based headless export regression workflow in `.github/workflows/headless-regression.yml`.
+
+The first three checks are defined in [.github/workflows/parity-matrix.yml](.github/workflows/parity-matrix.yml). `Headless Regression` remains a separate required workflow because export-path drift is intentionally tracked outside the GUI/script parity suite.
 
 ## Test Structure
 
@@ -99,6 +125,19 @@ git commit --no-verify
   - TypeScript tests with coverage upload to Codecov
   - Rust tests with coverage upload to Codecov
   - Coverage report generation and PR comments
+
+### Parity Gate Pipeline
+- **File**: `.github/workflows/parity-matrix.yml`
+- **Trigger**: Push to `main`/`develop`/`plot3d-com-file` and pull requests to `main`/`develop`
+- **Stable Checks**:
+  - `Parity Governance`
+  - `Backend Parity Fixtures`
+  - `Cross-Path Parity`
+
+### Headless Regression Pipeline
+- **File**: `.github/workflows/headless-regression.yml`
+- **Trigger**: Push to `main`/`develop`/`plot3d-com-file` and pull requests to `main`/`develop`
+- **Stable Check**: `Headless Regression`
 
 ## Coverage Goals
 
