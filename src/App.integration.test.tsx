@@ -596,6 +596,517 @@ describe('Contour spec editor commits (TKT-007E)', () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────────
+// TKT-012C: Cross-path parity tests (script path vs GUI action path)
+// ──────────────────────────────────────────────────────────────────────────────
+
+describe('Cross-path parity (TKT-012C)', () => {
+    type MockPlotState = {
+        scalar_field: string;
+        plot_family: string;
+        contour_attribute: string;
+        axis_view: string;
+        plot_up: string | null;
+        contour_spec: Record<string, unknown>;
+        walls: Array<Record<string, unknown>>;
+        subsets: Array<Record<string, unknown>>;
+        fsurface: Record<string, unknown> | null;
+        text_annotations: Array<Record<string, unknown>>;
+        viewpoint: Record<string, unknown> | null;
+    };
+
+    type MockApplyResult = {
+        state: MockPlotState;
+        diagnostics: Array<Record<string, unknown>>;
+    };
+
+    type MockScriptResult = {
+        final_state: MockPlotState;
+        intents: Array<{ state: MockPlotState }>;
+        show_output: string[];
+        diagnostics: Array<Record<string, unknown>>;
+    };
+
+    const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value));
+
+    const titleCaseField = (field: string) => {
+        switch (field) {
+            case 'none':
+                return 'None';
+            case 'pressure':
+                return 'Pressure';
+            case 'density':
+                return 'Density';
+            case 'function_surface':
+                return 'Function Surface';
+            default:
+                return field
+                    .split('_')
+                    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+                    .join(' ');
+        }
+    };
+
+    const titleCaseFamily = (family: string) => {
+        if (family === 'function_surface') {
+            return 'FunctionSurface';
+        }
+        return family.charAt(0).toUpperCase() + family.slice(1);
+    };
+
+    const titleCaseAxisView = (axisView: string) => {
+        if (axisView === 'custom') {
+            return 'Custom';
+        }
+        return axisView
+            .split('_')
+            .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+            .join('');
+    };
+
+    const titleCasePlotUp = (plotUp: string | null) => {
+        if (!plotUp) {
+            return 'None';
+        }
+        return plotUp
+            .split('_')
+            .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+            .join('');
+    };
+
+    const buildShowStatus = (state: MockPlotState) => (
+        `SHOW: field=${titleCaseField(state.scalar_field)}, family=${titleCaseFamily(state.plot_family)}, axis_view=${titleCaseAxisView(state.axis_view)}, plot_up=${titleCasePlotUp(state.plot_up)}, text_annotations=${state.text_annotations.length}, walls=${state.walls.length}, subsets=${state.subsets.length}`
+    );
+
+    const axisViewToViewpoint = (axisView: string) => {
+        switch (axisView) {
+            case 'plus_x':
+                return { x: 8.660254037844387, y: 0, z: 0 };
+            case 'minus_x':
+                return { x: -8.660254037844387, y: 0, z: 0 };
+            case 'plus_y':
+                return { x: 0, y: 8.660254037844387, z: 0 };
+            case 'minus_y':
+                return { x: 0, y: -8.660254037844387, z: 0 };
+            case 'plus_z':
+            case 'plane_xy':
+            case 'plane_yx':
+                return { x: 0, y: 0, z: 8.660254037844387 };
+            case 'minus_z':
+                return { x: 0, y: 0, z: -8.660254037844387 };
+            case 'plane_xz':
+            case 'plane_zx':
+                return { x: 0, y: 8.660254037844387, z: 0 };
+            case 'plane_yz':
+            case 'plane_zy':
+                return { x: 8.660254037844387, y: 0, z: 0 };
+            default:
+                return null;
+        }
+    };
+
+    const makeState = (overrides: Partial<MockPlotState> = {}): MockPlotState => ({
+        scalar_field: 'none',
+        plot_family: 'contour',
+        contour_attribute: 'line',
+        axis_view: 'custom',
+        plot_up: null,
+        contour_spec: { mode: 'none' },
+        walls: [],
+        subsets: [],
+        fsurface: null,
+        text_annotations: [],
+        viewpoint: null,
+        ...overrides,
+    });
+
+    const makeScriptResult = (finalState: MockPlotState, options?: {
+        intents?: Array<{ state: MockPlotState }>;
+        show_output?: string[];
+    }): MockScriptResult => ({
+        final_state: clone(finalState),
+        intents: clone(options?.intents ?? [{ state: clone(finalState) }]),
+        show_output: clone(options?.show_output ?? []),
+        diagnostics: [],
+    });
+
+    const scriptFixtures: Record<string, MockScriptResult> = {
+        '/tmp/tkt-012c-contours.com': makeScriptResult(
+            makeState({
+                contour_attribute: 'surface',
+                contour_spec: { mode: 'automatic', count: 8 },
+            })
+        ),
+        '/tmp/tkt-012c-orientation.com': makeScriptResult(
+            makeState({
+                axis_view: 'custom',
+                plot_up: 'negative_y',
+                viewpoint: { x: 5, y: 6, z: 7 },
+            }),
+            {
+                intents: [
+                    {
+                        state: makeState({
+                            axis_view: 'plane_xy',
+                            plot_up: 'negative_y',
+                            viewpoint: { x: 0, y: 0, z: 8.660254037844387 },
+                        }),
+                    },
+                    {
+                        state: makeState({
+                            axis_view: 'custom',
+                            plot_up: 'negative_y',
+                            viewpoint: { x: 5, y: 6, z: 7 },
+                        }),
+                    },
+                ],
+            }
+        ),
+        '/tmp/tkt-012c-ranges.com': makeScriptResult(
+            makeState({
+                subsets: [
+                    {
+                        grid: 1,
+                        gui_managed: true,
+                        i_range: { start: 1, end: 3 },
+                        j_range: { start: 1, end: 3 },
+                        k_range: { start: 2, end: 2 },
+                    },
+                ],
+                walls: [
+                    {
+                        grid: 1,
+                        gui_managed: false,
+                        i_range: { start: 1, end: 3 },
+                        j_range: { start: 2, end: 2 },
+                        k_range: { start: 1, end: 3 },
+                    },
+                ],
+            })
+        ),
+        '/tmp/tkt-012c-function-surface.com': makeScriptResult(
+            makeState({
+                plot_family: 'function_surface',
+                fsurface: { value: 0.125, scalar_field: 'pressure' },
+                text_annotations: [
+                    { content: 'Cp label', x: 0.2, y: 0.8 },
+                ],
+            }),
+            {
+                show_output: [
+                    buildShowStatus(
+                        makeState({
+                            plot_family: 'function_surface',
+                            fsurface: { value: 0.125, scalar_field: 'pressure' },
+                            text_annotations: [{ content: 'Cp label', x: 0.2, y: 0.8 }],
+                        })
+                    ),
+                ],
+            }
+        ),
+    };
+
+    let currentState: MockPlotState;
+    let commitResults: MockApplyResult[];
+
+    const resetBackendState = (overrides: Partial<MockPlotState> = {}) => {
+        currentState = makeState(overrides);
+        commitResults = [];
+    };
+
+    const makeApplyResult = (): MockApplyResult => ({
+        state: clone(currentState),
+        diagnostics: [],
+    });
+
+    const loadFiles = async () => {
+        render(<App />);
+        const loadButton = await screen.findByRole('button', { name: 'Load Files' });
+        fireEvent.click(loadButton);
+        await screen.findByText('Plot Family:');
+    };
+
+    const getLatestViewerProps = () => viewer3DMock.mock.calls[viewer3DMock.mock.calls.length - 1]?.[0] as
+        | { onCameraCommit?: (vp: { x: number; y: number; z: number }) => Promise<void> | void; cameraPlotUp?: string | null }
+        | undefined;
+
+    afterEach(() => {
+        cleanup();
+    });
+
+    beforeEach(() => {
+        invokeMock.mockReset();
+        viewer3DMock.mockReset();
+        resetBackendState();
+
+        invokeMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
+            if (cmd === 'get_plot_state') {
+                return clone(currentState);
+            }
+
+            if (cmd === 'open_multiple_files_dialog') {
+                return ['/tmp/grid.xyz', '/tmp/grid.q'];
+            }
+
+            if (cmd === 'clear_grid_cache' || cmd === 'clear_solution_cache_v2') {
+                return null;
+            }
+
+            if (cmd === 'load_plot3d_file_cached') {
+                if (args?.path === '/tmp/grid.xyz') {
+                    return [
+                        {
+                            id: 'grid-cache-1',
+                            file_path: '/tmp/grid.xyz',
+                            file_name: 'grid.xyz',
+                            grid_index: 0,
+                            dimensions: { i: 3, j: 3, k: 3 },
+                            has_iblank: false,
+                            has_solution: true,
+                        },
+                    ];
+                }
+                throw new Error('not a grid file');
+            }
+
+            if (cmd === 'load_plot3d_solution_cached') {
+                return [
+                    {
+                        id: 'sol-cache-1',
+                        file_path: '/tmp/grid.q',
+                        file_name: 'grid.q',
+                        grid_index: 0,
+                        dimensions: { i: 3, j: 3, k: 3 },
+                    },
+                ];
+            }
+
+            if (cmd === 'set_plot_family') {
+                currentState.plot_family = String(args?.family ?? currentState.plot_family);
+                return makeApplyResult();
+            }
+
+            if (cmd === 'set_plot_contour_attribute') {
+                currentState.contour_attribute = String(args?.attribute ?? currentState.contour_attribute);
+                return makeApplyResult();
+            }
+
+            if (cmd === 'set_plot_contour_spec') {
+                currentState.contour_spec = clone((args?.spec as Record<string, unknown> | undefined) ?? { mode: 'none' });
+                return makeApplyResult();
+            }
+
+            if (cmd === 'set_plot_axis_view') {
+                currentState.axis_view = String(args?.view ?? currentState.axis_view);
+                currentState.viewpoint = axisViewToViewpoint(currentState.axis_view);
+                return makeApplyResult();
+            }
+
+            if (cmd === 'set_plot_viewpoint') {
+                currentState.axis_view = 'custom';
+                currentState.viewpoint = clone((args?.vp as Record<string, unknown> | undefined) ?? null);
+                return makeApplyResult();
+            }
+
+            if (cmd === 'set_plot_subsets') {
+                currentState.subsets = clone((args?.subsets as Array<Record<string, unknown>> | undefined) ?? []);
+                return makeApplyResult();
+            }
+
+            if (cmd === 'set_plot_walls') {
+                currentState.walls = clone((args?.walls as Array<Record<string, unknown>> | undefined) ?? []);
+                return makeApplyResult();
+            }
+
+            if (cmd === 'set_plot_fsurface') {
+                currentState.fsurface = clone((args?.fsurface as Record<string, unknown> | null | undefined) ?? null);
+                return makeApplyResult();
+            }
+
+            if (cmd === 'add_plot_text_annotation') {
+                currentState.text_annotations = [
+                    ...currentState.text_annotations,
+                    clone((args?.text as Record<string, unknown> | undefined) ?? {}),
+                ];
+                return makeApplyResult();
+            }
+
+            if (cmd === 'clear_plot_text_annotations') {
+                currentState.text_annotations = [];
+                return makeApplyResult();
+            }
+
+            if (cmd === 'commit_plot') {
+                const result = {
+                    state: clone(currentState),
+                    diagnostics: [{ capability: 'PLOT', severity: 'info', message: 'Plot committed' }],
+                };
+                commitResults.push(result);
+                return result;
+            }
+
+            if (cmd === 'show_plot_status') {
+                return {
+                    state: clone(currentState),
+                    diagnostics: [],
+                    status: buildShowStatus(currentState),
+                };
+            }
+
+            if (cmd === 'execute_com_script') {
+                const path = String(args?.path ?? '');
+                const fixture = scriptFixtures[path];
+                if (!fixture) {
+                    throw new Error(`Unhandled script fixture: ${path}`);
+                }
+                currentState = clone(fixture.final_state);
+                return clone(fixture);
+            }
+
+            return null;
+        });
+    });
+
+    it('matches script parity for contour spec and contour attribute commits', async () => {
+        const scriptResult = await invokeMock('execute_com_script', { path: '/tmp/tkt-012c-contours.com' }) as MockScriptResult;
+
+        resetBackendState();
+        await loadFiles();
+
+        const attributeSelect = await screen.findByDisplayValue('Line');
+        fireEvent.change(attributeSelect, { target: { value: 'surface' } });
+
+        await waitFor(() => {
+            expect(invokeMock).toHaveBeenCalledWith('set_plot_contour_attribute', { attribute: 'surface' });
+            expect(invokeMock).toHaveBeenCalledWith('commit_plot');
+        });
+
+        const levelsSelect = await screen.findByDisplayValue('None');
+        fireEvent.change(levelsSelect, { target: { value: 'automatic' } });
+
+        const countInput = await screen.findByDisplayValue('10');
+        fireEvent.change(countInput, { target: { value: '8' } });
+
+        const applyButton = await screen.findByRole('button', { name: 'Apply' });
+        fireEvent.click(applyButton);
+
+        await waitFor(() => {
+            expect(currentState).toEqual(scriptResult.final_state);
+            expect(commitResults[commitResults.length - 1]?.state).toEqual(scriptResult.intents[scriptResult.intents.length - 1]?.state);
+        });
+    });
+
+    it('matches script parity for view preset, camera viewpoint, and plot_up preservation', async () => {
+        const scriptResult = await invokeMock('execute_com_script', { path: '/tmp/tkt-012c-orientation.com' }) as MockScriptResult;
+
+        resetBackendState({ plot_up: 'negative_y' });
+        render(<App />);
+
+        const presetSelect = await screen.findByLabelText('View Preset:');
+        fireEvent.change(presetSelect, { target: { value: 'plane_xy' } });
+
+        await waitFor(() => {
+            expect(commitResults[0]?.state).toEqual(scriptResult.intents[0]?.state);
+        });
+
+        const latestViewerProps = getLatestViewerProps();
+        expect(latestViewerProps?.cameraPlotUp).toBe('negative_y');
+
+        await (latestViewerProps?.onCameraCommit?.({ x: 5, y: 6, z: 7 }) as Promise<void> | undefined);
+
+        await waitFor(() => {
+            expect(currentState).toEqual(scriptResult.final_state);
+        });
+    });
+
+    it('matches script parity for GUI-managed subsets and manual walls at commit boundary', async () => {
+        const scriptResult = await invokeMock('execute_com_script', { path: '/tmp/tkt-012c-ranges.com' }) as MockScriptResult;
+
+        resetBackendState();
+        await loadFiles();
+
+        const addSliceButton = await screen.findByRole('button', { name: '+ Add slice' });
+        fireEvent.click(addSliceButton);
+
+        const applySubsetsButton = await screen.findByRole('button', { name: 'Apply SUBSETS' });
+        fireEvent.click(applySubsetsButton);
+
+        await waitFor(() => {
+            expect(currentState.subsets).toEqual(scriptResult.final_state.subsets);
+        });
+
+        const addWallRangeButton = await screen.findByRole('button', { name: 'Add Wall Range' });
+        fireEvent.click(addWallRangeButton);
+
+        const wallStartInputs = await screen.findAllByPlaceholderText('start');
+        const wallEndInputs = await screen.findAllByPlaceholderText('end');
+        fireEvent.change(wallStartInputs[0], { target: { value: '1' } });
+        fireEvent.change(wallEndInputs[0], { target: { value: '3' } });
+        fireEvent.change(wallStartInputs[1], { target: { value: '2' } });
+        fireEvent.change(wallEndInputs[1], { target: { value: '2' } });
+        fireEvent.change(wallStartInputs[2], { target: { value: '1' } });
+        fireEvent.change(wallEndInputs[2], { target: { value: '3' } });
+
+        const applyWallsButton = await screen.findByRole('button', { name: 'Apply WALLS' });
+        fireEvent.click(applyWallsButton);
+
+        await waitFor(() => {
+            expect(currentState).toEqual(scriptResult.final_state);
+            expect(commitResults[commitResults.length - 1]?.state).toEqual(scriptResult.intents[scriptResult.intents.length - 1]?.state);
+        });
+    });
+
+    it('matches script parity for function-surface, FSURFACE, TEXT, and SHOW status', async () => {
+        const scriptResult = await invokeMock('execute_com_script', { path: '/tmp/tkt-012c-function-surface.com' }) as MockScriptResult;
+
+        resetBackendState();
+        await loadFiles();
+
+        const plotFamilySelect = await screen.findByDisplayValue('Contour');
+        fireEvent.change(plotFamilySelect, { target: { value: 'function_surface' } });
+
+        await waitFor(() => {
+            expect(invokeMock).toHaveBeenCalledWith('set_plot_family', { family: 'function_surface' });
+        });
+
+        const fsurfaceSectionHeading = await screen.findByText('FSURFACE');
+        const fsurfaceSection = fsurfaceSectionHeading.parentElement as HTMLElement;
+
+        const enabledCheckbox = within(fsurfaceSection).getByRole('checkbox', { name: 'Enabled' });
+        fireEvent.click(enabledCheckbox);
+
+        const fsurfaceLevelInput = within(fsurfaceSection).getByRole('spinbutton');
+        fireEvent.change(fsurfaceLevelInput, { target: { value: '0.125' } });
+        await waitFor(() => {
+            expect((fsurfaceLevelInput as HTMLInputElement).value).toBe('0.125');
+        });
+
+        const applyFsurfaceButton = within(fsurfaceSection).getByRole('button', { name: 'Apply FSURFACE' });
+        fireEvent.click(applyFsurfaceButton);
+
+        const textInput = await screen.findByPlaceholderText('Annotation text');
+        fireEvent.change(textInput, { target: { value: 'Cp label' } });
+
+        const textXInput = await screen.findByPlaceholderText('X (0..1)');
+        fireEvent.change(textXInput, { target: { value: '0.2' } });
+
+        const textYInput = await screen.findByPlaceholderText('Y (0..1)');
+        fireEvent.change(textYInput, { target: { value: '0.8' } });
+
+        const addTextButton = await screen.findByRole('button', { name: 'Add TEXT' });
+        fireEvent.click(addTextButton);
+
+        const refreshShowButton = await screen.findByRole('button', { name: 'Refresh SHOW' });
+        fireEvent.click(refreshShowButton);
+
+        await waitFor(() => {
+            expect(currentState).toEqual(scriptResult.final_state);
+            expect(commitResults[commitResults.length - 1]?.state).toEqual(scriptResult.intents[scriptResult.intents.length - 1]?.state);
+            expect(screen.getByText(scriptResult.show_output[0]!)).toBeTruthy();
+        });
+    });
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
 // TKT-010: PNG export from command files
 // ──────────────────────────────────────────────────────────────────────────────
 
