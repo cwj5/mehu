@@ -13,6 +13,7 @@ import type { ColorScheme } from '../utils/colorMapping';
 import { mapValueToColor, normalizeValue, rgbToHex } from '../utils/colorMapping';
 import type { ScalarField } from '../utils/solutionData';
 import { getVisibleGridItems } from '../utils/gridUtils';
+import { resolveCameraUpVector, type CameraPlotUpAxis } from './cameraUp';
 
 interface MeshGeometry {
     vertices: number[];
@@ -78,14 +79,7 @@ interface Viewer3DProps {
     | 'plane_zy'
     | 'custom';
     cameraViewpoint?: { x: number; y: number; z: number } | null;
-    cameraPlotUp?:
-    | 'positive_x'
-    | 'positive_y'
-    | 'positive_z'
-    | 'negative_x'
-    | 'negative_y'
-    | 'negative_z'
-    | null;
+    cameraPlotUp?: CameraPlotUpAxis | null;
     onCameraCommit?: (vp: { x: number; y: number; z: number }) => void;
     onLoadingChange?: (isLoading: boolean) => void;
 }
@@ -112,14 +106,7 @@ function CameraViewpointSync({
     | 'plane_zy'
     | 'custom';
     cameraViewpoint?: { x: number; y: number; z: number } | null;
-    cameraPlotUp?:
-    | 'positive_x'
-    | 'positive_y'
-    | 'positive_z'
-    | 'negative_x'
-    | 'negative_y'
-    | 'negative_z'
-    | null;
+    cameraPlotUp?: CameraPlotUpAxis | null;
     isUserNavigatingRef: MutableRefObject<boolean>;
     controlsRef: MutableRefObject<any>;
 }) {
@@ -157,7 +144,7 @@ function CameraViewpointSync({
         }
     };
 
-    const plotUpDirection = (plotUp: NonNullable<typeof cameraPlotUp> | null): THREE.Vector3 | null => {
+    const plotUpDirection = (plotUp: CameraPlotUpAxis | null): THREE.Vector3 | null => {
         switch (plotUp) {
             case 'positive_x':
                 return new THREE.Vector3(1, 0, 0);
@@ -176,13 +163,17 @@ function CameraViewpointSync({
         }
     };
 
-    useEffect(() => {
-        const nextUp = plotUpDirection(cameraPlotUp ?? null) ?? new THREE.Vector3(0, 1, 0);
+    const applyCameraUpForPosition = (position: THREE.Vector3) => {
+        const requestedUp = plotUpDirection(cameraPlotUp ?? null);
+        const nextUp = resolveCameraUpVector(position, requestedUp);
         if (camera.up.distanceToSquared(nextUp) < 1e-8) {
             return;
         }
-
         camera.up.copy(nextUp);
+    };
+
+    useEffect(() => {
+        applyCameraUpForPosition(camera.position);
         if (controlsRef.current) {
             controlsRef.current.update();
         } else {
@@ -209,6 +200,7 @@ function CameraViewpointSync({
         }
 
         camera.position.set(cameraViewpoint.x, cameraViewpoint.y, cameraViewpoint.z);
+        applyCameraUpForPosition(camera.position);
         if (controlsRef.current) {
             controlsRef.current.target.set(0, 0, 0);
             controlsRef.current.update();
@@ -238,6 +230,7 @@ function CameraViewpointSync({
         const distance = Math.max(camera.position.length(), 1.0);
         const next = dir.multiplyScalar(distance);
         camera.position.set(next.x, next.y, next.z);
+        applyCameraUpForPosition(camera.position);
         if (controlsRef.current) {
             controlsRef.current.target.set(0, 0, 0);
             controlsRef.current.update();
