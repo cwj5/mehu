@@ -8,6 +8,10 @@ const { invokeMock } = vi.hoisted(() => ({
     invokeMock: vi.fn(),
 }));
 
+const { viewer3DMock } = vi.hoisted(() => ({
+    viewer3DMock: vi.fn(),
+}));
+
 vi.mock('@tauri-apps/api/core', () => ({
     invoke: invokeMock,
 }));
@@ -37,7 +41,10 @@ vi.mock('@tauri-apps/api/menu', () => ({
 }));
 
 vi.mock('./components/Viewer3D', () => ({
-    default: () => <div data-testid="viewer3d-mock" />,
+    default: (props: unknown) => {
+        viewer3DMock(props);
+        return <div data-testid="viewer3d-mock" />;
+    },
 }));
 
 vi.mock('./components/LogViewer', () => ({
@@ -59,9 +66,11 @@ describe('App frontend integration', () => {
 
     beforeEach(() => {
         invokeMock.mockReset();
+        viewer3DMock.mockReset();
 
         let currentPlotFamily = 'function_surface';
         let currentAxisView = 'custom';
+        let currentPlotUp: string | null = 'negative_y';
         let currentSubsets: Array<Record<string, unknown>> = [];
 
         invokeMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
@@ -71,6 +80,7 @@ describe('App frontend integration', () => {
                     plot_family: currentPlotFamily,
                     contour_attribute: 'line',
                     axis_view: currentAxisView,
+                    plot_up: currentPlotUp,
                     contour_spec: { mode: 'none' },
                     walls: [],
                     subsets: currentSubsets,
@@ -124,6 +134,7 @@ describe('App frontend integration', () => {
                         plot_family: currentPlotFamily,
                         contour_attribute: 'line',
                         axis_view: currentAxisView,
+                        plot_up: currentPlotUp,
                         contour_spec: { mode: 'none' },
                         walls: [],
                         subsets: currentSubsets,
@@ -143,6 +154,7 @@ describe('App frontend integration', () => {
                         plot_family: currentPlotFamily,
                         contour_attribute: 'line',
                         axis_view: currentAxisView,
+                        plot_up: currentPlotUp,
                         contour_spec: { mode: 'none' },
                         walls: [],
                         subsets: currentSubsets,
@@ -163,6 +175,7 @@ describe('App frontend integration', () => {
                         plot_family: currentPlotFamily,
                         contour_attribute: 'line',
                         axis_view: currentAxisView,
+                        plot_up: currentPlotUp,
                         contour_spec: { mode: 'none' },
                         walls: [],
                         subsets: currentSubsets,
@@ -181,6 +194,7 @@ describe('App frontend integration', () => {
                         plot_family: currentPlotFamily,
                         contour_attribute: 'line',
                         axis_view: currentAxisView,
+                        plot_up: currentPlotUp,
                         contour_spec: { mode: 'none' },
                         subsets: currentSubsets,
                         viewpoint: { x: 1, y: 0, z: 0 },
@@ -301,6 +315,18 @@ describe('App frontend integration', () => {
 
         expect(setSubsetsIdx).toBeGreaterThan(-1);
         expect(commitIdx).toBeGreaterThan(setSubsetsIdx);
+    });
+
+    it('passes backend plot_up through to Viewer3D cameraPlotUp prop', async () => {
+        render(<App />);
+
+        await screen.findByTestId('viewer3d-mock');
+
+        await waitFor(() => {
+            expect(viewer3DMock).toHaveBeenCalledWith(
+                expect.objectContaining({ cameraPlotUp: 'negative_y' })
+            );
+        });
     });
 });
 
