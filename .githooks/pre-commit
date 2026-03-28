@@ -66,6 +66,21 @@ fi
 rm -f "$OTHER_TEST_LOG"
 
 echo ""
+
+# Run parity matrix governance validation
+echo -e "${YELLOW}Validating parity matrix...${NC}"
+PARITY_LOG=$(mktemp)
+if node "$REPO_ROOT/scripts/validate-parity-matrix.mjs" >"$PARITY_LOG" 2>&1; then
+    echo -e "${GREEN}✓ Parity matrix valid${NC}"
+else
+    echo -e "${RED}✗ Parity matrix validation failed${NC}"
+    cat "$PARITY_LOG"
+    rm -f "$PARITY_LOG"
+    exit 1
+fi
+rm -f "$PARITY_LOG"
+
+echo ""
 echo -e "${GREEN}✅ All checks passed! Proceeding with commit.${NC}"
 echo -e "${YELLOW}ℹ️  Build checks (tauri build, cargo build) will run on push.${NC}"
 exit 0
