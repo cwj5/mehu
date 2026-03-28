@@ -1,6 +1,6 @@
 # PLOT3D .com File Support: Tickets
 
-Last updated: 2026-03-17
+Last updated: 2026-03-27
 
 This ticket set breaks the work into milestones and implementation-sized tasks. It is written so another agent can pick up the work with minimal additional context.
 
@@ -637,7 +637,9 @@ Update: 2026-03-23 (Phase 2 implementation started)
 3. Phase 2b baseline landed: a projection-based software renderer now draws a data-driven heatmap and marching-squares iso-contour overlays when a snapshot is available.
 4. Fallback behavior remains: if no dataset is available (or parsing fails), exporter still emits deterministic placeholder PNGs (preserving current smoke-test reliability).
 5. Added unit coverage for colormap interpolation, scalar computation, slab extraction, contour-level resolution, and marching-squares crossing detection.
-6. Known current constraint: binary reader currently targets the common single-precision little-endian Fortran-unformatted path and first-grid extraction only; broader format coverage remains follow-up work.
+6. Dataset loading now reuses the shared GUI PLOT3D reader path (same binary-format detection and parsing code as `src-tauri/src/plot3d.rs`) instead of a headless-only legacy reader.
+7. Temporary synthetic regression fixtures were expanded to cover binary-format variants generated via `gfortran`: little-endian f32 (baseline), little-endian f64, and big-endian f32.
+8. Fixture generation was consolidated into one Fortran source: `headless-export/fixtures/regression/generate_additional_synthetic_formats.f90`.
 
 Update: 2026-03-27 (temporary regression reference added)
 
@@ -648,6 +650,13 @@ Update: 2026-03-27 (temporary regression reference added)
 5. Added a second function-surface regression fixture `synthetic_4x4_surface.com` with reference output `reference/synthetic_4x4_surface.png` and hash `reference/synthetic_4x4_surface.sha256`.
 6. Expanded the regression check script so CI now validates both contour and function-surface synthetic baselines.
 
+Update: 2026-03-27 (regression matrix expansion)
+
+1. Added additional command fixtures for format-variant coverage: `synthetic_4x4_le_f64(.com, _surface.com)` and `synthetic_4x4_be_f32(.com, _surface.com)`.
+2. Added reference PNG/hash baselines for both contour and function-surface outputs of the new format variants.
+3. Expanded `headless-export/fixtures/regression/check_regression.sh` from 2 cases to 6 cases.
+4. Added README regeneration docs for synthetic fixtures (single `gfortran` command).
+
 Update: 2026-03-27 (Phase 2c bounded MVP started)
 
 1. `FunctionSurface` no longer falls through to the contour heatmap path only; the headless renderer now has a bounded wireframe-projection MVP for function-surface plots.
@@ -656,11 +665,11 @@ Update: 2026-03-27 (Phase 2c bounded MVP started)
 4. Function-surface rendering is still not parity-complete: there is no perspective camera model, no physically based lighting/material model, and no full Three.js-equivalent mesh pipeline yet.
 5. Added test coverage verifying that function-surface renders produce visible output, differ from contour renders, and emit a warning when the oblique fallback camera is used.
 
-Current verification baseline (as of 2026-03-23):
+Current verification baseline (as of 2026-03-27):
 
 1. `cargo test --manifest-path headless-export/Cargo.toml --bin overview-export` passes.
 2. CI smoke export runs `headless-export/fixtures/smoke.com` and asserts multi-PLOT outputs are generated.
-3. Temporary regression hash check passes for `headless-export/fixtures/regression/reference/synthetic_4x4.png`.
+3. Temporary regression hash checks pass for six synthetic cases (contour + function-surface across LE-f32, LE-f64, and BE-f32 fixtures).
 
 Phase 2 plan (original):
 
