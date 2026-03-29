@@ -36,7 +36,7 @@
             "id": "MINMAX",
             "status": "supported",
             "ticket": "TKT-002",
-            "notes": "MINMAX is represented in shared PlotState and exercised through parser/executor and GUI parity flows; Phase B hardening added malformed /INC shorthand diagnostic coverage."
+            "notes": "MINMAX is represented in shared PlotState and exercised through parser/executor and GUI parity flows; Phase B hardening added malformed /INC shorthand and incomplete axis-pair diagnostic coverage."
         },
         {
             "id": "CONTOURS",
@@ -78,7 +78,7 @@
             "id": "SHOW",
             "status": "supported",
             "ticket": "TKT-008",
-            "notes": "SHOW status output is supported with backend status generation and GUI visibility."
+            "notes": "SHOW status output is supported with backend status generation and GUI visibility; Phase B hardening includes commit-boundary tests confirming SHOW-only flows do not emit RenderIntent."
         }
     ],
     "outOfScopeCommands": [

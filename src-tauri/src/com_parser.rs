@@ -1431,6 +1431,51 @@ mod tests {
         }
     }
 
+    #[test]
+    fn minmax_axis_qualifiers_with_incomplete_pairs_warn_and_apply_available_axis() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("m.com");
+        fs::write(&file, "MINMAX/X/Y 0 1\n").expect("write");
+
+        let parsed = parse_com_file(&file).expect("parse");
+
+        assert!(parsed
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("MINMAX /Y requires 2 values (min max)")));
+
+        assert_eq!(parsed.actions.len(), 1);
+        match &parsed.actions[0] {
+            PlotAction::SetMinMax(mm) => {
+                assert_eq!(mm.x, Some(AxisBounds { min: 0.0, max: 1.0 }));
+                assert_eq!(mm.y, None);
+                assert_eq!(mm.z, None);
+            }
+            action => panic!("expected SetMinMax action, got {:?}", action),
+        }
+    }
+
+    #[test]
+    fn contours_increment_non_numeric_qualifier_falls_back_to_positional_value() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("c.com");
+        fs::write(&file, "CONTOURS/INCREMENT=oops 0.25\n").expect("write");
+
+        let parsed = parse_com_file(&file).expect("parse");
+
+        assert_eq!(parsed.actions.len(), 1);
+        match parsed.actions[0] {
+            PlotAction::SetContourSpec(ContourSpec::Increment { start, increment }) => {
+                assert!((start - 0.0).abs() < 1e-9, "start should default to 0.0");
+                assert!(
+                    (increment - 0.25).abs() < 1e-9,
+                    "increment should fall back to positional value"
+                );
+            }
+            ref action => panic!("expected Increment contour spec, got {:?}", action),
+        }
+    }
+
     // ── VPOINT malformed inputs ───────────────────────────────────────────────
 
     #[test]

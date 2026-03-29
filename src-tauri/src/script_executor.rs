@@ -336,6 +336,30 @@ mod tests {
     }
 
     #[test]
+    fn show_without_commit_produces_status_without_render_intent() {
+        let initial = PlotState::default();
+        let actions = vec![PlotAction::ShowStatus];
+
+        let result = execute_actions(initial, &actions);
+
+        assert_eq!(
+            result.intents.len(),
+            0,
+            "SHOW should not create a render intent"
+        );
+        assert_eq!(
+            result.show_output.len(),
+            1,
+            "SHOW should still produce one status line"
+        );
+        assert!(
+            result.show_output[0].contains("SHOW:"),
+            "expected formatted SHOW output, got {:?}",
+            result.show_output
+        );
+    }
+
+    #[test]
     fn multiple_plot_actions_emit_multiple_intents_in_order() {
         let initial = PlotState::default();
         let actions = vec![
