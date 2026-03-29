@@ -390,7 +390,9 @@ mod tests {
             "expected diagnostics to be present"
         );
         assert!(
-            result.diagnostics[0].message.contains("Unsupported command"),
+            result.diagnostics[0]
+                .message
+                .contains("Unsupported command"),
             "expected parser diagnostic to be first, got {:?}",
             result.diagnostics
         );

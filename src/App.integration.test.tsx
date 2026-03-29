@@ -803,6 +803,37 @@ describe('Cross-path parity (TKT-012C)', () => {
                 ],
             }
         ),
+        '/tmp/tkt-012c-include-sequence.com': makeScriptResult(
+            makeState({
+                plot_family: 'function_surface',
+                axis_view: 'plus_x',
+                viewpoint: { x: 8.660254037844387, y: 0, z: 0 },
+            }),
+            {
+                intents: [
+                    {
+                        state: makeState({
+                            axis_view: 'plus_z',
+                            viewpoint: { x: 0, y: 0, z: 8.660254037844387 },
+                        }),
+                    },
+                    {
+                        state: makeState({
+                            plot_family: 'function_surface',
+                            axis_view: 'plus_z',
+                            viewpoint: { x: 0, y: 0, z: 8.660254037844387 },
+                        }),
+                    },
+                    {
+                        state: makeState({
+                            plot_family: 'function_surface',
+                            axis_view: 'plus_x',
+                            viewpoint: { x: 8.660254037844387, y: 0, z: 0 },
+                        }),
+                    },
+                ],
+            }
+        ),
     };
 
     let currentState: MockPlotState;
@@ -1131,6 +1162,32 @@ describe('Cross-path parity (TKT-012C)', () => {
             expect(commitResults[commitResults.length - 1]?.state).toEqual(scriptResult.intents[scriptResult.intents.length - 1]?.state);
             expect(screen.getByText(scriptResult.show_output[0]!)).toBeTruthy();
         });
+    });
+
+    it('matches script parity for include-driven multi-commit state sequence', async () => {
+        const scriptResult = await invokeMock('execute_com_script', { path: '/tmp/tkt-012c-include-sequence.com' }) as MockScriptResult;
+
+        resetBackendState();
+        await loadFiles();
+
+        const viewPresetSelect = await screen.findByLabelText('View Preset:');
+        fireEvent.change(viewPresetSelect, { target: { value: 'plus_z' } });
+
+        const plotFamilySelect = await screen.findByDisplayValue('Contour');
+        fireEvent.change(plotFamilySelect, { target: { value: 'function_surface' } });
+
+        const updatedViewPresetSelect = await screen.findByLabelText('View Preset:');
+        fireEvent.change(updatedViewPresetSelect, { target: { value: 'plus_x' } });
+
+        await waitFor(() => {
+            expect(commitResults.length).toBeGreaterThanOrEqual(3);
+        });
+
+        const guiCommitStates = commitResults.slice(-3).map((entry) => entry.state);
+        const scriptIntentStates = scriptResult.intents.map((entry) => entry.state);
+
+        expect(guiCommitStates).toEqual(scriptIntentStates);
+        expect(currentState).toEqual(scriptResult.final_state);
     });
 });
 

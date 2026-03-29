@@ -553,6 +553,18 @@ fn parse_contours(args: &[String], file: &Path, line: u32, out: &mut ParsedScrip
                         v += increment;
                     }
                 }
+            } else if tuple_values.len() > 3 {
+                out.diagnostics.push(diagnostic(
+                    cap::CONTOURS,
+                    DiagnosticSeverity::Warning,
+                    Some(file.to_string_lossy().to_string()),
+                    Some(line),
+                    Some(1),
+                    format!(
+                        "CONTOURS tuple with {} values is unsupported; expected 3 for range tuple",
+                        tuple_values.len()
+                    ),
+                ));
             } else {
                 positional_values.extend(tuple_values);
             }
@@ -1367,6 +1379,58 @@ mod tests {
         );
     }
 
+    #[test]
+    fn contours_tuple_with_four_values_warns_and_is_ignored() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("c.com");
+        fs::write(&file, "CONTOURS/MANUAL (0.1,0.2,0.3,0.4)\n").expect("write");
+
+        let parsed = parse_com_file(&file).expect("parse");
+
+        assert!(parsed
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("tuple with 4 values is unsupported")));
+
+        assert_eq!(parsed.actions.len(), 1);
+        match &parsed.actions[0] {
+            PlotAction::SetContourSpec(ContourSpec::Manual { entries }) => {
+                assert!(
+                    entries.is_empty(),
+                    "expected unsupported tuple to contribute no entries"
+                );
+            }
+            action => panic!("expected Manual contour spec, got {:?}", action),
+        }
+    }
+
+    #[test]
+    fn minmax_inc_shorthand_warns_but_numeric_pair_still_applies() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("m.com");
+        fs::write(&file, "MINMAX/INC abc 0 1\n").expect("write");
+
+        let parsed = parse_com_file(&file).expect("parse");
+
+        assert!(parsed.diagnostics.iter().any(|d| d
+            .message
+            .contains("Unknown MINMAX qualifier '/INC' ignored")));
+        assert!(parsed
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("Non-numeric MINMAX value 'abc' ignored")));
+
+        assert_eq!(parsed.actions.len(), 1);
+        match &parsed.actions[0] {
+            PlotAction::SetMinMax(mm) => {
+                assert_eq!(mm.x, Some(AxisBounds { min: 0.0, max: 1.0 }));
+                assert_eq!(mm.y, None);
+                assert_eq!(mm.z, None);
+            }
+            action => panic!("expected SetMinMax action, got {:?}", action),
+        }
+    }
+
     // ── VPOINT malformed inputs ───────────────────────────────────────────────
 
     #[test]
@@ -1820,8 +1884,14 @@ fn plot_up_qualifier_sets_plot_orientation() {
 
     let parsed = parse_com_file(&file).expect("parse");
     assert_eq!(parsed.actions.len(), 3);
-    assert_eq!(parsed.actions[0], PlotAction::SetPlotUpAxis(PlotUpAxis::NegativeY));
-    assert_eq!(parsed.actions[1], PlotAction::SetPlotFamily(PlotFamily::Contour));
+    assert_eq!(
+        parsed.actions[0],
+        PlotAction::SetPlotUpAxis(PlotUpAxis::NegativeY)
+    );
+    assert_eq!(
+        parsed.actions[1],
+        PlotAction::SetPlotFamily(PlotFamily::Contour)
+    );
     assert_eq!(parsed.actions[2], PlotAction::CommitPlot);
 }
 
@@ -1966,60 +2036,60 @@ fn subsets_positional_start_end_pairs_parsed() {
 
 // ── Integration tests: plot3d.md examples ────────────────────────────────────
 
-    #[test]
-    fn parse_cp_com_2d_line_plot_example_from_plot3d_md() {
-        // Simplified cp.com example from plot3d.md
-        let dir = tempfile::tempdir().expect("tempdir");
-        let file = dir.path().join("cp.com");
-        let content = r#"
+#[test]
+fn parse_cp_com_2d_line_plot_example_from_plot3d_md() {
+    // Simplified cp.com example from plot3d.md
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("cp.com");
+    let content = r#"
     FUNCTION 114
     FSURFACE /WALLS_ORIGIN=1
     MINMAX /INC -0.75,0.75,0.25,1.5,-1.5,-0.5
     VIEW XZ
     PLOT/LINE
     "#;
-        fs::write(&file, content).expect("write");
+    fs::write(&file, content).expect("write");
 
-        let parsed = parse_com_file(&file).expect("parse");
+    let parsed = parse_com_file(&file).expect("parse");
 
-        // Expected actions: SetScalarField + two SetMinMax + SetAxisView + SetPlotFamily + CommitPlot
-        // (FSURFACE and VIEW produce actions; MINMAX/INC produces diagnostics)
-        assert!(
-            parsed.actions.len() >= 4,
-            "expected at least 4 actions, got {}: {:?}",
-            parsed.actions.len(),
-            parsed.actions
-        );
+    // Expected actions: SetScalarField + two SetMinMax + SetAxisView + SetPlotFamily + CommitPlot
+    // (FSURFACE and VIEW produce actions; MINMAX/INC produces diagnostics)
+    assert!(
+        parsed.actions.len() >= 4,
+        "expected at least 4 actions, got {}: {:?}",
+        parsed.actions.len(),
+        parsed.actions
+    );
 
-        // Verify SetAxisView is present with PlaneXZ
-        let has_axis_view_xz = parsed
-            .actions
-            .iter()
-            .any(|action| matches!(action, PlotAction::SetAxisView(AxisView::PlaneXZ)));
-        assert!(has_axis_view_xz, "expected PlaneXZ axis view");
+    // Verify SetAxisView is present with PlaneXZ
+    let has_axis_view_xz = parsed
+        .actions
+        .iter()
+        .any(|action| matches!(action, PlotAction::SetAxisView(AxisView::PlaneXZ)));
+    assert!(has_axis_view_xz, "expected PlaneXZ axis view");
 
-        // Verify CommitPlot is present
-        let has_plot = parsed
-            .actions
-            .iter()
-            .any(|action| matches!(action, PlotAction::CommitPlot));
-        assert!(has_plot, "expected CommitPlot action");
+    // Verify CommitPlot is present
+    let has_plot = parsed
+        .actions
+        .iter()
+        .any(|action| matches!(action, PlotAction::CommitPlot));
+    assert!(has_plot, "expected CommitPlot action");
 
-        // No errors expected (only diagnostic for /INC is acceptable)
-        let errors: Vec<_> = parsed
-            .diagnostics
-            .iter()
-            .filter(|d| d.severity == DiagnosticSeverity::Error)
-            .collect();
-        assert!(errors.is_empty(), "expected no errors, got {:?}", errors);
-    }
+    // No errors expected (only diagnostic for /INC is acceptable)
+    let errors: Vec<_> = parsed
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == DiagnosticSeverity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected no errors, got {:?}", errors);
+}
 
-    #[test]
-    fn parse_top_com_shuttle_example_from_plot3d_md() {
-        // Simplified shuttle "top.com" example from plot3d.md
-        let dir = tempfile::tempdir().expect("tempdir");
-        let file = dir.path().join("top.com");
-        let content = r#"
+#[test]
+fn parse_top_com_shuttle_example_from_plot3d_md() {
+    // Simplified shuttle "top.com" example from plot3d.md
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("top.com");
+    let content = r#"
     FUNCTION 100
     VIEW TOP
     TEXT
@@ -2027,123 +2097,123 @@ fn subsets_positional_start_end_pairs_parsed() {
     WALLS
     PLOT/CONTOUR
     "#;
-        fs::write(&file, content).expect("write");
+    fs::write(&file, content).expect("write");
 
-        let parsed = parse_com_file(&file).expect("parse");
+    let parsed = parse_com_file(&file).expect("parse");
 
-        // Expected actions: SetScalarField + SetAxisView(PlaneXY) + (walls) + CommitPlot
-        // Note: TEXT with following line content is treated as a mode switch in this parser
-        // unless explicit inline text arguments are provided.
-        assert!(
-            parsed.actions.len() >= 3,
-            "expected at least 3 actions, got {}",
-            parsed.actions.len()
-        );
+    // Expected actions: SetScalarField + SetAxisView(PlaneXY) + (walls) + CommitPlot
+    // Note: TEXT with following line content is treated as a mode switch in this parser
+    // unless explicit inline text arguments are provided.
+    assert!(
+        parsed.actions.len() >= 3,
+        "expected at least 3 actions, got {}",
+        parsed.actions.len()
+    );
 
-        // Verify SetAxisView is present with PlaneXY (equivalent to TOP)
-        let has_axis_view_xy = parsed
-            .actions
-            .iter()
-            .any(|action| matches!(action, PlotAction::SetAxisView(AxisView::PlaneXY)));
-        assert!(has_axis_view_xy, "expected PlaneXY axis view for TOP");
+    // Verify SetAxisView is present with PlaneXY (equivalent to TOP)
+    let has_axis_view_xy = parsed
+        .actions
+        .iter()
+        .any(|action| matches!(action, PlotAction::SetAxisView(AxisView::PlaneXY)));
+    assert!(has_axis_view_xy, "expected PlaneXY axis view for TOP");
 
-        // Verify CommitPlot is present
-        let has_plot = parsed
-            .actions
-            .iter()
-            .any(|action| matches!(action, PlotAction::CommitPlot));
-        assert!(has_plot, "expected CommitPlot action");
-    }
+    // Verify CommitPlot is present
+    let has_plot = parsed
+        .actions
+        .iter()
+        .any(|action| matches!(action, PlotAction::CommitPlot));
+    assert!(has_plot, "expected CommitPlot action");
+}
 
-    #[test]
-    fn parse_script_with_vpoint_spherical_lookup_from_plot3d_md() {
-        // Example script showing VPOINT/ANGLES as documented in plot3d.md
-        let dir = tempfile::tempdir().expect("tempdir");
-        let file = dir.path().join("isometric.com");
-        let content = r#"
+#[test]
+fn parse_script_with_vpoint_spherical_lookup_from_plot3d_md() {
+    // Example script showing VPOINT/ANGLES as documented in plot3d.md
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("isometric.com");
+    let content = r#"
     FUNCTION 100
     VPOINT/ANGLES 30 45 10
     PLOT/CONTOUR
     "#;
-        fs::write(&file, content).expect("write");
+    fs::write(&file, content).expect("write");
 
-        let parsed = parse_com_file(&file).expect("parse");
+    let parsed = parse_com_file(&file).expect("parse");
 
-        // Expected: SetScalarField + SetViewpoint + CommitPlot
-        assert!(
-            parsed.actions.len() >= 3,
-            "expected at least 3 actions, got {}",
-            parsed.actions.len()
-        );
+    // Expected: SetScalarField + SetViewpoint + CommitPlot
+    assert!(
+        parsed.actions.len() >= 3,
+        "expected at least 3 actions, got {}",
+        parsed.actions.len()
+    );
 
-        // Verify SetViewpoint is present with spherically converted coordinates
-        let vp = parsed.actions.iter().find_map(|action| {
-            if let PlotAction::SetViewpoint(vp) = action {
-                Some(vp)
-            } else {
-                None
-            }
-        });
-        assert!(vp.is_some(), "expected SetViewpoint action");
+    // Verify SetViewpoint is present with spherically converted coordinates
+    let vp = parsed.actions.iter().find_map(|action| {
+        if let PlotAction::SetViewpoint(vp) = action {
+            Some(vp)
+        } else {
+            None
+        }
+    });
+    assert!(vp.is_some(), "expected SetViewpoint action");
 
-        let vp = vp.unwrap();
-        // φ=30°, θ=45°, r=10 should give approximately (6.1, 3.5, 7.07)
-        assert!(
-            (vp.x - 6.1).abs() < 0.2,
-            "x from spherical(30,45,10) should be ~6.1, got {}",
-            vp.x
-        );
-        assert!(
-            (vp.z - 7.07).abs() < 0.1,
-            "z from spherical(30,45,10) should be ~7.07, got {}",
-            vp.z
-        );
-    }
+    let vp = vp.unwrap();
+    // φ=30°, θ=45°, r=10 should give approximately (6.1, 3.5, 7.07)
+    assert!(
+        (vp.x - 6.1).abs() < 0.2,
+        "x from spherical(30,45,10) should be ~6.1, got {}",
+        vp.x
+    );
+    assert!(
+        (vp.z - 7.07).abs() < 0.1,
+        "z from spherical(30,45,10) should be ~7.07, got {}",
+        vp.z
+    );
+}
 
-    #[test]
-    fn parse_airfoil_example_with_view_and_plot_line_qualifier() {
-        // Example from plot3d.md § VPOINT showing 2D airfoil plot
-        let dir = tempfile::tempdir().expect("tempdir");
-        let file = dir.path().join("airfoil.com");
-        let content = r#"
+#[test]
+fn parse_airfoil_example_with_view_and_plot_line_qualifier() {
+    // Example from plot3d.md § VPOINT showing 2D airfoil plot
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("airfoil.com");
+    let content = r#"
     FUNCTION 114
     VIEW YX
     MINMAX 0 0.2 -0.5 1
     PLOT/LINE
     "#;
-        fs::write(&file, content).expect("write");
+    fs::write(&file, content).expect("write");
 
-        let parsed = parse_com_file(&file).expect("parse");
+    let parsed = parse_com_file(&file).expect("parse");
 
-        // Expected: SetScalarField + SetAxisView(PlaneYX) + SetMinMax + CommitPlot
-        assert!(
-            parsed.actions.len() >= 3,
-            "expected at least 3 actions, got {}",
-            parsed.actions.len()
-        );
+    // Expected: SetScalarField + SetAxisView(PlaneYX) + SetMinMax + CommitPlot
+    assert!(
+        parsed.actions.len() >= 3,
+        "expected at least 3 actions, got {}",
+        parsed.actions.len()
+    );
 
-        // Verify PlaneYX (swapped view)
-        let has_axis_view_yx = parsed
-            .actions
-            .iter()
-            .any(|action| matches!(action, PlotAction::SetAxisView(AxisView::PlaneYX)));
-        assert!(has_axis_view_yx, "expected PlaneYX axis view");
+    // Verify PlaneYX (swapped view)
+    let has_axis_view_yx = parsed
+        .actions
+        .iter()
+        .any(|action| matches!(action, PlotAction::SetAxisView(AxisView::PlaneYX)));
+    assert!(has_axis_view_yx, "expected PlaneYX axis view");
 
-        // Verify no errors
-        let errors: Vec<_> = parsed
-            .diagnostics
-            .iter()
-            .filter(|d| d.severity == DiagnosticSeverity::Error)
-            .collect();
-        assert!(errors.is_empty(), "expected no errors, got {:?}", errors);
-    }
+    // Verify no errors
+    let errors: Vec<_> = parsed
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == DiagnosticSeverity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected no errors, got {:?}", errors);
+}
 
-    #[test]
-    fn parse_multiplot_script_with_multiple_view_and_vpoint_changes() {
-        // Complex script showing multiple camera switches
-        let dir = tempfile::tempdir().expect("tempdir");
-        let file = dir.path().join("multi.com");
-        let content = r#"
+#[test]
+fn parse_multiplot_script_with_multiple_view_and_vpoint_changes() {
+    // Complex script showing multiple camera switches
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("multi.com");
+    let content = r#"
     FUNCTION 100
     VIEW TOP
     PLOT/CONTOUR
@@ -2151,121 +2221,121 @@ fn subsets_positional_start_end_pairs_parsed() {
     VPOINT 0 10 0
     PLOT/CONTOUR
     "#;
-        fs::write(&file, content).expect("write");
+    fs::write(&file, content).expect("write");
 
-        let parsed = parse_com_file(&file).expect("parse");
+    let parsed = parse_com_file(&file).expect("parse");
 
-        // Expected: SetAxisView + CommitPlot + SetAxisView + SetViewpoint + CommitPlot
-        // (that's 5 actions minimum)
-        assert!(
-            parsed.actions.len() >= 5,
-            "expected at least 5 actions, got {}: {:?}",
-            parsed.actions.len(),
-            parsed.actions
-        );
+    // Expected: SetAxisView + CommitPlot + SetAxisView + SetViewpoint + CommitPlot
+    // (that's 5 actions minimum)
+    assert!(
+        parsed.actions.len() >= 5,
+        "expected at least 5 actions, got {}: {:?}",
+        parsed.actions.len(),
+        parsed.actions
+    );
 
-        // Count SetAxisView and SetViewpoint actions
-        let axis_views = parsed
-            .actions
-            .iter()
-            .filter(|action| matches!(action, PlotAction::SetAxisView(_)))
-            .count();
-        let viewpoints = parsed
-            .actions
-            .iter()
-            .filter(|action| matches!(action, PlotAction::SetViewpoint(_)))
-            .count();
-        let plots = parsed
-            .actions
-            .iter()
-            .filter(|action| matches!(action, PlotAction::CommitPlot))
-            .count();
+    // Count SetAxisView and SetViewpoint actions
+    let axis_views = parsed
+        .actions
+        .iter()
+        .filter(|action| matches!(action, PlotAction::SetAxisView(_)))
+        .count();
+    let viewpoints = parsed
+        .actions
+        .iter()
+        .filter(|action| matches!(action, PlotAction::SetViewpoint(_)))
+        .count();
+    let plots = parsed
+        .actions
+        .iter()
+        .filter(|action| matches!(action, PlotAction::CommitPlot))
+        .count();
 
-        assert_eq!(axis_views, 2, "expected 2 SetAxisView actions");
-        assert_eq!(viewpoints, 1, "expected 1 SetViewpoint action");
-        assert_eq!(plots, 2, "expected 2 CommitPlot actions");
-    }
+    assert_eq!(axis_views, 2, "expected 2 SetAxisView actions");
+    assert_eq!(viewpoints, 1, "expected 1 SetViewpoint action");
+    assert_eq!(plots, 2, "expected 2 CommitPlot actions");
+}
 
-    #[test]
-    fn parse_command_aliases_in_cp_example() {
-        // Verify that aliases (VP for VPOINT, FUN for FUNCTION, etc.) work in real scripts
-        let dir = tempfile::tempdir().expect("tempdir");
-        let file = dir.path().join("aliases.com");
-        let content = r#"
+#[test]
+fn parse_command_aliases_in_cp_example() {
+    // Verify that aliases (VP for VPOINT, FUN for FUNCTION, etc.) work in real scripts
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("aliases.com");
+    let content = r#"
     FUN 100
     VP 5.0 5.0 5.0
     PL/CONTOUR
     "#;
-        fs::write(&file, content).expect("write");
+    fs::write(&file, content).expect("write");
 
-        let parsed = parse_com_file(&file).expect("parse");
+    let parsed = parse_com_file(&file).expect("parse");
 
-        // Expected: SetScalarField + SetViewpoint + CommitPlot
-        assert!(
-            parsed.actions.len() >= 3,
-            "expected at least 3 actions with aliases, got {}",
-            parsed.actions.len()
-        );
+    // Expected: SetScalarField + SetViewpoint + CommitPlot
+    assert!(
+        parsed.actions.len() >= 3,
+        "expected at least 3 actions with aliases, got {}",
+        parsed.actions.len()
+    );
 
-        // Verify aliases resolved to full commands
-        let has_vp = parsed
+    // Verify aliases resolved to full commands
+    let has_vp = parsed
+        .actions
+        .iter()
+        .any(|action| matches!(action, PlotAction::SetViewpoint(_)));
+    assert!(has_vp, "expected VP alias to resolve");
+}
+
+#[test]
+fn include_path_is_resolved_relative_to_including_file() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let nested = root.join("nested");
+    fs::create_dir_all(&nested).expect("create nested");
+
+    let include_target = nested.join("child.com");
+    fs::write(&include_target, "VIEW TOP\nPLOT/CONTOUR\n").expect("write child");
+
+    let parent = root.join("parent.com");
+    fs::write(&parent, "INCLUDE nested/child.com\n").expect("write parent");
+
+    let parsed = parse_com_file(&parent).expect("parse parent");
+
+    assert!(
+        parsed
             .actions
             .iter()
-            .any(|action| matches!(action, PlotAction::SetViewpoint(_)));
-        assert!(has_vp, "expected VP alias to resolve");
-    }
-
-    #[test]
-    fn include_path_is_resolved_relative_to_including_file() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let root = dir.path();
-        let nested = root.join("nested");
-        fs::create_dir_all(&nested).expect("create nested");
-
-        let include_target = nested.join("child.com");
-        fs::write(&include_target, "VIEW TOP\nPLOT/CONTOUR\n").expect("write child");
-
-        let parent = root.join("parent.com");
-        fs::write(&parent, "INCLUDE nested/child.com\n").expect("write parent");
-
-        let parsed = parse_com_file(&parent).expect("parse parent");
-
-        assert!(
-            parsed
-                .actions
-                .iter()
-                .any(|action| matches!(action, PlotAction::SetAxisView(AxisView::PlaneXY))),
-            "expected VIEW TOP from included file"
-        );
-        assert!(
-            parsed
-                .actions
-                .iter()
-                .any(|action| matches!(action, PlotAction::CommitPlot)),
-            "expected PLOT from included file"
-        );
-        assert!(
-            parsed
-                .diagnostics
-                .iter()
-                .all(|d| d.severity != DiagnosticSeverity::Error),
-            "expected no parse errors, got {:?}",
-            parsed.diagnostics
-        );
-    }
-
-    #[test]
-    fn empty_script_produces_no_actions_and_no_errors() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let file = dir.path().join("empty.com");
-        fs::write(&file, "! This is just a comment\n\n").expect("write");
-
-        let parsed = parse_com_file(&file).expect("parse");
-        assert!(parsed.actions.is_empty());
-        let errors: Vec<_> = parsed
+            .any(|action| matches!(action, PlotAction::SetAxisView(AxisView::PlaneXY))),
+        "expected VIEW TOP from included file"
+    );
+    assert!(
+        parsed
+            .actions
+            .iter()
+            .any(|action| matches!(action, PlotAction::CommitPlot)),
+        "expected PLOT from included file"
+    );
+    assert!(
+        parsed
             .diagnostics
             .iter()
-            .filter(|d| d.severity == DiagnosticSeverity::Error)
-            .collect();
-        assert!(errors.is_empty());
-    }
+            .all(|d| d.severity != DiagnosticSeverity::Error),
+        "expected no parse errors, got {:?}",
+        parsed.diagnostics
+    );
+}
+
+#[test]
+fn empty_script_produces_no_actions_and_no_errors() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("empty.com");
+    fs::write(&file, "! This is just a comment\n\n").expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+    assert!(parsed.actions.is_empty());
+    let errors: Vec<_> = parsed
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == DiagnosticSeverity::Error)
+        .collect();
+    assert!(errors.is_empty());
+}

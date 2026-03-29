@@ -1,6 +1,6 @@
 {
     "schemaVersion": 1,
-    "lastUpdated": "2026-03-28",
+    "lastUpdated": "2026-03-29",
     "parityStates": [
         "supported",
         "script-only",
@@ -36,13 +36,13 @@
             "id": "MINMAX",
             "status": "supported",
             "ticket": "TKT-002",
-            "notes": "MINMAX is represented in shared PlotState and exercised through parser/executor and GUI parity flows."
+            "notes": "MINMAX is represented in shared PlotState and exercised through parser/executor and GUI parity flows; Phase B hardening added malformed /INC shorthand diagnostic coverage."
         },
         {
             "id": "CONTOURS",
             "status": "supported",
             "ticket": "TKT-007",
-            "notes": "Absolute multi-level contour model (AUTOMATIC/INCREMENT/MANUAL) is implemented with deterministic renderer semantics."
+            "notes": "Absolute multi-level contour model (AUTOMATIC/INCREMENT/MANUAL) is implemented with deterministic renderer semantics; Phase B hardening added malformed tuple-arity diagnostic coverage."
         },
         {
             "id": "PLOT",
