@@ -360,6 +360,30 @@ mod tests {
     }
 
     #[test]
+    fn show_before_and_after_commit_preserves_output_order() {
+        let initial = PlotState::default();
+        let actions = vec![
+            PlotAction::ShowStatus,
+            PlotAction::SetScalarField(ScalarField::Pressure),
+            PlotAction::CommitPlot,
+            PlotAction::ShowStatus,
+        ];
+
+        let result = execute_actions(initial, &actions);
+
+        assert_eq!(result.intents.len(), 1, "only CommitPlot should emit a render intent");
+        assert_eq!(result.show_output.len(), 2, "expected two SHOW outputs");
+        assert!(
+            result.show_output[0].contains("field=None"),
+            "first SHOW should reflect pre-commit state"
+        );
+        assert!(
+            result.show_output[1].contains("field=Pressure"),
+            "second SHOW should reflect post-commit state mutation"
+        );
+    }
+
+    #[test]
     fn multiple_plot_actions_emit_multiple_intents_in_order() {
         let initial = PlotState::default();
         let actions = vec![

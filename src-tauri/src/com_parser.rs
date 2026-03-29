@@ -1476,6 +1476,42 @@ mod tests {
         }
     }
 
+    #[test]
+    fn contours_increment_qualifier_takes_priority_over_manual() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("c.com");
+        fs::write(&file, "CONTOURS/INCREMENT=0.4/MANUAL 1.0 2.0 3.0\n").expect("write");
+
+        let parsed = parse_com_file(&file).expect("parse");
+
+        assert_eq!(parsed.actions.len(), 1);
+        match parsed.actions[0] {
+            PlotAction::SetContourSpec(ContourSpec::Increment { start, increment }) => {
+                assert!((start - 0.0).abs() < 1e-9, "start should default to 0.0");
+                assert!((increment - 0.4).abs() < 1e-9, "expected increment from /INCREMENT qualifier");
+            }
+            ref action => panic!("expected Increment contour spec, got {:?}", action),
+        }
+    }
+
+    #[test]
+    fn contours_increment_without_values_defaults_to_point_one() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("c.com");
+        fs::write(&file, "CONTOURS/INCREMENT\n").expect("write");
+
+        let parsed = parse_com_file(&file).expect("parse");
+
+        assert_eq!(parsed.actions.len(), 1);
+        match parsed.actions[0] {
+            PlotAction::SetContourSpec(ContourSpec::Increment { start, increment }) => {
+                assert!((start - 0.0).abs() < 1e-9, "start should default to 0.0");
+                assert!((increment - 0.1).abs() < 1e-9, "expected default increment of 0.1");
+            }
+            ref action => panic!("expected Increment contour spec, got {:?}", action),
+        }
+    }
+
     // ── VPOINT malformed inputs ───────────────────────────────────────────────
 
     #[test]

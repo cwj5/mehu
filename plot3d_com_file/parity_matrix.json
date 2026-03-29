@@ -42,13 +42,13 @@
             "id": "CONTOURS",
             "status": "supported",
             "ticket": "TKT-007",
-            "notes": "Absolute multi-level contour model (AUTOMATIC/INCREMENT/MANUAL) is implemented with deterministic renderer semantics; Phase B hardening added malformed tuple-arity diagnostic coverage."
+            "notes": "Absolute multi-level contour model (AUTOMATIC/INCREMENT/MANUAL) is implemented with deterministic renderer semantics; Phase B hardening added malformed tuple-arity coverage plus /INCREMENT precedence and default-fallback tests."
         },
         {
             "id": "PLOT",
             "status": "supported",
             "ticket": "TKT-005",
-            "notes": "PLOT is the shared commit boundary for deterministic RenderIntent generation across script execution and GUI apply flows; Phase B hardening added executor diagnostic-order regression coverage."
+            "notes": "PLOT is the shared commit boundary for deterministic RenderIntent generation across script execution and GUI apply flows; Phase B hardening added executor diagnostic-order and SHOW/commit ordering regression coverage."
         },
         {
             "id": "WALLS",
@@ -78,7 +78,7 @@
             "id": "SHOW",
             "status": "supported",
             "ticket": "TKT-008",
-            "notes": "SHOW status output is supported with backend status generation and GUI visibility; Phase B hardening includes commit-boundary tests confirming SHOW-only flows do not emit RenderIntent."
+            "notes": "SHOW status output is supported with backend status generation and GUI visibility; Phase B hardening includes commit-boundary tests confirming SHOW-only flows do not emit RenderIntent and SHOW output ordering remains stable across commits."
         }
     ],
     "outOfScopeCommands": [
