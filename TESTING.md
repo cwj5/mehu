@@ -53,7 +53,7 @@ The repository's parity policy is split into stable CI checks so contributors ca
 - `Parity Governance`: validates `plot3d_com_file/parity_matrix.json` freshness and governance rules.
 - `Backend Parity Fixtures`: runs the Rust fixture-based parity equivalence test in `src-tauri/src/script_executor.rs`.
 - `Cross-Path Parity`: runs the frontend integration parity coverage in `src/App.integration.test.tsx`.
-- `Headless Regression`: runs the hash-based headless export regression workflow in `.github/workflows/headless-regression.yml`.
+- `Headless Regression`: runs deterministic hash checks plus tolerance-based semantic image checks in `.github/workflows/headless-regression.yml`.
 
 The first three checks are defined in [.github/workflows/parity-matrix.yml](.github/workflows/parity-matrix.yml). `Headless Regression` remains a separate required workflow because export-path drift is intentionally tracked outside the GUI/script parity suite.
 
@@ -73,7 +73,7 @@ Expected success indicators:
 - `validate:parity-matrix`: `[parity-matrix] OK: ... capability rows validated`
 - `test:parity-backend`: `backend_parity_fixtures_match_expected_outputs ... ok`
 - `test:parity-cross-path`: `Test Files  1 passed` and all parity tests green
-- `check_regression.sh`: hash comparison passes with no mismatch errors
+- `check_regression.sh`: hash comparison and semantic threshold checks both pass with no errors
 
 ## When PRs Must Update Parity Matrix
 
@@ -97,6 +97,10 @@ The parity governance check enforces freshness and will fail if capability-affec
   - Run `npm run test:parity-cross-path` and inspect the failing case in `src/App.integration.test.tsx`.
 - `Headless Regression` failure:
   - Re-run `headless-export/fixtures/regression/check_regression.sh` and compare generated outputs under `headless-export/fixtures/regression/out`.
+  - If hashes fail, treat as deterministic drift (reference update or behavior regression) and inspect script/rendering changes first.
+  - If hashes pass but semantic checks fail, treat as tolerance drift and inspect camera/orientation, contour setup, precision changes, and image dimensions.
+  - Use semantic thresholds from `check_regression.sh` (`SEM_MAX_MEAN_ERROR`, `SEM_MAX_RMS_ERROR`, `SEM_MAX_CHANGED_RATIO`, `SEM_CHANGED_THRESHOLD`) to determine whether drift is intentional.
+  - For intentional drift, update references and include before/after metrics in the PR notes.
 
 ## Test Structure
 

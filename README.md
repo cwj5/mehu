@@ -156,8 +156,15 @@ What it does:
 - Re-runs the exporter on both synthetic fixtures (contour + function-surface).
 - Writes a fresh output under `headless-export/fixtures/regression/out/`.
 - Compares each generated PNG SHA-256 against its checked-in reference hash.
+- Compares each generated PNG against the checked-in reference PNG using semantic thresholds (mean/RMS pixel error and changed-pixel ratio).
 
-This is a temporary baseline to catch unintended renderer drift while TKT-011 is still evolving. When a more representative reference set exists, this can be replaced with richer image-diff regression coverage.
+This baseline combines strict hash checks and tolerance-based semantic checks to catch deterministic and meaningful visual drift while TKT-011 is still evolving.
+
+Failure triage policy:
+
+- Hash mismatch: deterministic drift, usually caused by rendering behavior changes or stale references.
+- Semantic threshold breach: meaningful visual drift that exceeds configured tolerances.
+- Intentional drift: update references and include semantic metrics in PR notes.
 
 CI now enforces this baseline in a dedicated workflow at [.github/workflows/headless-regression.yml](.github/workflows/headless-regression.yml). On failure, generated outputs under [headless-export/fixtures/regression/out](headless-export/fixtures/regression/out) are uploaded as an artifact (`headless-regression-out`) for diagnosis.
 

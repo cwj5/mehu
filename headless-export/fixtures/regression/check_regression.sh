@@ -4,6 +4,14 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 OUT_DIR="$ROOT/out"
 REF_DIR="$ROOT/reference"
+
+# Default thresholds intentionally allow small rendering jitter while still
+# detecting meaningful image drift. They can be overridden from CI or local env.
+SEM_MAX_MEAN_ERROR="${SEM_MAX_MEAN_ERROR:-0.75}"
+SEM_MAX_RMS_ERROR="${SEM_MAX_RMS_ERROR:-2.5}"
+SEM_MAX_CHANGED_RATIO="${SEM_MAX_CHANGED_RATIO:-0.005}"
+SEM_CHANGED_THRESHOLD="${SEM_CHANGED_THRESHOLD:-8}"
+
 mkdir -p "$OUT_DIR"
 
 check_case() {
@@ -32,6 +40,17 @@ check_case() {
     echo "actual:   $actual"
     exit 1
   fi
+
+  cargo run --manifest-path "$ROOT/../../Cargo.toml" --bin overview-export-semantic-check -- \
+    --label "$name" \
+    --actual "$out_file" \
+    --reference "$REF_DIR/${name}.png" \
+    --max-mean-error "$SEM_MAX_MEAN_ERROR" \
+    --max-rms-error "$SEM_MAX_RMS_ERROR" \
+    --max-changed-ratio "$SEM_MAX_CHANGED_RATIO" \
+    --changed-threshold "$SEM_CHANGED_THRESHOLD" >/dev/null
+
+  echo "PASS: ${name} semantic check within thresholds"
 }
 
 check_case "synthetic_4x4"
