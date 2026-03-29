@@ -61,6 +61,21 @@ Explicitly out of scope until sign-off:
 
 All gates must pass together in one run before feature work resumes.
 
+### Phase D Sign-Off (2026-03-28)
+
+**Status:** All required validation gates have passed in a single run:
+
+- Parity matrix validation (`npm run validate:parity-matrix`): Passed
+- Backend parity fixture (`npm run test:parity-backend`): Passed
+- Cross-path parity integration (`npm run test:parity-cross-path`): Passed
+- Headless regression (hash + semantic) (`headless-export/fixtures/regression/check_regression.sh`): Passed
+- Full TypeScript/JS test suite (`npm test`): Passed
+- Rust backend library tests (`cd src-tauri && cargo test --lib`): Passed
+
+No errors or failures detected. Codebase is stable and ready for feature-unfreeze.
+
+**Sign-off:** Stability exit gate achieved. Feature work may now resume per roadmap.
+
 ## Required Validation Gates
 
 Run from repository root unless noted.
