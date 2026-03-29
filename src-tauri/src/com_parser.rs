@@ -1490,7 +1490,10 @@ mod tests {
         match parsed.actions[0] {
             PlotAction::SetContourSpec(ContourSpec::Increment { start, increment }) => {
                 assert!((start - 0.0).abs() < 1e-9, "start should default to 0.0");
-                assert!((increment - 0.4).abs() < 1e-9, "expected increment from /INCREMENT qualifier");
+                assert!(
+                    (increment - 0.4).abs() < 1e-9,
+                    "expected increment from /INCREMENT qualifier"
+                );
             }
             ref action => panic!("expected Increment contour spec, got {:?}", action),
         }
@@ -1508,7 +1511,10 @@ mod tests {
         match parsed.actions[0] {
             PlotAction::SetContourSpec(ContourSpec::Increment { start, increment }) => {
                 assert!((start - 0.0).abs() < 1e-9, "start should default to 0.0");
-                assert!((increment - 0.1).abs() < 1e-9, "expected default increment of 0.1");
+                assert!(
+                    (increment - 0.1).abs() < 1e-9,
+                    "expected default increment of 0.1"
+                );
             }
             ref action => panic!("expected Increment contour spec, got {:?}", action),
         }
@@ -1522,10 +1528,9 @@ mod tests {
 
         let parsed = parse_com_file(&file).expect("parse");
 
-        assert!(parsed
-            .diagnostics
-            .iter()
-            .any(|d| d.message.contains("Unknown CONTOURS qualifier '/FOO' ignored")));
+        assert!(parsed.diagnostics.iter().any(|d| d
+            .message
+            .contains("Unknown CONTOURS qualifier '/FOO' ignored")));
 
         assert_eq!(parsed.actions.len(), 1);
         match &parsed.actions[0] {
@@ -1545,10 +1550,9 @@ mod tests {
 
         let parsed = parse_com_file(&file).expect("parse");
 
-        assert!(parsed
-            .diagnostics
-            .iter()
-            .any(|d| d.message.contains("Unknown CONTOURS qualifier '/FOO' ignored")));
+        assert!(parsed.diagnostics.iter().any(|d| d
+            .message
+            .contains("Unknown CONTOURS qualifier '/FOO' ignored")));
 
         assert_eq!(parsed.actions.len(), 1);
         match parsed.actions[0] {

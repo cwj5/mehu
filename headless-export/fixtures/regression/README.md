@@ -16,6 +16,7 @@ For each `.com` fixture, `check_regression.sh` executes two gates:
   - mean absolute RGB channel error
   - RMS RGB channel error
   - changed-pixel ratio
+- Emit per-case semantic metrics into `out/semantic_metrics.txt` for triage and PR evidence.
 
 Hash checks stay strict. Semantic checks provide meaningful-drift visibility with bounded tolerance.
 
@@ -46,4 +47,4 @@ SEM_MAX_MEAN_ERROR=1.0 SEM_MAX_RMS_ERROR=3.0 headless-export/fixtures/regression
 
 3. Intentional rendering change
 - Update `reference/*.png` and matching `reference/*.sha256`.
-- Record before/after semantic metrics in PR notes so threshold decisions are explicit.
+- Record before/after semantic metrics from `out/semantic_metrics.txt` in PR notes so threshold decisions are explicit.

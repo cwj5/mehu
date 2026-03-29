@@ -45,6 +45,13 @@ struct Metrics {
     height: u32,
 }
 
+#[derive(Debug)]
+struct Thresholds {
+    max_mean_error: f64,
+    max_rms_error: f64,
+    max_changed_ratio: f64,
+}
+
 fn load_rgba(path: &PathBuf) -> Result<RgbaImage, String> {
     let reader = ImageReader::open(path)
         .map_err(|e| format!("failed to open {}: {e}", path.display()))?;
@@ -103,6 +110,31 @@ fn compute_metrics(actual: &RgbaImage, reference: &RgbaImage, changed_threshold:
     }
 }
 
+fn evaluate_thresholds(metrics: &Metrics, thresholds: &Thresholds) -> Vec<String> {
+    let mut failures = Vec::new();
+
+    if metrics.mean_error > thresholds.max_mean_error {
+        failures.push(format!(
+            "mean_abs {:.4} > max_mean_error {:.4}",
+            metrics.mean_error, thresholds.max_mean_error
+        ));
+    }
+    if metrics.rms_error > thresholds.max_rms_error {
+        failures.push(format!(
+            "rms {:.4} > max_rms_error {:.4}",
+            metrics.rms_error, thresholds.max_rms_error
+        ));
+    }
+    if metrics.changed_ratio > thresholds.max_changed_ratio {
+        failures.push(format!(
+            "changed_ratio {:.6} > max_changed_ratio {:.6}",
+            metrics.changed_ratio, thresholds.max_changed_ratio
+        ));
+    }
+
+    failures
+}
+
 fn main() {
     let args = Args::parse();
 
@@ -147,25 +179,12 @@ fn main() {
         metrics.height
     );
 
-    let mut failures = Vec::new();
-    if metrics.mean_error > args.max_mean_error {
-        failures.push(format!(
-            "mean_abs {:.4} > max_mean_error {:.4}",
-            metrics.mean_error, args.max_mean_error
-        ));
-    }
-    if metrics.rms_error > args.max_rms_error {
-        failures.push(format!(
-            "rms {:.4} > max_rms_error {:.4}",
-            metrics.rms_error, args.max_rms_error
-        ));
-    }
-    if metrics.changed_ratio > args.max_changed_ratio {
-        failures.push(format!(
-            "changed_ratio {:.6} > max_changed_ratio {:.6}",
-            metrics.changed_ratio, args.max_changed_ratio
-        ));
-    }
+    let thresholds = Thresholds {
+        max_mean_error: args.max_mean_error,
+        max_rms_error: args.max_rms_error,
+        max_changed_ratio: args.max_changed_ratio,
+    };
+    let failures = evaluate_thresholds(&metrics, &thresholds);
 
     if failures.is_empty() {
         println!("PASS: {} semantic drift within thresholds", args.label);
@@ -177,4 +196,63 @@ fn main() {
         eprintln!("- {}", failure);
     }
     std::process::exit(1);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::Rgba;
+
+    fn solid_image(width: u32, height: u32, rgb: [u8; 3]) -> RgbaImage {
+        RgbaImage::from_fn(width, height, |_x, _y| Rgba([rgb[0], rgb[1], rgb[2], 255]))
+    }
+
+    #[test]
+    fn compute_metrics_identical_images_are_zero() {
+        let a = solid_image(2, 2, [10, 20, 30]);
+        let b = solid_image(2, 2, [10, 20, 30]);
+
+        let metrics = compute_metrics(&a, &b, 8);
+
+        assert_eq!(metrics.mean_error, 0.0);
+        assert_eq!(metrics.rms_error, 0.0);
+        assert_eq!(metrics.max_error, 0);
+        assert_eq!(metrics.changed_ratio, 0.0);
+    }
+
+    #[test]
+    fn compute_metrics_detects_single_pixel_change_ratio() {
+        let mut actual = solid_image(2, 2, [0, 0, 0]);
+        let reference = solid_image(2, 2, [0, 0, 0]);
+        actual.put_pixel(0, 0, Rgba([20, 0, 0, 255]));
+
+        let metrics = compute_metrics(&actual, &reference, 8);
+
+        assert!(metrics.mean_error > 0.0);
+        assert!(metrics.rms_error > 0.0);
+        assert_eq!(metrics.max_error, 20);
+        assert!((metrics.changed_ratio - 0.25).abs() < 1e-9);
+    }
+
+    #[test]
+    fn evaluate_thresholds_reports_only_exceeded_limits() {
+        let metrics = Metrics {
+            mean_error: 0.8,
+            rms_error: 2.2,
+            max_error: 9,
+            changed_ratio: 0.002,
+            width: 320,
+            height: 200,
+        };
+        let thresholds = Thresholds {
+            max_mean_error: 0.75,
+            max_rms_error: 2.5,
+            max_changed_ratio: 0.005,
+        };
+
+        let failures = evaluate_thresholds(&metrics, &thresholds);
+
+        assert_eq!(failures.len(), 1);
+        assert!(failures[0].contains("mean_abs"));
+    }
 }

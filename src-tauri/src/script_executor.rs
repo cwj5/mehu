@@ -371,7 +371,11 @@ mod tests {
 
         let result = execute_actions(initial, &actions);
 
-        assert_eq!(result.intents.len(), 1, "only CommitPlot should emit a render intent");
+        assert_eq!(
+            result.intents.len(),
+            1,
+            "only CommitPlot should emit a render intent"
+        );
         assert_eq!(result.show_output.len(), 2, "expected two SHOW outputs");
         assert!(
             result.show_output[0].contains("field=None"),
