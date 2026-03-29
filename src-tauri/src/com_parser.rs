@@ -605,6 +605,33 @@ fn parse_contours(args: &[String], file: &Path, line: u32, out: &mut ParsedScrip
         out.actions.push(PlotAction::SetContourAttribute(attribute));
     }
 
+    // Warn about truly unknown qualifiers for all contour modes.
+    for qualifier in qualifier_values.keys() {
+        if !matches!(
+            qualifier.as_str(),
+            "AUTOMATIC"
+                | "INCREMENT"
+                | "MANUAL"
+                | "RANGE"
+                | "ATTRIBUTES"
+                | "NOATTRIBUTES"
+                | "LINE"
+                | "SURFACE"
+                | "GRID"
+                | "COLOR"
+                | "DOTS"
+        ) {
+            out.diagnostics.push(diagnostic(
+                cap::CONTOURS,
+                DiagnosticSeverity::Warning,
+                Some(file.to_string_lossy().to_string()),
+                Some(line),
+                Some(1),
+                format!("Unknown CONTOURS qualifier '/{}' ignored", qualifier),
+            ));
+        }
+    }
+
     // /INCREMENT mode: explicit qualifier takes priority.
     if qualifier_values.contains_key("INCREMENT") {
         let increment = qualifier_values
@@ -645,31 +672,6 @@ fn parse_contours(args: &[String], file: &Path, line: u32, out: &mut ParsedScrip
 
     out.actions
         .push(PlotAction::SetContourSpec(ContourSpec::Automatic { count }));
-
-    // Warn about truly unknown qualifiers; known non-state qualifiers are silently accepted.
-    for qualifier in qualifier_values.keys() {
-        if !matches!(
-            qualifier.as_str(),
-            "AUTOMATIC"
-                | "RANGE"
-                | "ATTRIBUTES"
-                | "NOATTRIBUTES"
-                | "LINE"
-                | "SURFACE"
-                | "GRID"
-                | "COLOR"
-                | "DOTS"
-        ) {
-            out.diagnostics.push(diagnostic(
-                cap::CONTOURS,
-                DiagnosticSeverity::Warning,
-                Some(file.to_string_lossy().to_string()),
-                Some(line),
-                Some(1),
-                format!("Unknown CONTOURS qualifier '/{}' ignored", qualifier),
-            ));
-        }
-    }
 }
 
 fn parse_plot(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {
@@ -1507,6 +1509,52 @@ mod tests {
             PlotAction::SetContourSpec(ContourSpec::Increment { start, increment }) => {
                 assert!((start - 0.0).abs() < 1e-9, "start should default to 0.0");
                 assert!((increment - 0.1).abs() < 1e-9, "expected default increment of 0.1");
+            }
+            ref action => panic!("expected Increment contour spec, got {:?}", action),
+        }
+    }
+
+    #[test]
+    fn contours_manual_mode_reports_unknown_qualifier() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("c.com");
+        fs::write(&file, "CONTOURS/MANUAL/FOO 1.0\n").expect("write");
+
+        let parsed = parse_com_file(&file).expect("parse");
+
+        assert!(parsed
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("Unknown CONTOURS qualifier '/FOO' ignored")));
+
+        assert_eq!(parsed.actions.len(), 1);
+        match &parsed.actions[0] {
+            PlotAction::SetContourSpec(ContourSpec::Manual { entries }) => {
+                assert_eq!(entries.len(), 1);
+                assert!((entries[0].value - 1.0).abs() < 1e-9);
+            }
+            action => panic!("expected Manual contour spec, got {:?}", action),
+        }
+    }
+
+    #[test]
+    fn contours_increment_mode_reports_unknown_qualifier() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("c.com");
+        fs::write(&file, "CONTOURS/INCREMENT=0.2/FOO\n").expect("write");
+
+        let parsed = parse_com_file(&file).expect("parse");
+
+        assert!(parsed
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("Unknown CONTOURS qualifier '/FOO' ignored")));
+
+        assert_eq!(parsed.actions.len(), 1);
+        match parsed.actions[0] {
+            PlotAction::SetContourSpec(ContourSpec::Increment { start, increment }) => {
+                assert!((start - 0.0).abs() < 1e-9);
+                assert!((increment - 0.2).abs() < 1e-9);
             }
             ref action => panic!("expected Increment contour spec, got {:?}", action),
         }

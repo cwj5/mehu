@@ -42,7 +42,7 @@
             "id": "CONTOURS",
             "status": "supported",
             "ticket": "TKT-007",
-            "notes": "Absolute multi-level contour model (AUTOMATIC/INCREMENT/MANUAL) is implemented with deterministic renderer semantics; Phase B hardening added malformed tuple-arity coverage plus /INCREMENT precedence and default-fallback tests."
+            "notes": "Absolute multi-level contour model (AUTOMATIC/INCREMENT/MANUAL) is implemented with deterministic renderer semantics; Phase B hardening added malformed tuple-arity coverage plus /INCREMENT precedence/default-fallback tests and unknown-qualifier diagnostic consistency coverage across contour modes."
         },
         {
             "id": "PLOT",
