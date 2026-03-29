@@ -12,7 +12,7 @@
             "id": "READ",
             "status": "supported",
             "ticket": "TKT-004",
-            "notes": "Parser and executor support READ command semantics with script-relative path resolution and diagnostics; Phase B hardening expanded parser include-path regression coverage."
+            "notes": "Parser and executor support READ command semantics with script-relative path resolution and diagnostics; Phase B hardening expanded include-path and malformed-include diagnostic regression coverage."
         },
         {
             "id": "FUNCTION",

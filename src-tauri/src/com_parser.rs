@@ -1557,6 +1557,77 @@ mod tests {
         );
     }
 
+    #[test]
+    fn include_without_path_warns_and_continues_parsing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("include_missing_path.com");
+        fs::write(&file, "INCLUDE\nVIEW X\n").expect("write script");
+
+        let parsed = parse_com_file(&file).expect("parse");
+
+        assert!(
+            parsed
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("INCLUDE requires a file path")),
+            "expected INCLUDE missing-path warning, got {:?}",
+            parsed.diagnostics
+        );
+        assert!(
+            parsed
+                .actions
+                .iter()
+                .any(|action| matches!(action, PlotAction::SetAxisView(AxisView::PlusX))),
+            "expected parser to continue and parse VIEW X"
+        );
+    }
+
+    #[test]
+    fn include_shorthand_missing_path_warns_and_continues_parsing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("include_missing_shorthand.com");
+        fs::write(&file, "@\nVIEW Y\n").expect("write script");
+
+        let parsed = parse_com_file(&file).expect("parse");
+
+        assert!(
+            parsed
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("Include shorthand '@' missing path")),
+            "expected shorthand missing-path warning, got {:?}",
+            parsed.diagnostics
+        );
+        assert!(
+            parsed
+                .actions
+                .iter()
+                .any(|action| matches!(action, PlotAction::SetAxisView(AxisView::PlusY))),
+            "expected parser to continue and parse VIEW Y"
+        );
+    }
+
+    #[test]
+    fn parse_com_text_warns_for_include_directives_and_keeps_other_commands() {
+        let parsed = parse_com_text("@child.com\nINCLUDE other.com\nVIEW Z\n", "command-window");
+
+        let include_warnings = parsed
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == DiagnosticSeverity::Warning)
+            .filter(|d| d.message.contains("include") || d.message.contains("INCLUDE"))
+            .count();
+        assert_eq!(include_warnings, 2, "expected two include warnings");
+
+        assert!(
+            parsed
+                .actions
+                .iter()
+                .any(|action| matches!(action, PlotAction::SetAxisView(AxisView::PlusZ))),
+            "expected command-window parser to keep non-include commands"
+        );
+    }
+
     // ── Full integration test ─────────────────────────────────────────────────
 
     #[test]

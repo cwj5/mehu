@@ -1121,10 +1121,12 @@ describe('Cross-path parity (TKT-012C)', () => {
         const addTextButton = await screen.findByRole('button', { name: 'Add TEXT' });
         fireEvent.click(addTextButton);
 
+        const stateBeforeShow = clone(currentState);
         const refreshShowButton = await screen.findByRole('button', { name: 'Refresh SHOW' });
         fireEvent.click(refreshShowButton);
 
         await waitFor(() => {
+            expect(currentState).toEqual(stateBeforeShow);
             expect(currentState).toEqual(scriptResult.final_state);
             expect(commitResults[commitResults.length - 1]?.state).toEqual(scriptResult.intents[scriptResult.intents.length - 1]?.state);
             expect(screen.getByText(scriptResult.show_output[0]!)).toBeTruthy();
