@@ -12,7 +12,7 @@
             "id": "READ",
             "status": "supported",
             "ticket": "TKT-004",
-            "notes": "Parser and executor support READ command semantics with script-relative path resolution and diagnostics."
+            "notes": "Parser and executor support READ command semantics with script-relative path resolution and diagnostics; Phase B hardening expanded parser include-path regression coverage."
         },
         {
             "id": "FUNCTION",
@@ -48,7 +48,7 @@
             "id": "PLOT",
             "status": "supported",
             "ticket": "TKT-005",
-            "notes": "PLOT is the shared commit boundary for deterministic RenderIntent generation across script execution and GUI apply flows."
+            "notes": "PLOT is the shared commit boundary for deterministic RenderIntent generation across script execution and GUI apply flows; Phase B hardening added executor diagnostic-order regression coverage."
         },
         {
             "id": "WALLS",

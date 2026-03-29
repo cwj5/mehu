@@ -375,4 +375,32 @@ mod tests {
             .iter()
             .any(|d| d.message.contains("Plot committed")));
     }
+
+    #[test]
+    fn parser_diagnostics_are_ordered_before_execution_diagnostics() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("diag_order.com");
+        fs::write(&file, "UNKNOWN_CMD\nSHOW\nPLOT/CONTOUR\n").expect("write script");
+
+        let parsed = parse_com_file(&file).expect("parse script");
+        let result = execute_parsed_script(PlotState::default(), &parsed);
+
+        assert!(
+            !result.diagnostics.is_empty(),
+            "expected diagnostics to be present"
+        );
+        assert!(
+            result.diagnostics[0].message.contains("Unsupported command"),
+            "expected parser diagnostic to be first, got {:?}",
+            result.diagnostics
+        );
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .skip(1)
+                .any(|d| d.message.contains("Plot committed")),
+            "expected execution diagnostics after parser diagnostics"
+        );
+    }
 }

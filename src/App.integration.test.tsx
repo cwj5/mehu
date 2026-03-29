@@ -1018,6 +1018,32 @@ describe('Cross-path parity (TKT-012C)', () => {
         });
     });
 
+    it('preserves plot_up across additional GUI view-preset commits after script orientation state', async () => {
+        const scriptResult = await invokeMock('execute_com_script', { path: '/tmp/tkt-012c-orientation.com' }) as MockScriptResult;
+
+        resetBackendState({
+            axis_view: scriptResult.final_state.axis_view,
+            plot_up: scriptResult.final_state.plot_up,
+            viewpoint: scriptResult.final_state.viewpoint,
+        });
+        render(<App />);
+
+        const presetSelect = await screen.findByLabelText('View Preset:');
+        fireEvent.change(presetSelect, { target: { value: 'plus_x' } });
+
+        await waitFor(() => {
+            expect(invokeMock).toHaveBeenCalledWith('set_plot_axis_view', { view: 'plus_x' });
+            expect(invokeMock).toHaveBeenCalledWith('commit_plot');
+        });
+
+        const latestCommitState = commitResults[commitResults.length - 1]?.state;
+        expect(latestCommitState?.axis_view).toBe('plus_x');
+        expect(latestCommitState?.plot_up).toBe(scriptResult.final_state.plot_up);
+
+        const latestViewerProps = getLatestViewerProps();
+        expect(latestViewerProps?.cameraPlotUp).toBe(scriptResult.final_state.plot_up);
+    });
+
     it('matches script parity for GUI-managed subsets and manual walls at commit boundary', async () => {
         const scriptResult = await invokeMock('execute_com_script', { path: '/tmp/tkt-012c-ranges.com' }) as MockScriptResult;
 
