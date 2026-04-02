@@ -46,7 +46,7 @@ cd .. && headless-export/fixtures/regression/check_regression.sh
 
 ## Required Parity Checks
 
-Parity status snapshot (from `plot3d_com_file/parity_matrix.json`, lastUpdated `2026-03-28`): all 12 in-scope capabilities are currently marked `supported`. `FUNCTION` includes bounded soft-fail diagnostics for known unimplemented legacy equations.
+Parity status snapshot (from `plot3d_com_file/parity_matrix.json`, lastUpdated `2026-03-29`): all 12 in-scope capabilities are currently marked `supported`. `FUNCTION` includes bounded soft-fail diagnostics for known unimplemented legacy equations.
 
 The repository's parity policy is split into stable CI checks so contributors can diagnose failures quickly:
 

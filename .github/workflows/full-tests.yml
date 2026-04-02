@@ -54,6 +54,9 @@ jobs:
       - name: Run headless CLI crate tests
         run: cargo test --manifest-path headless-export/Cargo.toml --bin overview-export
 
+      - name: Run semantic-check binary tests
+        run: cargo test --manifest-path headless-export/Cargo.toml --bin overview-export-semantic-check
+
       - name: Run headless CLI smoke export
         run: |
           mkdir -p /tmp/overview-cli-smoke

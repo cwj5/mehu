@@ -23,7 +23,7 @@ A modern, cross-platform application for visualizing CFD (Computational Fluid Dy
 
 ## PLOT3D .com Parity Scope
 
-Source of truth: [plot3d_com_file/parity_matrix.json](plot3d_com_file/parity_matrix.json) (lastUpdated: `2026-03-28`).
+Source of truth: [plot3d_com_file/parity_matrix.json](plot3d_com_file/parity_matrix.json) (lastUpdated: `2026-03-29`).
 
 Current capability status snapshot:
 

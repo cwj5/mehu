@@ -1,5 +1,7 @@
 name: Build and Release
 
+# Build job runs on main branch pushes and release tags only.
+# PR builds are validated by full-tests.yml workflow.
 on:
   push:
     branches: [main]

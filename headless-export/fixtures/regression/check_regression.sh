@@ -49,18 +49,26 @@ check_case() {
     exit 1
   fi
 
+  # Run semantic check and capture output; with set -e, a failure would exit before
+  # writing metrics. Use tee to write regardless of exit code, then check result.
   local semantic_output
-  semantic_output="$(cargo run --manifest-path "$ROOT/../../Cargo.toml" --bin overview-export-semantic-check -- \
+  local semantic_exit
+
+  semantic_output="$(set +e; cargo run --manifest-path "$ROOT/../../Cargo.toml" --bin overview-export-semantic-check -- \
     --label "$name" \
     --actual "$out_file" \
     --reference "$REF_DIR/${name}.png" \
     --max-mean-error "$SEM_MAX_MEAN_ERROR" \
     --max-rms-error "$SEM_MAX_RMS_ERROR" \
     --max-changed-ratio "$SEM_MAX_CHANGED_RATIO" \
-    --changed-threshold "$SEM_CHANGED_THRESHOLD")"
+    --changed-threshold "$SEM_CHANGED_THRESHOLD"; semantic_exit=$?; set -e; true)"
 
   echo "$semantic_output"
   echo "$semantic_output" | grep '^SEMANTIC:' >> "$METRICS_FILE"
+
+  if [[ $semantic_exit -ne 0 ]]; then
+    exit 1
+  fi
 
   echo "PASS: ${name} semantic check within thresholds"
 }
