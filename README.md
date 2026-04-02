@@ -23,24 +23,24 @@ A modern, cross-platform application for visualizing CFD (Computational Fluid Dy
 
 ## PLOT3D .com Parity Scope
 
-Source of truth: [plot3d_com_file/parity_matrix.json](plot3d_com_file/parity_matrix.json) (lastUpdated: `2026-03-28`).
+Source of truth: [plot3d_com_file/parity_matrix.json](plot3d_com_file/parity_matrix.json) (lastUpdated: `2026-03-29`).
 
 Current capability status snapshot:
 
 | Capability | Status | Tracking Ticket | Notes |
 |---|---|---|---|
-| READ | not-supported | TKT-004 | Parser/executor implementation pending |
-| FUNCTION | not-supported | TKT-003 | Legacy function-number mapping not implemented |
-| VIEW | not-supported | TKT-009 | Legacy-to-Three.js translation layer pending |
-| VPOINT | not-supported | TKT-009 | Legacy-to-Three.js translation layer pending |
-| MINMAX | not-supported | TKT-002 | Shared PlotState model pending |
-| CONTOURS | not-supported | TKT-007 | Absolute multi-level contour model pending |
-| PLOT | not-supported | TKT-005 | RenderIntent commit pipeline pending |
-| WALLS | not-supported | TKT-008 | Range-based WALLS GUI and state model pending |
-| SUBSETS | not-supported | TKT-008 | Range-based SUBSETS GUI and state model pending |
-| FSURFACE | not-supported | TKT-008 | FSURFACE controls and execution semantics pending |
-| TEXT | not-supported | TKT-008 | Plot text state and GUI controls pending |
-| SHOW | not-supported | TKT-008 | SHOW status output and GUI display pending |
+| READ | supported | TKT-004 | Parser/executor support with script-relative path handling and diagnostics |
+| FUNCTION | supported | TKT-003 | Legacy function-number mapping is integrated into canonical scalar-field flows; unsupported equations soft-fail with diagnostics |
+| VIEW | supported | TKT-009 | Deterministic legacy-to-Three.js view translation implemented |
+| VPOINT | supported | TKT-009 | Deterministic legacy viewpoint translation and parity regression coverage implemented |
+| MINMAX | supported | TKT-002 | Shared PlotState representation and parity flow support implemented |
+| CONTOURS | supported | TKT-007 | Absolute multi-level contour model (AUTOMATIC/INCREMENT/MANUAL) implemented |
+| PLOT | supported | TKT-005 | Shared commit-boundary RenderIntent behavior implemented across script and GUI flows |
+| WALLS | supported | TKT-008 | Range-based WALLS state model and GUI controls implemented |
+| SUBSETS | supported | TKT-008 | Range-based SUBSETS state model and GUI controls implemented |
+| FSURFACE | supported | TKT-008 | FSURFACE controls and execution semantics implemented (bounded MVP behavior documented) |
+| TEXT | supported | TKT-008 | Plot text state and GUI controls implemented |
+| SHOW | supported | TKT-008 | SHOW status output and GUI display implemented |
 
 Commands currently out of scope:
 
@@ -156,8 +156,15 @@ What it does:
 - Re-runs the exporter on both synthetic fixtures (contour + function-surface).
 - Writes a fresh output under `headless-export/fixtures/regression/out/`.
 - Compares each generated PNG SHA-256 against its checked-in reference hash.
+- Compares each generated PNG against the checked-in reference PNG using semantic thresholds (mean/RMS pixel error and changed-pixel ratio).
 
-This is a temporary baseline to catch unintended renderer drift while TKT-011 is still evolving. When a more representative reference set exists, this can be replaced with richer image-diff regression coverage.
+This baseline combines strict hash checks and tolerance-based semantic checks to catch deterministic and meaningful visual drift while TKT-011 is still evolving.
+
+Failure triage policy:
+
+- Hash mismatch: deterministic drift, usually caused by rendering behavior changes or stale references.
+- Semantic threshold breach: meaningful visual drift that exceeds configured tolerances.
+- Intentional drift: update references and include semantic metrics in PR notes.
 
 CI now enforces this baseline in a dedicated workflow at [.github/workflows/headless-regression.yml](.github/workflows/headless-regression.yml). On failure, generated outputs under [headless-export/fixtures/regression/out](headless-export/fixtures/regression/out) are uploaded as an artifact (`headless-regression-out`) for diagnosis.
 

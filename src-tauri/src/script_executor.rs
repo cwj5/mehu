@@ -336,6 +336,58 @@ mod tests {
     }
 
     #[test]
+    fn show_without_commit_produces_status_without_render_intent() {
+        let initial = PlotState::default();
+        let actions = vec![PlotAction::ShowStatus];
+
+        let result = execute_actions(initial, &actions);
+
+        assert_eq!(
+            result.intents.len(),
+            0,
+            "SHOW should not create a render intent"
+        );
+        assert_eq!(
+            result.show_output.len(),
+            1,
+            "SHOW should still produce one status line"
+        );
+        assert!(
+            result.show_output[0].contains("SHOW:"),
+            "expected formatted SHOW output, got {:?}",
+            result.show_output
+        );
+    }
+
+    #[test]
+    fn show_before_and_after_commit_preserves_output_order() {
+        let initial = PlotState::default();
+        let actions = vec![
+            PlotAction::ShowStatus,
+            PlotAction::SetScalarField(ScalarField::Pressure),
+            PlotAction::CommitPlot,
+            PlotAction::ShowStatus,
+        ];
+
+        let result = execute_actions(initial, &actions);
+
+        assert_eq!(
+            result.intents.len(),
+            1,
+            "only CommitPlot should emit a render intent"
+        );
+        assert_eq!(result.show_output.len(), 2, "expected two SHOW outputs");
+        assert!(
+            result.show_output[0].contains("field=None"),
+            "first SHOW should reflect pre-commit state"
+        );
+        assert!(
+            result.show_output[1].contains("field=Pressure"),
+            "second SHOW should reflect post-commit state mutation"
+        );
+    }
+
+    #[test]
     fn multiple_plot_actions_emit_multiple_intents_in_order() {
         let initial = PlotState::default();
         let actions = vec![
@@ -374,5 +426,35 @@ mod tests {
             .diagnostics
             .iter()
             .any(|d| d.message.contains("Plot committed")));
+    }
+
+    #[test]
+    fn parser_diagnostics_are_ordered_before_execution_diagnostics() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("diag_order.com");
+        fs::write(&file, "UNKNOWN_CMD\nSHOW\nPLOT/CONTOUR\n").expect("write script");
+
+        let parsed = parse_com_file(&file).expect("parse script");
+        let result = execute_parsed_script(PlotState::default(), &parsed);
+
+        assert!(
+            !result.diagnostics.is_empty(),
+            "expected diagnostics to be present"
+        );
+        assert!(
+            result.diagnostics[0]
+                .message
+                .contains("Unsupported command"),
+            "expected parser diagnostic to be first, got {:?}",
+            result.diagnostics
+        );
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .skip(1)
+                .any(|d| d.message.contains("Plot committed")),
+            "expected execution diagnostics after parser diagnostics"
+        );
     }
 }

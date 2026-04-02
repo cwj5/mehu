@@ -803,6 +803,37 @@ describe('Cross-path parity (TKT-012C)', () => {
                 ],
             }
         ),
+        '/tmp/tkt-012c-include-sequence.com': makeScriptResult(
+            makeState({
+                plot_family: 'function_surface',
+                axis_view: 'plus_x',
+                viewpoint: { x: 8.660254037844387, y: 0, z: 0 },
+            }),
+            {
+                intents: [
+                    {
+                        state: makeState({
+                            axis_view: 'plus_z',
+                            viewpoint: { x: 0, y: 0, z: 8.660254037844387 },
+                        }),
+                    },
+                    {
+                        state: makeState({
+                            plot_family: 'function_surface',
+                            axis_view: 'plus_z',
+                            viewpoint: { x: 0, y: 0, z: 8.660254037844387 },
+                        }),
+                    },
+                    {
+                        state: makeState({
+                            plot_family: 'function_surface',
+                            axis_view: 'plus_x',
+                            viewpoint: { x: 8.660254037844387, y: 0, z: 0 },
+                        }),
+                    },
+                ],
+            }
+        ),
     };
 
     let currentState: MockPlotState;
@@ -1018,6 +1049,32 @@ describe('Cross-path parity (TKT-012C)', () => {
         });
     });
 
+    it('preserves plot_up across additional GUI view-preset commits after script orientation state', async () => {
+        const scriptResult = await invokeMock('execute_com_script', { path: '/tmp/tkt-012c-orientation.com' }) as MockScriptResult;
+
+        resetBackendState({
+            axis_view: scriptResult.final_state.axis_view,
+            plot_up: scriptResult.final_state.plot_up,
+            viewpoint: scriptResult.final_state.viewpoint,
+        });
+        render(<App />);
+
+        const presetSelect = await screen.findByLabelText('View Preset:');
+        fireEvent.change(presetSelect, { target: { value: 'plus_x' } });
+
+        await waitFor(() => {
+            expect(invokeMock).toHaveBeenCalledWith('set_plot_axis_view', { view: 'plus_x' });
+            expect(invokeMock).toHaveBeenCalledWith('commit_plot');
+        });
+
+        const latestCommitState = commitResults[commitResults.length - 1]?.state;
+        expect(latestCommitState?.axis_view).toBe('plus_x');
+        expect(latestCommitState?.plot_up).toBe(scriptResult.final_state.plot_up);
+
+        const latestViewerProps = getLatestViewerProps();
+        expect(latestViewerProps?.cameraPlotUp).toBe(scriptResult.final_state.plot_up);
+    });
+
     it('matches script parity for GUI-managed subsets and manual walls at commit boundary', async () => {
         const scriptResult = await invokeMock('execute_com_script', { path: '/tmp/tkt-012c-ranges.com' }) as MockScriptResult;
 
@@ -1037,8 +1094,21 @@ describe('Cross-path parity (TKT-012C)', () => {
         const addWallRangeButton = await screen.findByRole('button', { name: 'Add Wall Range' });
         fireEvent.click(addWallRangeButton);
 
-        const wallStartInputs = await screen.findAllByPlaceholderText('start');
-        const wallEndInputs = await screen.findAllByPlaceholderText('end');
+        const wallsSectionHeading = await screen.findByText('Range-Based WALLS');
+        const wallsSection = wallsSectionHeading.parentElement as HTMLElement;
+
+        // Some render paths briefly show a compact row before edit fields are visible.
+        // Ensure we are in edit mode before querying start/end placeholders.
+        const visibleStartInputs = within(wallsSection).queryAllByPlaceholderText('start');
+        if (visibleStartInputs.length === 0) {
+            const wallEditButtons = within(wallsSection).queryAllByTitle('Edit');
+            if (wallEditButtons.length > 0) {
+                fireEvent.click(wallEditButtons[0]!);
+            }
+        }
+
+        const wallStartInputs = await within(wallsSection).findAllByPlaceholderText('start');
+        const wallEndInputs = await within(wallsSection).findAllByPlaceholderText('end');
         fireEvent.change(wallStartInputs[0], { target: { value: '1' } });
         fireEvent.change(wallEndInputs[0], { target: { value: '3' } });
         fireEvent.change(wallStartInputs[1], { target: { value: '2' } });
@@ -1095,14 +1165,42 @@ describe('Cross-path parity (TKT-012C)', () => {
         const addTextButton = await screen.findByRole('button', { name: 'Add TEXT' });
         fireEvent.click(addTextButton);
 
+        const stateBeforeShow = clone(currentState);
         const refreshShowButton = await screen.findByRole('button', { name: 'Refresh SHOW' });
         fireEvent.click(refreshShowButton);
 
         await waitFor(() => {
+            expect(currentState).toEqual(stateBeforeShow);
             expect(currentState).toEqual(scriptResult.final_state);
             expect(commitResults[commitResults.length - 1]?.state).toEqual(scriptResult.intents[scriptResult.intents.length - 1]?.state);
             expect(screen.getByText(scriptResult.show_output[0]!)).toBeTruthy();
         });
+    });
+
+    it('matches script parity for include-driven multi-commit state sequence', async () => {
+        const scriptResult = await invokeMock('execute_com_script', { path: '/tmp/tkt-012c-include-sequence.com' }) as MockScriptResult;
+
+        resetBackendState();
+        await loadFiles();
+
+        const viewPresetSelect = await screen.findByLabelText('View Preset:');
+        fireEvent.change(viewPresetSelect, { target: { value: 'plus_z' } });
+
+        const plotFamilySelect = await screen.findByDisplayValue('Contour');
+        fireEvent.change(plotFamilySelect, { target: { value: 'function_surface' } });
+
+        const updatedViewPresetSelect = await screen.findByLabelText('View Preset:');
+        fireEvent.change(updatedViewPresetSelect, { target: { value: 'plus_x' } });
+
+        await waitFor(() => {
+            expect(commitResults.length).toBeGreaterThanOrEqual(3);
+        });
+
+        const guiCommitStates = commitResults.slice(-3).map((entry) => entry.state);
+        const scriptIntentStates = scriptResult.intents.map((entry) => entry.state);
+
+        expect(guiCommitStates).toEqual(scriptIntentStates);
+        expect(currentState).toEqual(scriptResult.final_state);
     });
 });
 

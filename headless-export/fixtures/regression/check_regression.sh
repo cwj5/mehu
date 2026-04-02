@@ -4,7 +4,23 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 OUT_DIR="$ROOT/out"
 REF_DIR="$ROOT/reference"
+METRICS_FILE="$OUT_DIR/semantic_metrics.txt"
+
+# Default thresholds intentionally allow small rendering jitter while still
+# detecting meaningful image drift. They can be overridden from CI or local env.
+SEM_MAX_MEAN_ERROR="${SEM_MAX_MEAN_ERROR:-0.75}"
+SEM_MAX_RMS_ERROR="${SEM_MAX_RMS_ERROR:-2.5}"
+SEM_MAX_CHANGED_RATIO="${SEM_MAX_CHANGED_RATIO:-0.005}"
+SEM_CHANGED_THRESHOLD="${SEM_CHANGED_THRESHOLD:-8}"
+
 mkdir -p "$OUT_DIR"
+rm -f "$METRICS_FILE"
+
+echo "Running semantic checks with thresholds:"
+echo "  SEM_MAX_MEAN_ERROR=$SEM_MAX_MEAN_ERROR"
+echo "  SEM_MAX_RMS_ERROR=$SEM_MAX_RMS_ERROR"
+echo "  SEM_MAX_CHANGED_RATIO=$SEM_MAX_CHANGED_RATIO"
+echo "  SEM_CHANGED_THRESHOLD=$SEM_CHANGED_THRESHOLD"
 
 check_case() {
   local name="$1"
@@ -32,6 +48,32 @@ check_case() {
     echo "actual:   $actual"
     exit 1
   fi
+
+  # Run semantic check and capture output; with set -e, a failure would exit before
+  # writing metrics. Disable errexit temporarily to capture the exit code.
+  local semantic_output
+  local semantic_exit
+
+  set +e
+  semantic_output="$(cargo run --manifest-path "$ROOT/../../Cargo.toml" --bin overview-export-semantic-check -- \
+    --label "$name" \
+    --actual "$out_file" \
+    --reference "$REF_DIR/${name}.png" \
+    --max-mean-error "$SEM_MAX_MEAN_ERROR" \
+    --max-rms-error "$SEM_MAX_RMS_ERROR" \
+    --max-changed-ratio "$SEM_MAX_CHANGED_RATIO" \
+    --changed-threshold "$SEM_CHANGED_THRESHOLD")"
+  semantic_exit=$?
+  set -e
+
+  echo "$semantic_output"
+  echo "$semantic_output" | grep '^SEMANTIC:' >> "$METRICS_FILE"
+
+  if [[ $semantic_exit -ne 0 ]]; then
+    exit 1
+  fi
+
+  echo "PASS: ${name} semantic check within thresholds"
 }
 
 check_case "synthetic_4x4"
@@ -48,3 +90,5 @@ check_case "synthetic_4x4x2_vpoint_plusx"
 check_case "synthetic_4x4x2_vpoint_plusx_surface"
 check_case "synthetic_1x4x4_surface"
 check_case "synthetic_4x1x4_surface"
+
+echo "Wrote semantic metrics summary to: $METRICS_FILE"
