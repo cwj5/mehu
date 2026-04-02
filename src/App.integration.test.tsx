@@ -1094,8 +1094,21 @@ describe('Cross-path parity (TKT-012C)', () => {
         const addWallRangeButton = await screen.findByRole('button', { name: 'Add Wall Range' });
         fireEvent.click(addWallRangeButton);
 
-        const wallStartInputs = await screen.findAllByPlaceholderText('start');
-        const wallEndInputs = await screen.findAllByPlaceholderText('end');
+        const wallsSectionHeading = await screen.findByText('Range-Based WALLS');
+        const wallsSection = wallsSectionHeading.parentElement as HTMLElement;
+
+        // Some render paths briefly show a compact row before edit fields are visible.
+        // Ensure we are in edit mode before querying start/end placeholders.
+        const visibleStartInputs = within(wallsSection).queryAllByPlaceholderText('start');
+        if (visibleStartInputs.length === 0) {
+            const wallEditButtons = within(wallsSection).queryAllByTitle('Edit');
+            if (wallEditButtons.length > 0) {
+                fireEvent.click(wallEditButtons[0]!);
+            }
+        }
+
+        const wallStartInputs = await within(wallsSection).findAllByPlaceholderText('start');
+        const wallEndInputs = await within(wallsSection).findAllByPlaceholderText('end');
         fireEvent.change(wallStartInputs[0], { target: { value: '1' } });
         fireEvent.change(wallEndInputs[0], { target: { value: '3' } });
         fireEvent.change(wallStartInputs[1], { target: { value: '2' } });
