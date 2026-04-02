@@ -1,0 +1,66 @@
+name: Full Tests (PR)
+
+on:
+  pull_request:
+    branches: [main, develop]
+
+permissions:
+  contents: read
+
+jobs:
+  full-tests:
+    runs-on: ubuntu-latest
+    name: Full Test Suite
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install npm dependencies
+        run: npm install
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libglib2.0-dev libgtk-3-dev libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-dev libappindicator3-dev librsvg2-dev \
+            patchelf pkg-config libasound2-dev libssl-dev
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            src-tauri
+            headless-export
+
+      - name: Run TypeScript test suite
+        run: npm test
+
+      - name: Run Rust backend tests
+        working-directory: src-tauri
+        run: |
+          echo "Running logger tests serially..."
+          cargo test --lib logger_tests -- --test-threads=1
+          echo "Running other tests in parallel..."
+          cargo test --lib -- --skip logger_tests
+
+      - name: Run headless CLI crate tests
+        run: cargo test --manifest-path headless-export/Cargo.toml --bin overview-export
+
+      - name: Run headless CLI smoke export
+        run: |
+          mkdir -p /tmp/overview-cli-smoke
+          cargo run --manifest-path headless-export/Cargo.toml --bin overview-export -- \
+            --cmd headless-export/fixtures/smoke.com \
+            --out /tmp/overview-cli-smoke/smoke.png \
+            --width 320 \
+            --height 200
+          test -s /tmp/overview-cli-smoke/smoke_001.png
+          test -s /tmp/overview-cli-smoke/smoke_002.png
