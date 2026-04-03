@@ -848,6 +848,104 @@ describe('Cross-path parity (TKT-012C)', () => {
                 ],
             }
         ),
+        '/tmp/command-divergences-contours.com': makeScriptResult(
+            makeState({
+                contour_attribute: 'line',
+                contour_spec: { mode: 'automatic', count: 10 },
+            }),
+            {
+                diagnostics: [
+                    {
+                        capability: 'CONTOURS',
+                        severity: 'warning',
+                        message: 'CONTOURS/LINEAR has no additional effect in the current implementation; contour extraction already uses LINEAR interpolation.',
+                        file: 'divergences.com',
+                        line: 1,
+                        column: 1,
+                    },
+                    {
+                        capability: 'CONTOURS',
+                        severity: 'warning',
+                        message: 'CONTOURS/CUBIC is not implemented; using LINEAR interpolation.',
+                        file: 'divergences.com',
+                        line: 2,
+                        column: 1,
+                    },
+                    {
+                        capability: 'CONTOURS',
+                        severity: 'warning',
+                        message: 'CONTOURS/RANGE is not implemented in parser execution; using the active contour-level mode only.',
+                        file: 'divergences.com',
+                        line: 3,
+                        column: 1,
+                    },
+                ],
+            }
+        ),
+        '/tmp/command-divergences-view.com': makeScriptResult(
+            makeState({
+                axis_view: 'plus_z',
+                viewpoint: { x: 0, y: 0, z: 8.660254037844387 },
+            }),
+            {
+                diagnostics: [
+                    {
+                        capability: 'VIEW',
+                        severity: 'warning',
+                        message: 'VIEW /FROM parameter is not implemented in animation scope; using default camera setup.',
+                        file: 'divergences.com',
+                        line: 5,
+                        column: 1,
+                    },
+                    {
+                        capability: 'VIEW',
+                        severity: 'warning',
+                        message: 'VIEW /IN parameter is not implemented in animation scope; using default frame count.',
+                        file: 'divergences.com',
+                        line: 6,
+                        column: 1,
+                    },
+                ],
+            }
+        ),
+        '/tmp/command-divergences-all.com': makeScriptResult(
+            makeState({
+                plot_family: 'function_surface',
+                contour_attribute: 'line',
+                contour_spec: { mode: 'automatic', count: 10 },
+                fsurface: { value: 0.5, scalar_field: 'pressure' },
+                axis_view: 'plus_z',
+                viewpoint: { x: 0, y: 0, z: 8.660254037844387 },
+            }),
+            {
+                diagnostics: [
+                    {
+                        capability: 'CONTOURS',
+                        severity: 'warning',
+                        message: 'CONTOURS/LINEAR has no additional effect in the current implementation; contour extraction already uses LINEAR interpolation.',
+                        file: 'all-divergences.com',
+                        line: 1,
+                        column: 1,
+                    },
+                    {
+                        capability: 'FSURFACE',
+                        severity: 'warning',
+                        message: 'Legacy FSURFACE /SCALE_FACTOR is not implemented; current FSURFACE stores an iso-level plus FUNCTION (scalar field).',
+                        file: 'all-divergences.com',
+                        line: 2,
+                        column: 1,
+                    },
+                    {
+                        capability: 'VIEW',
+                        severity: 'warning',
+                        message: 'VIEW /FROM parameter is not implemented in animation scope; using default camera setup.',
+                        file: 'all-divergences.com',
+                        line: 3,
+                        column: 1,
+                    },
+                ],
+            }
+        ),
     };
 
     let currentState: MockPlotState;
@@ -1207,6 +1305,69 @@ describe('Cross-path parity (TKT-012C)', () => {
             expect(invokeMock).toHaveBeenCalledWith('execute_com_script', { path: '/tmp/tkt-012c-function-surface.com' });
             expect(screen.getByText(/Diagnostics:/)).toBeTruthy();
             expect(screen.getByText(/\[warning\] FSURFACE: Legacy FSURFACE \/GRID is not implemented/)).toBeTruthy();
+        });
+    });
+
+    it('shows CONTOURS deferred-qualifier warnings in command sidebar', async () => {
+        render(<App />);
+
+        const showCommandSidebarButton = await screen.findByRole('button', { name: 'Show Command Sidebar' });
+        fireEvent.click(showCommandSidebarButton);
+
+        const comPathInput = await screen.findByPlaceholderText('/absolute/path/to/script.com');
+        fireEvent.change(comPathInput, { target: { value: '/tmp/command-divergences-contours.com' } });
+
+        const executeComButton = await screen.findByRole('button', { name: 'Execute .com File' });
+        fireEvent.click(executeComButton);
+
+        await waitFor(() => {
+            expect(invokeMock).toHaveBeenCalledWith('execute_com_script', { path: '/tmp/command-divergences-contours.com' });
+            expect(screen.getByText(/Diagnostics:/)).toBeTruthy();
+            expect(screen.getByText(/\[warning\] CONTOURS: CONTOURS\/LINEAR has no additional effect/)).toBeTruthy();
+            expect(screen.getByText(/CONTOURS\/CUBIC is not implemented/)).toBeTruthy();
+            expect(screen.getByText(/CONTOURS\/RANGE is not implemented/)).toBeTruthy();
+        });
+    });
+
+    it('shows VIEW deferred-parameter warnings in command sidebar', async () => {
+        render(<App />);
+
+        const showCommandSidebarButton = await screen.findByRole('button', { name: 'Show Command Sidebar' });
+        fireEvent.click(showCommandSidebarButton);
+
+        const comPathInput = await screen.findByPlaceholderText('/absolute/path/to/script.com');
+        fireEvent.change(comPathInput, { target: { value: '/tmp/command-divergences-view.com' } });
+
+        const executeComButton = await screen.findByRole('button', { name: 'Execute .com File' });
+        fireEvent.click(executeComButton);
+
+        await waitFor(() => {
+            expect(invokeMock).toHaveBeenCalledWith('execute_com_script', { path: '/tmp/command-divergences-view.com' });
+            expect(screen.getByText(/Diagnostics:/)).toBeTruthy();
+            expect(screen.getByText(/\[warning\] VIEW: VIEW \/FROM parameter is not implemented/)).toBeTruthy();
+            expect(screen.getByText(/VIEW \/IN parameter is not implemented/)).toBeTruthy();
+        });
+    });
+
+    it('shows multiple command divergences in single execution', async () => {
+        render(<App />);
+
+        const showCommandSidebarButton = await screen.findByRole('button', { name: 'Show Command Sidebar' });
+        fireEvent.click(showCommandSidebarButton);
+
+        const comPathInput = await screen.findByPlaceholderText('/absolute/path/to/script.com');
+        fireEvent.change(comPathInput, { target: { value: '/tmp/command-divergences-all.com' } });
+
+        const executeComButton = await screen.findByRole('button', { name: 'Execute .com File' });
+        fireEvent.click(executeComButton);
+
+        await waitFor(() => {
+            expect(invokeMock).toHaveBeenCalledWith('execute_com_script', { path: '/tmp/command-divergences-all.com' });
+            const outputText = screen.getByText(/Diagnostics:/);
+            expect(outputText).toBeTruthy();
+            expect(screen.getByText(/CONTOURS.*LINEAR/)).toBeTruthy();
+            expect(screen.getByText(/FSURFACE.*SCALE_FACTOR/)).toBeTruthy();
+            expect(screen.getByText(/VIEW.*FROM/)).toBeTruthy();
         });
     });
 
