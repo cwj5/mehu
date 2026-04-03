@@ -2,7 +2,22 @@
 
 Date: 2026-04-02
 Owner: Next implementation agent
-Status: Ready for execution
+Status: In progress (updated 2026-04-04)
+
+## Progress Snapshot (2026-04-04)
+
+Completed slices:
+
+1. Legacy terminology baseline and glossary are in place (`terminology_glossary.md`) and referenced by user-facing docs.
+2. Parser terminology/diagnostics alignment landed for legacy qualifier handling, including explicit warnings for deferred `CONTOURS` and `FSURFACE` qualifiers.
+3. Shared state/API boundary text is divergence-explicit for bounded-MVP `FSURFACE` behavior.
+4. Frontend terminology was updated to legacy-facing labels for plot family and contour language.
+5. Documentation/parity artifacts were harmonized for bounded-MVP `FSURFACE` wording (`README.md`, `capability_catalog.md`, `parity_matrix.json`, `tickets.md`).
+
+Remaining near-term slices:
+
+1. Add/maintain integration-level checks that user-visible command execution output surfaces parser divergence warnings (especially `FSURFACE`).
+2. Keep migration checklist and parity-facing docs synchronized as follow-up wording changes land.
 
 ## Objective
 

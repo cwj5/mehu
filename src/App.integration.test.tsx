@@ -725,11 +725,12 @@ describe('Cross-path parity (TKT-012C)', () => {
     const makeScriptResult = (finalState: MockPlotState, options?: {
         intents?: Array<{ state: MockPlotState }>;
         show_output?: string[];
+        diagnostics?: Array<Record<string, unknown>>;
     }): MockScriptResult => ({
         final_state: clone(finalState),
         intents: clone(options?.intents ?? [{ state: clone(finalState) }]),
         show_output: clone(options?.show_output ?? []),
-        diagnostics: [],
+        diagnostics: clone(options?.diagnostics ?? []),
     });
 
     const scriptFixtures: Record<string, MockScriptResult> = {
@@ -803,6 +804,16 @@ describe('Cross-path parity (TKT-012C)', () => {
                             text_annotations: [{ content: 'Cp label', x: 0.2, y: 0.8 }],
                         })
                     ),
+                ],
+                diagnostics: [
+                    {
+                        capability: 'FSURFACE',
+                        severity: 'warning',
+                        message: 'Legacy FSURFACE /GRID is not implemented; current FSURFACE stores an iso-level plus FUNCTION (scalar field).',
+                        file: 'tkt-012c-function-surface.com',
+                        line: 2,
+                        column: 1,
+                    },
                 ],
             }
         ),
@@ -1177,6 +1188,25 @@ describe('Cross-path parity (TKT-012C)', () => {
             expect(currentState).toEqual(scriptResult.final_state);
             expect(commitResults[commitResults.length - 1]?.state).toEqual(scriptResult.intents[scriptResult.intents.length - 1]?.state);
             expect(screen.getByText(scriptResult.show_output[0]!)).toBeTruthy();
+        });
+    });
+
+    it('shows FSURFACE divergence warnings in command sidebar output for .com execution', async () => {
+        render(<App />);
+
+        const showCommandSidebarButton = await screen.findByRole('button', { name: 'Show Command Sidebar' });
+        fireEvent.click(showCommandSidebarButton);
+
+        const comPathInput = await screen.findByPlaceholderText('/absolute/path/to/script.com');
+        fireEvent.change(comPathInput, { target: { value: '/tmp/tkt-012c-function-surface.com' } });
+
+        const executeComButton = await screen.findByRole('button', { name: 'Execute .com File' });
+        fireEvent.click(executeComButton);
+
+        await waitFor(() => {
+            expect(invokeMock).toHaveBeenCalledWith('execute_com_script', { path: '/tmp/tkt-012c-function-surface.com' });
+            expect(screen.getByText(/Diagnostics:/)).toBeTruthy();
+            expect(screen.getByText(/\[warning\] FSURFACE: Legacy FSURFACE \/GRID is not implemented/)).toBeTruthy();
         });
     });
 
