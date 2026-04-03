@@ -4,9 +4,9 @@ Date: 2026-04-02
 Owner: Next implementation agent
 Status: In progress (updated 2026-04-04)
 
-## Progress Snapshot (2026-04-04 Updated)
+## Progress Snapshot (2026-04-04 Final)
 
-**All Phase Objectives Complete**
+**All Phases 1-6 Complete**
 
 Completed work:
 
@@ -17,12 +17,18 @@ Completed work:
 5. ✅ **Phase 5**: Documentation/parity artifacts harmonized for bounded-MVP `FSURFACE` wording (`README.md`, `capability_catalog.md`, `parity_matrix.json`, `tickets.md`).
 6. ✅ **Integration Testing**: Added comprehensive multi-command divergence warning coverage (4 fixtures, 3 new tests) verifying CONTOURS, FSURFACE, and VIEW deferred qualifiers surface in UI (all 29 integration tests passing).
 7. ✅ **Internal Consistency Audit**: Verified naming alignment across function_surface/ContourAttribute enums, variable naming (camelCase/snake_case), and legacy terminology mapping. No breaking issues found.
+8. ✅ **Phase 6 - Tests & CI Hardening**: Added 3 new regression tests validating:
+   - Deferred CONTOURS qualifiers (LINEAR, CUBIC, RANGE) produce clear diagnostics
+   - FSURFACE divergence messages use legacy terminology context (iso-level + FUNCTION)
+   - Multiple command divergences show consistent legacy terminology
+   - All 135 tests passing (132 base + 3 Phase 6)
+   - All parity gates verified (parity-matrix OK, backend 1/1, integration 32/32)
 
 Remaining optional work:
 
-1. CLI parameter coverage for headless export (optional, Phase 6+)
-2. Parser edge-case hardening (optional, Phase 6+)
-3. Additional command coverage (WALLS, SUBSETS improvements) (optional, Phase 6+)
+1. CLI parameter coverage for headless export (optional, Phase 7+)
+2. Parser edge-case hardening (optional, Phase 7+)
+3. Additional command coverage (WALLS, SUBSETS improvements) (optional, Phase 7+)
 
 ## Objective
 
