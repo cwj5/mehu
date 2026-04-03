@@ -42,7 +42,7 @@
             "id": "CONTOURS",
             "status": "supported",
             "ticket": "TKT-007",
-            "notes": "Absolute multi-level contour model (AUTOMATIC/INCREMENT/MANUAL) is implemented with deterministic renderer semantics; Phase B hardening added malformed tuple-arity coverage plus /INCREMENT precedence/default-fallback tests, with parser diagnostic consistency checks across contour modes and continued parser regression maintenance. Legacy terminology alignment (2026-04-02) updated user-facing CONTOURS wording without behavior changes."
+            "notes": "Absolute multi-level contour model (AUTOMATIC/INCREMENT/MANUAL) is implemented with deterministic renderer semantics; Phase B hardening added malformed tuple-arity coverage plus /INCREMENT precedence/default-fallback tests, with parser diagnostic consistency checks across contour modes and continued parser regression maintenance. Legacy terminology alignment (2026-04-02) updated user-facing CONTOURS wording, and PR2 added explicit parser diagnostics for legacy /LINEAR and /CUBIC qualifier handling."
         },
         {
             "id": "PLOT",
@@ -66,7 +66,7 @@
             "id": "FSURFACE",
             "status": "supported",
             "ticket": "TKT-008",
-            "notes": "FSURFACE controls and execution semantics are available in script and GUI paths with bounded MVP behavior documented. Legacy terminology alignment (2026-04-02) clarified divergence wording while preserving current MVP behavior."
+            "notes": "FSURFACE controls and execution semantics are available in script and GUI paths with bounded MVP behavior documented. Legacy terminology alignment (2026-04-02) clarified divergence wording while preserving current MVP behavior, and PR2 added explicit parser diagnostics when legacy FSURFACE axis-property qualifiers are used against the current iso-level + FUNCTION model."
         },
         {
             "id": "TEXT",

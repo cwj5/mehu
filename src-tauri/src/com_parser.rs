@@ -605,6 +605,27 @@ fn parse_contours(args: &[String], file: &Path, line: u32, out: &mut ParsedScrip
         out.actions.push(PlotAction::SetContourAttribute(attribute));
     }
 
+    if qualifier_values.contains_key("LINEAR") {
+        out.diagnostics.push(diagnostic(
+            cap::CONTOURS,
+            DiagnosticSeverity::Warning,
+            Some(file.to_string_lossy().to_string()),
+            Some(line),
+            Some(1),
+            "CONTOURS/LINEAR has no additional effect in the current implementation; contour extraction already uses LINEAR interpolation.",
+        ));
+    }
+    if qualifier_values.contains_key("CUBIC") {
+        out.diagnostics.push(diagnostic(
+            cap::CONTOURS,
+            DiagnosticSeverity::Warning,
+            Some(file.to_string_lossy().to_string()),
+            Some(line),
+            Some(1),
+            "CONTOURS/CUBIC is not implemented; using LINEAR interpolation.",
+        ));
+    }
+
     // Warn about truly unknown qualifiers for all contour modes.
     for qualifier in qualifier_values.keys() {
         if !matches!(
@@ -613,6 +634,8 @@ fn parse_contours(args: &[String], file: &Path, line: u32, out: &mut ParsedScrip
                 | "INCREMENT"
                 | "MANUAL"
                 | "RANGE"
+                | "LINEAR"
+                | "CUBIC"
                 | "ATTRIBUTES"
                 | "NOATTRIBUTES"
                 | "LINE"
@@ -776,20 +799,95 @@ fn parse_fsurface(args: &[String], file: &Path, line: u32, out: &mut ParsedScrip
             Some(file.to_string_lossy().to_string()),
             Some(line),
             Some(1),
-            "FSURFACE requires a value or /NONE",
+            "FSURFACE currently expects an iso-level value or /NONE; legacy axis-property qualifiers are not implemented in this MVP.",
         ));
         return;
     }
 
-    if let Some((name, _)) = parse_qualifier(&args[0]) {
-        if name == "NONE" || name == "OFF" {
-            out.actions.push(PlotAction::SetFsurface(None));
-            return;
+    let mut qualifier_values: HashMap<String, Option<String>> = HashMap::new();
+    let mut positional: Vec<String> = Vec::new();
+
+    for arg in args {
+        if let Some((name, value)) = parse_qualifier(arg) {
+            qualifier_values.insert(name, value);
+        } else {
+            positional.push(arg.clone());
         }
     }
 
-    if let Some(value) = parse_f64(&args[0]) {
-        let field = if let Some(number) = args.get(1).and_then(|s| s.parse::<u16>().ok()) {
+    if qualifier_values.contains_key("NONE") || qualifier_values.contains_key("OFF") {
+        if qualifier_values.len() > 1 || !positional.is_empty() {
+            out.diagnostics.push(diagnostic(
+                cap::FSURFACE,
+                DiagnosticSeverity::Warning,
+                Some(file.to_string_lossy().to_string()),
+                Some(line),
+                Some(1),
+                "FSURFACE /NONE clears the current bounded-MVP iso-level spec; additional FSURFACE arguments were ignored.",
+            ));
+        }
+        out.actions.push(PlotAction::SetFsurface(None));
+        return;
+    }
+
+    for qualifier in qualifier_values.keys() {
+        match qualifier.as_str() {
+            "SCALE_FACTOR" => out.diagnostics.push(diagnostic(
+                cap::FSURFACE,
+                DiagnosticSeverity::Warning,
+                Some(file.to_string_lossy().to_string()),
+                Some(line),
+                Some(1),
+                "Legacy FSURFACE /SCALE_FACTOR is not implemented; current FSURFACE stores an iso-level plus FUNCTION (scalar field).",
+            )),
+            "WALLS_ORIGIN" => out.diagnostics.push(diagnostic(
+                cap::FSURFACE,
+                DiagnosticSeverity::Warning,
+                Some(file.to_string_lossy().to_string()),
+                Some(line),
+                Some(1),
+                "Legacy FSURFACE /WALLS_ORIGIN is not implemented; current FSURFACE stores an iso-level plus FUNCTION (scalar field).",
+            )),
+            "GRID" | "CONTOUR" => out.diagnostics.push(diagnostic(
+                cap::FSURFACE,
+                DiagnosticSeverity::Warning,
+                Some(file.to_string_lossy().to_string()),
+                Some(line),
+                Some(1),
+                format!(
+                    "Legacy FSURFACE /{} is not implemented; current FSURFACE stores an iso-level plus FUNCTION (scalar field).",
+                    qualifier
+                ),
+            )),
+            _ => out.diagnostics.push(diagnostic(
+                cap::FSURFACE,
+                DiagnosticSeverity::Warning,
+                Some(file.to_string_lossy().to_string()),
+                Some(line),
+                Some(1),
+                format!("Unknown FSURFACE qualifier '/{}' ignored", qualifier),
+            )),
+        }
+    }
+
+    if positional.is_empty() {
+        if !qualifier_values.is_empty() {
+            return;
+        }
+
+        out.diagnostics.push(diagnostic(
+            cap::FSURFACE,
+            DiagnosticSeverity::Warning,
+            Some(file.to_string_lossy().to_string()),
+            Some(line),
+            Some(1),
+            "FSURFACE currently expects an iso-level value or /NONE; legacy axis-property qualifiers are not implemented in this MVP.",
+        ));
+        return;
+    }
+
+    if let Some(value) = parse_f64(&positional[0]) {
+        let field = if let Some(number) = positional.get(1).and_then(|s| s.parse::<u16>().ok()) {
             let (mapped, mut diags) = map_legacy_function_number(number);
             for diag in &mut diags {
                 diag.file = Some(file.to_string_lossy().to_string());
@@ -802,6 +900,19 @@ fn parse_fsurface(args: &[String], file: &Path, line: u32, out: &mut ParsedScrip
             ScalarField::Pressure
         };
 
+        if positional.len() > 2 {
+            for extra in positional.iter().skip(2) {
+                out.diagnostics.push(diagnostic(
+                    cap::FSURFACE,
+                    DiagnosticSeverity::Warning,
+                    Some(file.to_string_lossy().to_string()),
+                    Some(line),
+                    Some(1),
+                    format!("Extra FSURFACE argument '{}' ignored", extra),
+                ));
+            }
+        }
+
         out.actions.push(PlotAction::SetFsurface(Some(FsurfaceSpec {
             value,
             scalar_field: field,
@@ -813,7 +924,10 @@ fn parse_fsurface(args: &[String], file: &Path, line: u32, out: &mut ParsedScrip
             Some(file.to_string_lossy().to_string()),
             Some(line),
             Some(1),
-            format!("Invalid FSURFACE value '{}'", args[0]),
+            format!(
+                "Invalid FSURFACE iso-level '{}'; current FSURFACE expects [value [FUNCTION]] or /NONE.",
+                positional[0]
+            ),
         ));
     }
 }
@@ -1561,6 +1675,80 @@ mod tests {
                 assert!((increment - 0.2).abs() < 1e-9);
             }
             ref action => panic!("expected Increment contour spec, got {:?}", action),
+        }
+    }
+
+    #[test]
+    fn contours_linear_qualifier_warns_but_keeps_automatic_mode() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("c.com");
+        fs::write(&file, "CONTOURS/LINEAR 7\n").expect("write");
+
+        let parsed = parse_com_file(&file).expect("parse");
+
+        assert!(parsed.diagnostics.iter().any(|d| d
+            .message
+            .contains("CONTOURS/LINEAR has no additional effect")));
+        assert_eq!(parsed.actions.len(), 1);
+        assert_eq!(
+            parsed.actions[0],
+            PlotAction::SetContourSpec(ContourSpec::Automatic { count: 7 })
+        );
+    }
+
+    #[test]
+    fn contours_cubic_qualifier_warns_and_falls_back_to_linear() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("c.com");
+        fs::write(&file, "CONTOURS/CUBIC 7\n").expect("write");
+
+        let parsed = parse_com_file(&file).expect("parse");
+
+        assert!(parsed.diagnostics.iter().any(|d| d
+            .message
+            .contains("CONTOURS/CUBIC is not implemented; using LINEAR interpolation")));
+        assert_eq!(parsed.actions.len(), 1);
+        assert_eq!(
+            parsed.actions[0],
+            PlotAction::SetContourSpec(ContourSpec::Automatic { count: 7 })
+        );
+    }
+
+    #[test]
+    fn fsurface_legacy_walls_origin_qualifier_emits_divergence_warning() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("fs.com");
+        fs::write(&file, "FSURFACE /WALLS_ORIGIN=1\n").expect("write");
+
+        let parsed = parse_com_file(&file).expect("parse");
+
+        assert!(parsed.actions.is_empty(), "expected no FSURFACE action");
+        assert!(parsed.diagnostics.iter().any(|d| d
+            .message
+            .contains("Legacy FSURFACE /WALLS_ORIGIN is not implemented")));
+    }
+
+    #[test]
+    fn fsurface_numeric_value_with_legacy_qualifier_warns_but_stores_spec() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("fs.com");
+        fs::write(&file, "FSURFACE /SCALE_FACTOR=2 0.5 154\n").expect("write");
+
+        let parsed = parse_com_file(&file).expect("parse");
+
+        assert!(parsed.diagnostics.iter().any(|d| d
+            .message
+            .contains("Legacy FSURFACE /SCALE_FACTOR is not implemented")));
+        assert!(parsed.diagnostics.iter().any(|d| d
+            .message
+            .contains("recognized but not implemented")));
+        assert_eq!(parsed.actions.len(), 1);
+        match &parsed.actions[0] {
+            PlotAction::SetFsurface(Some(spec)) => {
+                assert!((spec.value - 0.5).abs() < 1e-9);
+                assert_eq!(spec.scalar_field, ScalarField::Pressure);
+            }
+            action => panic!("expected SetFsurface action, got {:?}", action),
         }
     }
 
