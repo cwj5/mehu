@@ -853,7 +853,7 @@ fn parse_fsurface(args: &[String], file: &Path, line: u32, out: &mut ParsedScrip
                 Some(file.to_string_lossy().to_string()),
                 Some(line),
                 Some(1),
-                "FSURFACE /NONE clears the current bounded-MVP iso-level spec; additional FSURFACE arguments were ignored.",
+                "FSURFACE /NONE or /OFF clears the current bounded-MVP iso-level spec; additional FSURFACE arguments were ignored.",
             ));
         }
         out.actions.push(PlotAction::SetFsurface(None));
@@ -1831,6 +1831,64 @@ mod tests {
         match &parsed.actions[0] {
             PlotAction::SetFsurface(Some(spec)) => {
                 assert!((spec.value - 0.5).abs() < 1e-9);
+                assert_eq!(spec.scalar_field, ScalarField::Pressure);
+            }
+            action => panic!("expected SetFsurface action, got {:?}", action),
+        }
+    }
+
+    #[test]
+    fn fsurface_none_with_positional_args_clears_and_warns() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("fs.com");
+        fs::write(&file, "FSURFACE /NONE 0.5 110\n").expect("write");
+
+        let parsed = parse_com_file(&file).expect("parse");
+
+        assert!(parsed.diagnostics.iter().any(|d| d
+            .message
+            .contains("FSURFACE /NONE or /OFF clears the current bounded-MVP iso-level spec")));
+        assert_eq!(parsed.actions.len(), 1);
+        assert_eq!(parsed.actions[0], PlotAction::SetFsurface(None));
+    }
+
+    #[test]
+    fn fsurface_off_with_qualifiers_clears_and_warns() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("fs.com");
+        fs::write(&file, "FSURFACE /OFF /GRID\n").expect("write");
+
+        let parsed = parse_com_file(&file).expect("parse");
+
+        assert!(parsed.diagnostics.iter().any(|d| d
+            .message
+            .contains("FSURFACE /NONE or /OFF clears the current bounded-MVP iso-level spec")));
+        assert_eq!(parsed.actions.len(), 1);
+        assert_eq!(parsed.actions[0], PlotAction::SetFsurface(None));
+    }
+
+    #[test]
+    fn fsurface_mixed_legacy_qualifiers_with_value_warns_and_sets_spec() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("fs.com");
+        fs::write(&file, "FSURFACE /GRID /CONTOUR 0.4 110 extra\n").expect("write");
+
+        let parsed = parse_com_file(&file).expect("parse");
+
+        assert!(parsed.diagnostics.iter().any(|d| d
+            .message
+            .contains("Legacy FSURFACE /GRID is not implemented")));
+        assert!(parsed.diagnostics.iter().any(|d| d
+            .message
+            .contains("Legacy FSURFACE /CONTOUR is not implemented")));
+        assert!(parsed.diagnostics.iter().any(|d| d
+            .message
+            .contains("Extra FSURFACE argument 'extra' ignored")));
+
+        assert_eq!(parsed.actions.len(), 1);
+        match &parsed.actions[0] {
+            PlotAction::SetFsurface(Some(spec)) => {
+                assert!((spec.value - 0.4).abs() < 1e-9);
                 assert_eq!(spec.scalar_field, ScalarField::Pressure);
             }
             action => panic!("expected SetFsurface action, got {:?}", action),
