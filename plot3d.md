@@ -89,9 +89,6 @@ Set the following properties of function surface (or line) plots:
 2. the origin (or offset) of walls drawn on the plot for reference; and
 3. whether a 3D function surface will be drawn as grid lines or contour lines, if the contour attribute type in LINES.
 
-**NOTE (Bounded-MVP):**
-The current implementation supports specification of an iso-level threshold and scalar field selection. Legacy axis-property qualifiers (`/SCALE_FACTOR`, `/WALLS_ORIGIN`, `/CONTOUR`, `/GRID`) are parsed for compatibility and generate diagnostics but do not affect behavior.
-
 Other properties of a function surface plot are set by other commands:
 
 1. the VIEW command sets which spatial (x,y,z) axes will be plotted vs. the function;
