@@ -55,6 +55,7 @@ Commands currently out of scope:
 
 ## Known Limitations and Deviations
 
+- Preferred legacy terms and approved internal aliases are documented in [plot3d_com_file/terminology_glossary.md](plot3d_com_file/terminology_glossary.md).
 - User-facing labels for in-scope commands follow legacy PLOT3D terminology (`CONTOUR`, `SURFACE/CARPET/LINE`, `CONTOURS` attributes and level modes).
 - `FSURFACE` wording is preserved as a legacy command name, but current behavior is a bounded MVP that stores an iso-level plus scalar field rather than full legacy FSURFACE axis-property controls.
 - Known legacy-to-modern rendering translation behavior and deviations are tracked in [plot3d_com_file/legacy_translation_layer.md](plot3d_com_file/legacy_translation_layer.md).
