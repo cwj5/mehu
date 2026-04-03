@@ -1,4 +1,5 @@
-use clap::Parser;
+use clap::{Parser, ValueEnum};
+use glob::glob;
 use image::{ImageFormat, Rgba, RgbaImage};
 use std::collections::hash_map::DefaultHasher;
 use std::fs;
@@ -63,11 +64,31 @@ fn is_hidden_iblank_point(
 struct Cli {
     /// Input .com script file
     #[arg(long)]
-    cmd: PathBuf,
+    cmd: Option<PathBuf>,
 
     /// Output PNG path. Multi-PLOT scripts are suffixed _001, _002, ...
     #[arg(long)]
-    out: PathBuf,
+    out: Option<PathBuf>,
+
+    /// Batch input directory containing .com scripts
+    #[arg(long)]
+    input_dir: Option<PathBuf>,
+
+    /// Batch output directory for rendered images
+    #[arg(long)]
+    output_dir: Option<PathBuf>,
+
+    /// Batch input glob pattern, relative to --input-dir (e.g. "*.com" or "**/*.com")
+    #[arg(long, default_value = "*.com")]
+    pattern: String,
+
+    /// Batch output filename template. Tokens: {stem}, {index}, optional {plot}
+    #[arg(long, default_value = "{stem}.png")]
+    output_template: String,
+
+    /// Colormap used for scalar visualization
+    #[arg(long, value_enum, default_value_t = CliColormap::Viridis)]
+    colormap: CliColormap,
 
     /// Output image width in pixels
     #[arg(long, default_value_t = 1280)]
@@ -76,6 +97,27 @@ struct Cli {
     /// Output image height in pixels
     #[arg(long, default_value_t = 720)]
     height: u32,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum CliColormap {
+    Viridis,
+    Turbo,
+    Rainbow,
+    Hot,
+    Grayscale,
+}
+
+impl From<CliColormap> for colormap::ColormapName {
+    fn from(value: CliColormap) -> Self {
+        match value {
+            CliColormap::Viridis => colormap::ColormapName::Viridis,
+            CliColormap::Turbo => colormap::ColormapName::Turbo,
+            CliColormap::Rainbow => colormap::ColormapName::Rainbow,
+            CliColormap::Hot => colormap::ColormapName::Hot,
+            CliColormap::Grayscale => colormap::ColormapName::Grayscale,
+        }
+    }
 }
 
 fn main() {
@@ -91,11 +133,51 @@ fn run() -> Result<(), String> {
     if args.width == 0 || args.height == 0 {
         return Err("--width and --height must be greater than zero".to_string());
     }
-    if !args.cmd.exists() {
-        return Err(format!("Command file not found: {}", args.cmd.display()));
-    }
 
-    let parsed = com_parser::parse_com_file(&args.cmd)?;
+    colormap::set_active(args.colormap.into());
+
+    let batch_mode = args.input_dir.is_some() || args.output_dir.is_some();
+    if batch_mode {
+        if args.cmd.is_some() || args.out.is_some() {
+            return Err(
+                "Batch mode (--input-dir/--output-dir) cannot be combined with --cmd/--out"
+                    .to_string(),
+            );
+        }
+        let input_dir = args
+            .input_dir
+            .as_ref()
+            .ok_or_else(|| "Batch mode requires --input-dir".to_string())?;
+        let output_dir = args
+            .output_dir
+            .as_ref()
+            .ok_or_else(|| "Batch mode requires --output-dir".to_string())?;
+        run_batch(
+            input_dir,
+            output_dir,
+            &args.pattern,
+            &args.output_template,
+            args.width,
+            args.height,
+        )
+    } else {
+        let cmd = args
+            .cmd
+            .as_ref()
+            .ok_or_else(|| "Single-file mode requires --cmd".to_string())?;
+        let out = args
+            .out
+            .as_ref()
+            .ok_or_else(|| "Single-file mode requires --out".to_string())?;
+        if !cmd.exists() {
+            return Err(format!("Command file not found: {}", cmd.display()));
+        }
+        run_single(cmd, out, args.width, args.height)
+    }
+}
+
+fn run_single(cmd: &Path, out: &Path, width: u32, height: u32) -> Result<(), String> {
+    let parsed = com_parser::parse_com_file(cmd)?;
     let mut result = script_executor::execute_parsed_script(PlotState::default(), &parsed);
 
     for diag in &result.diagnostics {
@@ -114,12 +196,12 @@ fn run() -> Result<(), String> {
     // Attempt to resolve SolutionSnapshot for each intent.  If the dataset
     // references are absent or the files cannot be loaded, the intent keeps
     // snapshot=None and the placeholder renderer is used instead.
-    let cmd_dir = args.cmd.parent().unwrap_or(Path::new("."));
+    let cmd_dir = cmd.parent().unwrap_or(Path::new("."));
     for intent in &mut result.intents {
         intent.snapshot = try_load_snapshot(cmd_dir, &intent.state);
     }
 
-    let output_paths = derive_output_paths(&args.out, result.intents.len());
+    let output_paths = derive_output_paths(out, result.intents.len());
 
     for (intent, out_path) in result.intents.iter().zip(output_paths.iter()) {
         if let Some(parent) = out_path.parent() {
@@ -131,7 +213,7 @@ fn run() -> Result<(), String> {
             })?;
         }
 
-        let image = render_intent_image(intent, args.width, args.height);
+        let image = render_intent_image(intent, width, height);
         image
             .save_with_format(out_path, ImageFormat::Png)
             .map_err(|e| format!("Failed to write PNG {}: {e}", out_path.display()))?;
@@ -140,6 +222,161 @@ fn run() -> Result<(), String> {
     }
 
     Ok(())
+}
+
+fn run_batch(
+    input_dir: &Path,
+    output_dir: &Path,
+    pattern: &str,
+    output_template: &str,
+    width: u32,
+    height: u32,
+) -> Result<(), String> {
+    if !input_dir.exists() {
+        return Err(format!("Batch input directory not found: {}", input_dir.display()));
+    }
+
+    let cmd_files = collect_batch_inputs(input_dir, pattern)?;
+    if cmd_files.is_empty() {
+        return Err(format!(
+            "No .com files matched pattern '{}' in {}",
+            pattern,
+            input_dir.display()
+        ));
+    }
+
+    for (batch_idx, cmd_file) in cmd_files.iter().enumerate() {
+        let parsed = com_parser::parse_com_file(cmd_file)?;
+        let mut result = script_executor::execute_parsed_script(PlotState::default(), &parsed);
+
+        for diag in &result.diagnostics {
+            eprintln!(
+                "[{:?}] {}: {} [{}]",
+                diag.severity,
+                diag.capability,
+                diag.message,
+                cmd_file.display()
+            );
+        }
+
+        if result.intents.is_empty() {
+            eprintln!(
+                "[Warning] No render intents emitted for {}; skipping",
+                cmd_file.display()
+            );
+            continue;
+        }
+
+        let cmd_dir = cmd_file.parent().unwrap_or(Path::new("."));
+        for intent in &mut result.intents {
+            intent.snapshot = try_load_snapshot(cmd_dir, &intent.state);
+        }
+
+        let stem = cmd_file
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("output");
+
+        let output_paths = derive_batch_output_paths(
+            output_dir,
+            output_template,
+            stem,
+            batch_idx + 1,
+            result.intents.len(),
+        )?;
+
+        for (intent, out_path) in result.intents.iter().zip(output_paths.iter()) {
+            if let Some(parent) = out_path.parent() {
+                fs::create_dir_all(parent).map_err(|e| {
+                    format!(
+                        "Failed to create output directory {}: {e}",
+                        parent.display()
+                    )
+                })?;
+            }
+
+            let image = render_intent_image(intent, width, height);
+            image
+                .save_with_format(out_path, ImageFormat::Png)
+                .map_err(|e| format!("Failed to write PNG {}: {e}", out_path.display()))?;
+
+            println!("wrote {}", out_path.display());
+        }
+    }
+
+    Ok(())
+}
+
+fn collect_batch_inputs(input_dir: &Path, pattern: &str) -> Result<Vec<PathBuf>, String> {
+    let search_glob = input_dir.join(pattern).to_string_lossy().to_string();
+    let mut files = Vec::new();
+    for entry in glob(&search_glob).map_err(|e| format!("Invalid --pattern '{}': {e}", pattern))? {
+        let path = entry.map_err(|e| format!("Glob error for '{}': {e}", search_glob))?;
+        if path.is_file() {
+            files.push(path);
+        }
+    }
+    files.sort();
+    Ok(files)
+}
+
+fn derive_batch_output_paths(
+    output_dir: &Path,
+    output_template: &str,
+    stem: &str,
+    batch_index: usize,
+    plot_count: usize,
+) -> Result<Vec<PathBuf>, String> {
+    if Path::new(output_template).is_absolute() {
+        return Err("--output-template must be a relative path".to_string());
+    }
+
+    let mut base = output_template
+        .replace("{stem}", stem)
+        .replace("{index}", &format!("{batch_index:03}"));
+
+    let token_check = base.replace("{plot}", "001");
+
+    if token_check.contains('{') || token_check.contains('}') {
+        return Err(
+            "--output-template contains unknown token; supported tokens are {stem}, {index}, {plot}"
+                .to_string(),
+        );
+    }
+
+    if output_template.contains("{plot}") {
+        let mut paths = Vec::with_capacity(plot_count.max(1));
+        for plot_idx in 1..=plot_count.max(1) {
+            let rendered = output_template
+                .replace("{stem}", stem)
+                .replace("{index}", &format!("{batch_index:03}"))
+                .replace("{plot}", &format!("{plot_idx:03}"));
+            let mut path = output_dir.join(rendered);
+            ensure_png_extension(&mut path);
+            paths.push(path);
+        }
+        return Ok(paths);
+    }
+
+    if base.is_empty() {
+        base = format!("{stem}.png");
+    }
+
+    let mut base_path = output_dir.join(base);
+    ensure_png_extension(&mut base_path);
+    Ok(derive_output_paths(&base_path, plot_count))
+}
+
+fn ensure_png_extension(path: &mut PathBuf) {
+    let has_ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| !s.is_empty())
+        .unwrap_or(false);
+    if !has_ext {
+        path.set_extension("png");
+    }
 }
 
 fn derive_output_paths(base: &Path, count: usize) -> Vec<PathBuf> {
@@ -426,6 +663,33 @@ mod tests {
         assert_eq!(paths[0], PathBuf::from("/tmp/result_001.png"));
         assert_eq!(paths[1], PathBuf::from("/tmp/result_002.png"));
         assert_eq!(paths[2], PathBuf::from("/tmp/result_003.png"));
+    }
+
+    #[test]
+    fn derive_batch_output_paths_auto_suffixes_without_plot_token() {
+        let out_dir = Path::new("/tmp/out");
+        let paths = derive_batch_output_paths(out_dir, "{stem}.png", "wing", 2, 3)
+            .expect("batch path derivation should succeed");
+        assert_eq!(paths[0], PathBuf::from("/tmp/out/wing_001.png"));
+        assert_eq!(paths[1], PathBuf::from("/tmp/out/wing_002.png"));
+        assert_eq!(paths[2], PathBuf::from("/tmp/out/wing_003.png"));
+    }
+
+    #[test]
+    fn derive_batch_output_paths_respects_plot_token() {
+        let out_dir = Path::new("/tmp/out");
+        let paths = derive_batch_output_paths(out_dir, "{stem}_p{plot}", "wing", 1, 2)
+            .expect("batch path derivation should succeed");
+        assert_eq!(paths[0], PathBuf::from("/tmp/out/wing_p001.png"));
+        assert_eq!(paths[1], PathBuf::from("/tmp/out/wing_p002.png"));
+    }
+
+    #[test]
+    fn derive_batch_output_paths_rejects_unknown_token() {
+        let out_dir = Path::new("/tmp/out");
+        let err = derive_batch_output_paths(out_dir, "{stem}_{unknown}.png", "wing", 1, 1)
+            .expect_err("unknown token should fail");
+        assert!(err.contains("unknown token"));
     }
 
     #[test]

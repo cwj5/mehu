@@ -917,7 +917,7 @@ fn surface_segment_color(
         ContourAttribute::Grid => Rgba([190, 255, 190, 255]),
         ContourAttribute::Dots => Rgba([255, 245, 230, 255]),
         ContourAttribute::Surface | ContourAttribute::ColorContours => {
-            let [r, g, b] = colormap::turbo(t);
+            let [r, g, b] = colormap::apply(t);
             Rgba([r, g, b, 255])
         }
     }
