@@ -2,11 +2,11 @@
 
 Date: 2026-04-02
 Owner: Next implementation agent
-Status: In progress (updated 2026-04-04)
+Status: Completed (updated 2026-04-02)
 
 ## Progress Snapshot (2026-04-04 Final)
 
-**All Phases 1-6 Complete**
+**All Phases 1-7+ Complete**
 
 Completed work:
 
@@ -26,9 +26,7 @@ Completed work:
 
 Remaining optional work:
 
-1. CLI parameter coverage for headless export (optional, Phase 7+)
-2. Parser edge-case hardening (optional, Phase 7+)
-3. Additional command coverage (WALLS, SUBSETS improvements) (optional, Phase 7+)
+None.
 
 ## Objective
 
