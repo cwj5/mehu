@@ -28,6 +28,7 @@ coverage/
 *.njsproj
 *.sln
 *.sw?
+plot3d.hlp
 
 # Tauri
 src-tauri/target/
