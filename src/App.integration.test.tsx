@@ -199,7 +199,7 @@ describe('App frontend integration', () => {
                         subsets: currentSubsets,
                         viewpoint: { x: 1, y: 0, z: 0 },
                     },
-                    diagnostics: [{ capability: 'PLOT', severity: 'info', message: 'Plot committed' }],
+                    diagnostics: [{ capability: 'PLOT', severity: 'info', message: 'PLOT committed' }],
                 };
             }
 
@@ -261,7 +261,7 @@ describe('App frontend integration', () => {
 
         // The Plot Family select replaces the old "Enable Contours" checkbox.
         // Mock starts with plot_family='function_surface', so the select shows that value.
-        const plotFamilySelect = await screen.findByDisplayValue('Function Surface');
+        const plotFamilySelect = await screen.findByDisplayValue('SURFACE/CARPET/LINE');
         fireEvent.change(plotFamilySelect, { target: { value: 'contour' } });
 
         await waitFor(() => {
@@ -424,7 +424,7 @@ describe('Contour spec editor commits (TKT-007E)', () => {
         const loadButton = await screen.findByRole('button', { name: 'Load Files' });
         fireEvent.click(loadButton);
         // Wait for Plot Family select to be visible (gated behind hasSolution)
-        await screen.findByDisplayValue('Contour');
+        await screen.findByDisplayValue('CONTOUR');
     }
 
     it('mode selector change does NOT immediately commit to backend', async () => {
@@ -432,7 +432,7 @@ describe('Contour spec editor commits (TKT-007E)', () => {
 
         // Switch Levels mode from None → Automatic (local-only, no invoke)
         invokeMock.mockClear();
-        const levelsSelect = await screen.findByDisplayValue('None');
+        const levelsSelect = await screen.findByDisplayValue('NONE');
         fireEvent.change(levelsSelect, { target: { value: 'automatic' } });
 
         // No IPC call should have happened yet
@@ -443,7 +443,7 @@ describe('Contour spec editor commits (TKT-007E)', () => {
     it('commits Automatic contour spec when Apply is clicked', async () => {
         await loadFiles();
 
-        const levelsSelect = await screen.findByDisplayValue('None');
+        const levelsSelect = await screen.findByDisplayValue('NONE');
         fireEvent.change(levelsSelect, { target: { value: 'automatic' } });
 
         // Count input appears after mode switch
@@ -475,7 +475,7 @@ describe('Contour spec editor commits (TKT-007E)', () => {
     it('commits Increment contour spec when Apply is clicked', async () => {
         await loadFiles();
 
-        const levelsSelect = await screen.findByDisplayValue('None');
+        const levelsSelect = await screen.findByDisplayValue('NONE');
         fireEvent.change(levelsSelect, { target: { value: 'increment' } });
 
         // Start defaults to '0', Step defaults to '1'
@@ -507,7 +507,7 @@ describe('Contour spec editor commits (TKT-007E)', () => {
     it('commits Manual contour level when Apply is clicked', async () => {
         await loadFiles();
 
-        const levelsSelect = await screen.findByDisplayValue('None');
+        const levelsSelect = await screen.findByDisplayValue('NONE');
         fireEvent.change(levelsSelect, { target: { value: 'manual' } });
 
         const levelLabels = await screen.findAllByText('Level:');
@@ -533,7 +533,7 @@ describe('Contour spec editor commits (TKT-007E)', () => {
     it('commits Manual level on Enter key without needing Apply button click', async () => {
         await loadFiles();
 
-        const levelsSelect = await screen.findByDisplayValue('None');
+        const levelsSelect = await screen.findByDisplayValue('NONE');
         fireEvent.change(levelsSelect, { target: { value: 'manual' } });
 
         const levelLabels = await screen.findAllByText('Level:');
@@ -555,7 +555,7 @@ describe('Contour spec editor commits (TKT-007E)', () => {
         await loadFiles();
 
         invokeMock.mockClear();
-        const attributeSelect = await screen.findByDisplayValue('Line');
+        const attributeSelect = await screen.findByDisplayValue('LINE');
         fireEvent.change(attributeSelect, { target: { value: 'surface' } });
 
         await waitFor(() => {
@@ -576,7 +576,7 @@ describe('Contour spec editor commits (TKT-007E)', () => {
         await loadFiles();
 
         invokeMock.mockClear();
-        const plotFamilySelect = await screen.findByDisplayValue('Contour');
+        const plotFamilySelect = await screen.findByDisplayValue('CONTOUR');
         fireEvent.change(plotFamilySelect, { target: { value: 'function_surface' } });
 
         await waitFor(() => {
@@ -585,7 +585,7 @@ describe('Contour spec editor commits (TKT-007E)', () => {
         });
 
         invokeMock.mockClear();
-        const updatedSelect = await screen.findByDisplayValue('Function Surface');
+        const updatedSelect = await screen.findByDisplayValue('SURFACE/CARPET/LINE');
         fireEvent.change(updatedSelect, { target: { value: 'contour' } });
 
         await waitFor(() => {
@@ -637,7 +637,7 @@ describe('Cross-path parity (TKT-012C)', () => {
             case 'density':
                 return 'Density';
             case 'function_surface':
-                return 'Function Surface';
+                return 'SURFACE/CARPET/LINE';
             default:
                 return field
                     .split('_')
@@ -853,7 +853,7 @@ describe('Cross-path parity (TKT-012C)', () => {
         render(<App />);
         const loadButton = await screen.findByRole('button', { name: 'Load Files' });
         fireEvent.click(loadButton);
-        await screen.findByText('Plot Family:');
+        await screen.findByText('PLOT Family:');
     };
 
     const getLatestViewerProps = () => viewer3DMock.mock.calls[viewer3DMock.mock.calls.length - 1]?.[0] as
@@ -969,7 +969,7 @@ describe('Cross-path parity (TKT-012C)', () => {
             if (cmd === 'commit_plot') {
                 const result = {
                     state: clone(currentState),
-                    diagnostics: [{ capability: 'PLOT', severity: 'info', message: 'Plot committed' }],
+                    diagnostics: [{ capability: 'PLOT', severity: 'info', message: 'PLOT committed' }],
                 };
                 commitResults.push(result);
                 return result;
@@ -1003,7 +1003,7 @@ describe('Cross-path parity (TKT-012C)', () => {
         resetBackendState();
         await loadFiles();
 
-        const attributeSelect = await screen.findByDisplayValue('Line');
+        const attributeSelect = await screen.findByDisplayValue('LINE');
         fireEvent.change(attributeSelect, { target: { value: 'surface' } });
 
         await waitFor(() => {
@@ -1011,7 +1011,7 @@ describe('Cross-path parity (TKT-012C)', () => {
             expect(invokeMock).toHaveBeenCalledWith('commit_plot');
         });
 
-        const levelsSelect = await screen.findByDisplayValue('None');
+        const levelsSelect = await screen.findByDisplayValue('NONE');
         fireEvent.change(levelsSelect, { target: { value: 'automatic' } });
 
         const countInput = await screen.findByDisplayValue('10');
@@ -1131,7 +1131,7 @@ describe('Cross-path parity (TKT-012C)', () => {
         resetBackendState();
         await loadFiles();
 
-        const plotFamilySelect = await screen.findByDisplayValue('Contour');
+        const plotFamilySelect = await screen.findByDisplayValue('CONTOUR');
         fireEvent.change(plotFamilySelect, { target: { value: 'function_surface' } });
 
         await waitFor(() => {
@@ -1186,7 +1186,7 @@ describe('Cross-path parity (TKT-012C)', () => {
         const viewPresetSelect = await screen.findByLabelText('View Preset:');
         fireEvent.change(viewPresetSelect, { target: { value: 'plus_z' } });
 
-        const plotFamilySelect = await screen.findByDisplayValue('Contour');
+        const plotFamilySelect = await screen.findByDisplayValue('CONTOUR');
         fireEvent.change(plotFamilySelect, { target: { value: 'function_surface' } });
 
         const updatedViewPresetSelect = await screen.findByLabelText('View Preset:');

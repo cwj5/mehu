@@ -846,7 +846,7 @@ pub fn apply_action(mut state: PlotState, action: PlotAction) -> (PlotState, Vec
             // responsible for deriving a RenderIntent from the current state
             // when it handles this action.  We emit an info diagnostic so
             // callers can observe the boundary in a diagnostic stream.
-            diags.push(Diagnostic::info(cap::PLOT, "Plot committed"));
+            diags.push(Diagnostic::info(cap::PLOT, "PLOT committed"));
 
             // Warn on unsupported combinations so callers can surface them.
             if state.plot_family == PlotFamily::FunctionSurface
@@ -854,7 +854,7 @@ pub fn apply_action(mut state: PlotState, action: PlotAction) -> (PlotState, Vec
             {
                 diags.push(Diagnostic::warning(
                     cap::CONTOURS,
-                    "Contour spec is ignored in Function Surface mode; switch to Contour plot family to use contour levels.",
+                    "CONTOURS spec is ignored when PLOT/SURFACE (CARPET/LINE) is active; switch to PLOT/CONTOUR to use contour levels.",
                 ));
             }
             if state.plot_family == PlotFamily::Contour
@@ -865,7 +865,7 @@ pub fn apply_action(mut state: PlotState, action: PlotAction) -> (PlotState, Vec
             {
                 diags.push(Diagnostic::warning(
                     cap::CONTOURS,
-                    "GRID and DOTS contour attributes are not fully implemented; rendering as Line contours.",
+                    "GRID and DOTS CONTOURS attributes are not fully implemented; rendering as LINE contours.",
                 ));
             }
         }

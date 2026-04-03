@@ -1793,9 +1793,9 @@ const App = () => {
 
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '11px' }}>
 
-                      {/* Plot Family */}
+                      {/* PLOT family */}
                       <label style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                        <span style={{ fontSize: '10px', color: '#94a3b8' }}>Plot Family:</span>
+                        <span style={{ fontSize: '10px', color: '#94a3b8' }}>PLOT Family:</span>
                         <select
                           value={plotFamilyState}
                           onChange={(e) => {
@@ -1803,8 +1803,8 @@ const App = () => {
                           }}
                           style={{ padding: '4px 6px', background: '#1a2640', color: '#e2e8f0', border: '1px solid #334155', borderRadius: '3px', fontSize: '11px' }}
                         >
-                          <option value="contour">Contour</option>
-                          <option value="function_surface">Function Surface</option>
+                          <option value="contour">CONTOUR</option>
+                          <option value="function_surface">SURFACE/CARPET/LINE</option>
                         </select>
                       </label>
 
@@ -1813,7 +1813,7 @@ const App = () => {
 
                           {/* Contour Attribute */}
                           <label style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                            <span style={{ fontSize: '10px', color: '#94a3b8' }}>Attribute:</span>
+                            <span style={{ fontSize: '10px', color: '#94a3b8' }}>CONTOURS Attribute:</span>
                             <select
                               value={contourAttributeState}
                               onChange={(e) => {
@@ -1821,17 +1821,17 @@ const App = () => {
                               }}
                               style={{ padding: '4px 6px', background: '#1a2640', color: '#e2e8f0', border: '1px solid #334155', borderRadius: '3px', fontSize: '11px' }}
                             >
-                              <option value="line">Line</option>
-                              <option value="surface">Surface</option>
-                              <option value="grid">Grid</option>
-                              <option value="color_contours">Color Contours</option>
-                              <option value="dots">Dots</option>
+                              <option value="line">LINE</option>
+                              <option value="surface">SURFACE</option>
+                              <option value="grid">GRID</option>
+                              <option value="color_contours">COLOR CONTOURS</option>
+                              <option value="dots">DOTS</option>
                             </select>
                           </label>
 
                           {/* Contour Spec Mode */}
                           <label style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                            <span style={{ fontSize: '10px', color: '#94a3b8' }}>Levels:</span>
+                            <span style={{ fontSize: '10px', color: '#94a3b8' }}>CONTOURS Levels:</span>
                             <select
                               value={contourSpecMode}
                               onChange={(e) => {
@@ -1839,10 +1839,10 @@ const App = () => {
                               }}
                               style={{ padding: '4px 6px', background: '#1a2640', color: '#e2e8f0', border: '1px solid #334155', borderRadius: '3px', fontSize: '11px' }}
                             >
-                              <option value="none">None</option>
-                              <option value="automatic">Automatic</option>
-                              <option value="increment">Increment</option>
-                              <option value="manual">Manual</option>
+                              <option value="none">NONE</option>
+                              <option value="automatic">AUTOMATIC</option>
+                              <option value="increment">INCREMENT</option>
+                              <option value="manual">MANUAL</option>
                             </select>
                           </label>
 
@@ -1960,10 +1960,10 @@ const App = () => {
                             </label>
                           )}
 
-                          {/* Surface opacity slider (surface / color_contours attributes only) */}
+                          {/* Surface opacity slider (SURFACE / COLOR CONTOURS attributes only) */}
                           {(contourAttributeState === 'surface' || contourAttributeState === 'color_contours') && (
                             <label style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                              <span style={{ fontSize: '10px', color: '#94a3b8' }}>Surface Opacity: {Math.round(isoSurfaceOpacity * 100)}%</span>
+                              <span style={{ fontSize: '10px', color: '#94a3b8' }}>SURFACE Opacity: {Math.round(isoSurfaceOpacity * 100)}%</span>
                               <input
                                 type="range"
                                 min="0"
@@ -2483,6 +2483,9 @@ const App = () => {
                 {hasSolution && (
                   <div style={{ marginTop: '10px', background: '#0b1120', padding: '10px', borderRadius: '8px', fontSize: '11px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
                     <div style={{ fontWeight: 600 }}>FSURFACE</div>
+                    <div style={{ fontSize: '10px', color: '#94a3b8' }}>
+                      Legacy note: this control currently sets an iso-level plus scalar field, not full legacy FSURFACE axis-property semantics.
+                    </div>
                     <label style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                       <input
                         type="checkbox"
@@ -2494,7 +2497,7 @@ const App = () => {
                       Enabled
                     </label>
                     <label style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                      <span style={{ fontSize: '10px', color: '#94a3b8' }}>Level</span>
+                      <span style={{ fontSize: '10px', color: '#94a3b8' }}>Iso-Level (current)</span>
                       <input
                         type="number"
                         step="any"
@@ -2504,7 +2507,7 @@ const App = () => {
                       />
                     </label>
                     <label style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                      <span style={{ fontSize: '10px', color: '#94a3b8' }}>Scalar Field</span>
+                      <span style={{ fontSize: '10px', color: '#94a3b8' }}>FUNCTION (scalar field)</span>
                       <select
                         value={fsurfaceField}
                         onChange={(e) => setFsurfaceField(e.target.value as BackendScalarField)}

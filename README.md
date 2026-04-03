@@ -55,6 +55,8 @@ Commands currently out of scope:
 
 ## Known Limitations and Deviations
 
+- User-facing labels for in-scope commands follow legacy PLOT3D terminology (`CONTOUR`, `SURFACE/CARPET/LINE`, `CONTOURS` attributes and level modes).
+- `FSURFACE` wording is preserved as a legacy command name, but current behavior is a bounded MVP that stores an iso-level plus scalar field rather than full legacy FSURFACE axis-property controls.
 - Known legacy-to-modern rendering translation behavior and deviations are tracked in [plot3d_com_file/legacy_translation_layer.md](plot3d_com_file/legacy_translation_layer.md).
 - Headless export determinism and known divergence from in-app rendering are tracked in [plot3d_com_file/legacy_translation_layer.md](plot3d_com_file/legacy_translation_layer.md) and regression fixtures under [headless-export/fixtures/regression](headless-export/fixtures/regression).
 

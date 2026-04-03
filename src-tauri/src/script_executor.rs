@@ -425,7 +425,7 @@ mod tests {
         assert!(result
             .diagnostics
             .iter()
-            .any(|d| d.message.contains("Plot committed")));
+            .any(|d| d.message.contains("PLOT committed")));
     }
 
     #[test]
@@ -453,7 +453,7 @@ mod tests {
                 .diagnostics
                 .iter()
                 .skip(1)
-                .any(|d| d.message.contains("Plot committed")),
+                .any(|d| d.message.contains("PLOT committed")),
             "expected execution diagnostics after parser diagnostics"
         );
     }
