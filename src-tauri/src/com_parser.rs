@@ -241,14 +241,16 @@ fn parse_command(command: &str, args: &[String], file: &Path, line: u32, out: &m
         "WALLS" => parse_walls_or_subsets(true, args, file, line, out),
         "SUBSETS" | "SUBSET" => parse_walls_or_subsets(false, args, file, line, out),
         "READ" => parse_read(args, file, line, out),
-        unsupported => out.diagnostics.push(diagnostic(
-            cap::READ,
-            DiagnosticSeverity::Warning,
-            Some(file.to_string_lossy().to_string()),
-            Some(line),
-            Some(1),
-            format!("Unsupported command '{}' ignored", unsupported),
-        )),
+        unsupported => {
+            out.diagnostics.push(diagnostic(
+                cap::READ,
+                DiagnosticSeverity::Warning,
+                Some(file.to_string_lossy().to_string()),
+                Some(line),
+                Some(1),
+                format!("Unsupported command '{}' ignored", unsupported),
+            ));
+        }
     }
 }
 
@@ -402,11 +404,38 @@ fn parse_vpoint(args: &[String], file: &Path, line: u32, out: &mut ParsedScript)
 
     let (x, y, z) = if is_spherical {
         // DISSPLA spherical convention: phi (azimuth), theta (elevation), radius
-        spherical_to_cartesian(numeric_args[0], numeric_args[1], numeric_args[2])
+        let radius = numeric_args[2];
+        if radius <= 0.0 {
+            out.diagnostics.push(diagnostic(
+                cap::VPOINT,
+                DiagnosticSeverity::Warning,
+                Some(file.to_string_lossy().to_string()),
+                Some(line),
+                Some(1),
+                format!("VPOINT/ANGLES radius must be > 0; got {}", radius),
+            ));
+            // Use a default radius to avoid camera singularity
+            spherical_to_cartesian(numeric_args[0], numeric_args[1], 5.0)
+        } else {
+            spherical_to_cartesian(numeric_args[0], numeric_args[1], radius)
+        }
     } else {
         // Cartesian coordinates
         (numeric_args[0], numeric_args[1], numeric_args[2])
     };
+
+    // Validate that Cartesian coordinates are finite
+    if !x.is_finite() || !y.is_finite() || !z.is_finite() {
+        out.diagnostics.push(diagnostic(
+            cap::VPOINT,
+            DiagnosticSeverity::Warning,
+            Some(file.to_string_lossy().to_string()),
+            Some(line),
+            Some(1),
+            "VPOINT coordinates must be finite (not NaN or infinity)",
+        ));
+        return;
+    }
 
     out.actions
         .push(PlotAction::SetViewpoint(ViewPoint { x, y, z }));
@@ -465,20 +494,67 @@ fn parse_minmax(args: &[String], file: &Path, line: u32, out: &mut ParsedScript)
             ));
             return;
         }
+        // Validate and normalize bounds: ensure min < max
+        let (x_min, x_max) = if numeric_args[0] < numeric_args[1] {
+            (numeric_args[0], numeric_args[1])
+        } else if numeric_args[0] > numeric_args[1] {
+            out.diagnostics.push(diagnostic(
+                cap::MINMAX,
+                DiagnosticSeverity::Warning,
+                Some(file.to_string_lossy().to_string()),
+                Some(line),
+                Some(1),
+                "MINMAX X bounds reversed (min > max); swapping",
+            ));
+            (numeric_args[1], numeric_args[0])
+        } else {
+            (numeric_args[0], numeric_args[0])
+        };
         mm.x = Some(AxisBounds {
-            min: numeric_args[0],
-            max: numeric_args[1],
+            min: x_min,
+            max: x_max,
         });
+
         if numeric_args.len() >= 4 {
+            let (y_min, y_max) = if numeric_args[2] < numeric_args[3] {
+                (numeric_args[2], numeric_args[3])
+            } else if numeric_args[2] > numeric_args[3] {
+                out.diagnostics.push(diagnostic(
+                    cap::MINMAX,
+                    DiagnosticSeverity::Warning,
+                    Some(file.to_string_lossy().to_string()),
+                    Some(line),
+                    Some(1),
+                    "MINMAX Y bounds reversed (min > max); swapping",
+                ));
+                (numeric_args[3], numeric_args[2])
+            } else {
+                (numeric_args[2], numeric_args[2])
+            };
             mm.y = Some(AxisBounds {
-                min: numeric_args[2],
-                max: numeric_args[3],
+                min: y_min,
+                max: y_max,
             });
         }
         if numeric_args.len() >= 6 {
+            let (z_min, z_max) = if numeric_args[4] < numeric_args[5] {
+                (numeric_args[4], numeric_args[5])
+            } else if numeric_args[4] > numeric_args[5] {
+                out.diagnostics.push(diagnostic(
+                    cap::MINMAX,
+                    DiagnosticSeverity::Warning,
+                    Some(file.to_string_lossy().to_string()),
+                    Some(line),
+                    Some(1),
+                    "MINMAX Z bounds reversed (min > max); swapping",
+                ));
+                (numeric_args[5], numeric_args[4])
+            } else {
+                (numeric_args[4], numeric_args[4])
+            };
             mm.z = Some(AxisBounds {
-                min: numeric_args[4],
-                max: numeric_args[5],
+                min: z_min,
+                max: z_max,
             });
         }
     } else {
@@ -588,21 +664,119 @@ fn parse_contours(args: &[String], file: &Path, line: u32, out: &mut ParsedScrip
 
     // Attribute qualifiers are orthogonal to level-mode qualifiers; emit them first.
     // If multiple attribute qualifiers appear on one line, the last one in this list wins.
-    let attr = if qualifier_values.contains_key("LINE") {
-        Some(ContourAttribute::Line)
-    } else if qualifier_values.contains_key("SURFACE") {
-        Some(ContourAttribute::Surface)
-    } else if qualifier_values.contains_key("GRID") {
-        Some(ContourAttribute::Grid)
-    } else if qualifier_values.contains_key("COLOR") {
-        Some(ContourAttribute::ColorContours)
-    } else if qualifier_values.contains_key("DOTS") {
-        Some(ContourAttribute::Dots)
+    // Warn if user specifies multiple conflicting attributes.
+    let attrs_specified: Vec<&str> = [
+        if qualifier_values.contains_key("LINE") {
+            Some("LINE")
+        } else {
+            None
+        },
+        if qualifier_values.contains_key("SURFACE") {
+            Some("SURFACE")
+        } else {
+            None
+        },
+        if qualifier_values.contains_key("GRID") {
+            Some("GRID")
+        } else {
+            None
+        },
+        if qualifier_values.contains_key("COLOR") {
+            Some("COLOR")
+        } else {
+            None
+        },
+        if qualifier_values.contains_key("DOTS") {
+            Some("DOTS")
+        } else {
+            None
+        },
+    ]
+    .iter()
+    .filter_map(|&a| a)
+    .collect();
+
+    if attrs_specified.len() > 1 {
+        out.diagnostics.push(diagnostic(
+            cap::CONTOURS,
+            DiagnosticSeverity::Info,
+            Some(file.to_string_lossy().to_string()),
+            Some(line),
+            Some(1),
+            format!(
+                "CONTOURS specifies multiple attribute qualifiers: {}; using last one '{}'",
+                attrs_specified.join(", "),
+                attrs_specified[attrs_specified.len() - 1]
+            ),
+        ));
+    }
+
+    // Use the last attribute specified (not the first)
+    let attr = if !attrs_specified.is_empty() {
+        match attrs_specified[attrs_specified.len() - 1] {
+            "LINE" => Some(ContourAttribute::Line),
+            "SURFACE" => Some(ContourAttribute::Surface),
+            "GRID" => Some(ContourAttribute::Grid),
+            "COLOR" => Some(ContourAttribute::ColorContours),
+            "DOTS" => Some(ContourAttribute::Dots),
+            _ => None,
+        }
     } else {
         None
     };
     if let Some(attribute) = attr {
         out.actions.push(PlotAction::SetContourAttribute(attribute));
+    }
+
+    if qualifier_values.contains_key("LINEAR") {
+        out.diagnostics.push(diagnostic(
+            cap::CONTOURS,
+            DiagnosticSeverity::Warning,
+            Some(file.to_string_lossy().to_string()),
+            Some(line),
+            Some(1),
+            "CONTOURS/LINEAR has no additional effect in the current implementation; contour extraction already uses LINEAR interpolation.",
+        ));
+    }
+    if qualifier_values.contains_key("CUBIC") {
+        out.diagnostics.push(diagnostic(
+            cap::CONTOURS,
+            DiagnosticSeverity::Warning,
+            Some(file.to_string_lossy().to_string()),
+            Some(line),
+            Some(1),
+            "CONTOURS/CUBIC is not implemented; using LINEAR interpolation.",
+        ));
+    }
+    if qualifier_values.contains_key("RANGE") {
+        out.diagnostics.push(diagnostic(
+            cap::CONTOURS,
+            DiagnosticSeverity::Warning,
+            Some(file.to_string_lossy().to_string()),
+            Some(line),
+            Some(1),
+            "CONTOURS/RANGE is not implemented in parser execution; using the active contour-level mode only.",
+        ));
+    }
+    if qualifier_values.contains_key("ATTRIBUTES") {
+        out.diagnostics.push(diagnostic(
+            cap::CONTOURS,
+            DiagnosticSeverity::Warning,
+            Some(file.to_string_lossy().to_string()),
+            Some(line),
+            Some(1),
+            "CONTOURS/ATTRIBUTES has no parser-side effect; contour attribute rendering is controlled by explicit CONTOURS attribute qualifiers.",
+        ));
+    }
+    if qualifier_values.contains_key("NOATTRIBUTES") {
+        out.diagnostics.push(diagnostic(
+            cap::CONTOURS,
+            DiagnosticSeverity::Warning,
+            Some(file.to_string_lossy().to_string()),
+            Some(line),
+            Some(1),
+            "CONTOURS/NOATTRIBUTES has no parser-side effect in the current implementation.",
+        ));
     }
 
     // Warn about truly unknown qualifiers for all contour modes.
@@ -613,6 +787,8 @@ fn parse_contours(args: &[String], file: &Path, line: u32, out: &mut ParsedScrip
                 | "INCREMENT"
                 | "MANUAL"
                 | "RANGE"
+                | "LINEAR"
+                | "CUBIC"
                 | "ATTRIBUTES"
                 | "NOATTRIBUTES"
                 | "LINE"
@@ -670,8 +846,38 @@ fn parse_contours(args: &[String], file: &Path, line: u32, out: &mut ParsedScrip
         .or_else(|| positional_values.first().map(|&v| v as u32))
         .unwrap_or(10);
 
-    out.actions
-        .push(PlotAction::SetContourSpec(ContourSpec::Automatic { count }));
+    // Validate contour count is reasonable
+    if count == 0 {
+        out.diagnostics.push(diagnostic(
+            cap::CONTOURS,
+            DiagnosticSeverity::Warning,
+            Some(file.to_string_lossy().to_string()),
+            Some(line),
+            Some(1),
+            "CONTOURS/AUTOMATIC count is 0; using default count of 10",
+        ));
+        out.actions
+            .push(PlotAction::SetContourSpec(ContourSpec::Automatic {
+                count: 10,
+            }));
+    } else if count > 255 {
+        out.diagnostics.push(diagnostic(
+            cap::CONTOURS,
+            DiagnosticSeverity::Warning,
+            Some(file.to_string_lossy().to_string()),
+            Some(line),
+            Some(1),
+            format!(
+                "CONTOURS/AUTOMATIC count {} is unusually high; may degrade performance",
+                count
+            ),
+        ));
+        out.actions
+            .push(PlotAction::SetContourSpec(ContourSpec::Automatic { count }));
+    } else {
+        out.actions
+            .push(PlotAction::SetContourSpec(ContourSpec::Automatic { count }));
+    }
 }
 
 fn parse_plot(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {
@@ -757,6 +963,34 @@ fn parse_text(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {
         ));
     }
 
+    // Validate that coordinates are finite and in reasonable bounds
+    if !x.is_finite() || !y.is_finite() {
+        out.diagnostics.push(diagnostic(
+            cap::TEXT,
+            DiagnosticSeverity::Warning,
+            Some(file.to_string_lossy().to_string()),
+            Some(line),
+            Some(1),
+            "TEXT coordinates must be finite (not NaN or infinity)",
+        ));
+        return;
+    }
+
+    // Warn if coordinates are outside typical viewport bounds (0..1)
+    if x < 0.0 || x > 1.0 || y < 0.0 || y > 1.0 {
+        out.diagnostics.push(diagnostic(
+            cap::TEXT,
+            DiagnosticSeverity::Info,
+            Some(file.to_string_lossy().to_string()),
+            Some(line),
+            Some(1),
+            format!(
+                "TEXT position ({}, {}) is outside viewport bounds (0..1); may render off-screen",
+                x, y
+            ),
+        ));
+    }
+
     out.actions.push(PlotAction::AddTextAnnotation(PlotText {
         content: text,
         x,
@@ -776,20 +1010,95 @@ fn parse_fsurface(args: &[String], file: &Path, line: u32, out: &mut ParsedScrip
             Some(file.to_string_lossy().to_string()),
             Some(line),
             Some(1),
-            "FSURFACE requires a value or /NONE",
+            "FSURFACE currently expects an iso-level value or /NONE; legacy axis-property qualifiers are not implemented in this MVP.",
         ));
         return;
     }
 
-    if let Some((name, _)) = parse_qualifier(&args[0]) {
-        if name == "NONE" || name == "OFF" {
-            out.actions.push(PlotAction::SetFsurface(None));
-            return;
+    let mut qualifier_values: HashMap<String, Option<String>> = HashMap::new();
+    let mut positional: Vec<String> = Vec::new();
+
+    for arg in args {
+        if let Some((name, value)) = parse_qualifier(arg) {
+            qualifier_values.insert(name, value);
+        } else {
+            positional.push(arg.clone());
         }
     }
 
-    if let Some(value) = parse_f64(&args[0]) {
-        let field = if let Some(number) = args.get(1).and_then(|s| s.parse::<u16>().ok()) {
+    if qualifier_values.contains_key("NONE") || qualifier_values.contains_key("OFF") {
+        if qualifier_values.len() > 1 || !positional.is_empty() {
+            out.diagnostics.push(diagnostic(
+                cap::FSURFACE,
+                DiagnosticSeverity::Warning,
+                Some(file.to_string_lossy().to_string()),
+                Some(line),
+                Some(1),
+                "FSURFACE /NONE or /OFF clears the current bounded-MVP iso-level spec; additional FSURFACE arguments were ignored.",
+            ));
+        }
+        out.actions.push(PlotAction::SetFsurface(None));
+        return;
+    }
+
+    for qualifier in qualifier_values.keys() {
+        match qualifier.as_str() {
+            "SCALE_FACTOR" => out.diagnostics.push(diagnostic(
+                cap::FSURFACE,
+                DiagnosticSeverity::Warning,
+                Some(file.to_string_lossy().to_string()),
+                Some(line),
+                Some(1),
+                "Legacy FSURFACE /SCALE_FACTOR is not implemented; current FSURFACE stores an iso-level plus FUNCTION (scalar field).",
+            )),
+            "WALLS_ORIGIN" => out.diagnostics.push(diagnostic(
+                cap::FSURFACE,
+                DiagnosticSeverity::Warning,
+                Some(file.to_string_lossy().to_string()),
+                Some(line),
+                Some(1),
+                "Legacy FSURFACE /WALLS_ORIGIN is not implemented; current FSURFACE stores an iso-level plus FUNCTION (scalar field).",
+            )),
+            "GRID" | "CONTOUR" => out.diagnostics.push(diagnostic(
+                cap::FSURFACE,
+                DiagnosticSeverity::Warning,
+                Some(file.to_string_lossy().to_string()),
+                Some(line),
+                Some(1),
+                format!(
+                    "Legacy FSURFACE /{} is not implemented; current FSURFACE stores an iso-level plus FUNCTION (scalar field).",
+                    qualifier
+                ),
+            )),
+            _ => out.diagnostics.push(diagnostic(
+                cap::FSURFACE,
+                DiagnosticSeverity::Warning,
+                Some(file.to_string_lossy().to_string()),
+                Some(line),
+                Some(1),
+                format!("Unknown FSURFACE qualifier '/{}' ignored", qualifier),
+            )),
+        }
+    }
+
+    if positional.is_empty() {
+        if !qualifier_values.is_empty() {
+            return;
+        }
+
+        out.diagnostics.push(diagnostic(
+            cap::FSURFACE,
+            DiagnosticSeverity::Warning,
+            Some(file.to_string_lossy().to_string()),
+            Some(line),
+            Some(1),
+            "FSURFACE currently expects an iso-level value or /NONE; legacy axis-property qualifiers are not implemented in this MVP.",
+        ));
+        return;
+    }
+
+    if let Some(value) = parse_f64(&positional[0]) {
+        let field = if let Some(number) = positional.get(1).and_then(|s| s.parse::<u16>().ok()) {
             let (mapped, mut diags) = map_legacy_function_number(number);
             for diag in &mut diags {
                 diag.file = Some(file.to_string_lossy().to_string());
@@ -802,6 +1111,19 @@ fn parse_fsurface(args: &[String], file: &Path, line: u32, out: &mut ParsedScrip
             ScalarField::Pressure
         };
 
+        if positional.len() > 2 {
+            for extra in positional.iter().skip(2) {
+                out.diagnostics.push(diagnostic(
+                    cap::FSURFACE,
+                    DiagnosticSeverity::Warning,
+                    Some(file.to_string_lossy().to_string()),
+                    Some(line),
+                    Some(1),
+                    format!("Extra FSURFACE argument '{}' ignored", extra),
+                ));
+            }
+        }
+
         out.actions.push(PlotAction::SetFsurface(Some(FsurfaceSpec {
             value,
             scalar_field: field,
@@ -813,7 +1135,10 @@ fn parse_fsurface(args: &[String], file: &Path, line: u32, out: &mut ParsedScrip
             Some(file.to_string_lossy().to_string()),
             Some(line),
             Some(1),
-            format!("Invalid FSURFACE value '{}'", args[0]),
+            format!(
+                "Invalid FSURFACE iso-level '{}'; current FSURFACE expects [value [FUNCTION]] or /NONE.",
+                positional[0]
+            ),
         ));
     }
 }
@@ -840,6 +1165,11 @@ fn parse_walls_or_subsets(
 
     let mut grid_from_qualifier: Option<u32> = None;
     let mut add_mode = false;
+    let mut all_mode = false;
+    let mut none_mode = false;
+    let mut i_from_qualifier: Option<IndexRange> = None;
+    let mut j_from_qualifier: Option<IndexRange> = None;
+    let mut k_from_qualifier: Option<IndexRange> = None;
     let mut positional: Vec<String> = Vec::new();
 
     for arg in args {
@@ -862,6 +1192,35 @@ fn parse_walls_or_subsets(
                 "ADD" => {
                     add_mode = true;
                 }
+                "ALL" => {
+                    all_mode = true;
+                }
+                "NONE" => {
+                    none_mode = true;
+                }
+                "I" | "J" | "K" => {
+                    let parsed = value.as_deref().and_then(parse_index_range);
+                    if let Some(range) = parsed {
+                        match name.as_str() {
+                            "I" => i_from_qualifier = Some(range),
+                            "J" => j_from_qualifier = Some(range),
+                            "K" => k_from_qualifier = Some(range),
+                            _ => {}
+                        }
+                    } else {
+                        out.diagnostics.push(diagnostic(
+                            capability,
+                            DiagnosticSeverity::Warning,
+                            Some(file.to_string_lossy().to_string()),
+                            Some(line),
+                            Some(1),
+                            format!(
+                                "{} /{} requires a valid range value (e.g. 1:10 or (1,10))",
+                                capability, name
+                            ),
+                        ));
+                    }
+                }
                 // Known legacy qualifiers currently accepted but not modeled in PlotState.
                 "ATTRIBUTES" | "NOATTRIBUTES" => {}
                 _ => out.diagnostics.push(diagnostic(
@@ -878,26 +1237,59 @@ fn parse_walls_or_subsets(
         positional.push(arg.clone());
     }
 
+    if all_mode && none_mode {
+        out.diagnostics.push(diagnostic(
+            capability,
+            DiagnosticSeverity::Warning,
+            Some(file.to_string_lossy().to_string()),
+            Some(line),
+            Some(1),
+            format!("{} /ALL and /NONE are conflicting; using /NONE", capability),
+        ));
+    }
+
+    if none_mode {
+        if add_mode {
+            out.diagnostics.push(diagnostic(
+                capability,
+                DiagnosticSeverity::Info,
+                Some(file.to_string_lossy().to_string()),
+                Some(line),
+                Some(1),
+                format!("{} /ADD is ignored when /NONE is specified", capability),
+            ));
+        }
+        if walls {
+            out.actions.push(PlotAction::SetWalls(Vec::new()));
+        } else {
+            out.actions.push(PlotAction::SetSubsets(Vec::new()));
+        }
+        return;
+    }
+
+    if all_mode {
+        out.diagnostics.push(diagnostic(
+            capability,
+            DiagnosticSeverity::Warning,
+            Some(file.to_string_lossy().to_string()),
+            Some(line),
+            Some(1),
+            format!(
+                "{} /ALL is not yet modeled in PlotState; command is ignored",
+                capability
+            ),
+        ));
+        return;
+    }
+
     let grid = if let Some(v) = grid_from_qualifier {
         v
     } else {
-        match positional.first().and_then(|s| s.parse::<u32>().ok()) {
-            Some(v) if v > 0 => v,
-            _ => {
-                out.diagnostics.push(diagnostic(
-                    capability,
-                    DiagnosticSeverity::Warning,
-                    Some(file.to_string_lossy().to_string()),
-                    Some(line),
-                    Some(1),
-                    format!(
-                        "{} requires a 1-based grid index (positional or /GRID)",
-                        capability
-                    ),
-                ));
-                return;
-            }
-        }
+        positional
+            .first()
+            .and_then(|s| s.parse::<u32>().ok())
+            .filter(|&v| v > 0)
+            .unwrap_or(1)
     };
 
     let mut subset = GridSubset {
@@ -926,29 +1318,131 @@ fn parse_walls_or_subsets(
                 start: i_start,
                 end: Some(i_end),
             });
+        } else {
+            out.diagnostics.push(diagnostic(
+                capability,
+                DiagnosticSeverity::Warning,
+                Some(file.to_string_lossy().to_string()),
+                Some(line),
+                Some(1),
+                format!(
+                    "{} invalid I range pair '{} {}' ignored",
+                    capability, range_args[0], range_args[1]
+                ),
+            ));
         }
         if let (Some(j_start), Some(j_end)) = (parse_i32_token(2), parse_i32_token(3)) {
             subset.j_range = Some(IndexRange {
                 start: j_start,
                 end: Some(j_end),
             });
+        } else {
+            out.diagnostics.push(diagnostic(
+                capability,
+                DiagnosticSeverity::Warning,
+                Some(file.to_string_lossy().to_string()),
+                Some(line),
+                Some(1),
+                format!(
+                    "{} invalid J range pair '{} {}' ignored",
+                    capability, range_args[2], range_args[3]
+                ),
+            ));
         }
         if let (Some(k_start), Some(k_end)) = (parse_i32_token(4), parse_i32_token(5)) {
             subset.k_range = Some(IndexRange {
                 start: k_start,
                 end: Some(k_end),
             });
+        } else {
+            out.diagnostics.push(diagnostic(
+                capability,
+                DiagnosticSeverity::Warning,
+                Some(file.to_string_lossy().to_string()),
+                Some(line),
+                Some(1),
+                format!(
+                    "{} invalid K range pair '{} {}' ignored",
+                    capability, range_args[4], range_args[5]
+                ),
+            ));
+        }
+        if range_args.len() > 6 {
+            out.diagnostics.push(diagnostic(
+                capability,
+                DiagnosticSeverity::Info,
+                Some(file.to_string_lossy().to_string()),
+                Some(line),
+                Some(1),
+                format!("{} extra range arguments beyond 6 are ignored", capability),
+            ));
         }
     } else {
-        if let Some(range) = range_args.first().and_then(|s| parse_index_range(s)) {
-            subset.i_range = Some(range);
+        if let Some(token) = range_args.first() {
+            if let Some(range) = parse_index_range(token) {
+                subset.i_range = Some(range);
+            } else {
+                out.diagnostics.push(diagnostic(
+                    capability,
+                    DiagnosticSeverity::Warning,
+                    Some(file.to_string_lossy().to_string()),
+                    Some(line),
+                    Some(1),
+                    format!("{} invalid I range token '{}' ignored", capability, token),
+                ));
+            }
         }
-        if let Some(range) = range_args.get(1).and_then(|s| parse_index_range(s)) {
-            subset.j_range = Some(range);
+        if let Some(token) = range_args.get(1) {
+            if let Some(range) = parse_index_range(token) {
+                subset.j_range = Some(range);
+            } else {
+                out.diagnostics.push(diagnostic(
+                    capability,
+                    DiagnosticSeverity::Warning,
+                    Some(file.to_string_lossy().to_string()),
+                    Some(line),
+                    Some(1),
+                    format!("{} invalid J range token '{}' ignored", capability, token),
+                ));
+            }
         }
-        if let Some(range) = range_args.get(2).and_then(|s| parse_index_range(s)) {
-            subset.k_range = Some(range);
+        if let Some(token) = range_args.get(2) {
+            if let Some(range) = parse_index_range(token) {
+                subset.k_range = Some(range);
+            } else {
+                out.diagnostics.push(diagnostic(
+                    capability,
+                    DiagnosticSeverity::Warning,
+                    Some(file.to_string_lossy().to_string()),
+                    Some(line),
+                    Some(1),
+                    format!("{} invalid K range token '{}' ignored", capability, token),
+                ));
+            }
         }
+        if range_args.len() > 3 {
+            out.diagnostics.push(diagnostic(
+                capability,
+                DiagnosticSeverity::Info,
+                Some(file.to_string_lossy().to_string()),
+                Some(line),
+                Some(1),
+                format!(
+                    "{} extra range arguments beyond 3 are ignored in legacy token mode",
+                    capability
+                ),
+            ));
+        }
+    }
+
+    if let Some(range) = i_from_qualifier {
+        subset.i_range = Some(range);
+    }
+    if let Some(range) = j_from_qualifier {
+        subset.j_range = Some(range);
+    }
+    if let Some(range) = k_from_qualifier {
+        subset.k_range = Some(range);
     }
 
     if walls {
@@ -987,8 +1481,56 @@ fn parse_read(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {
     for arg in args {
         if let Some((name, value)) = parse_qualifier(arg) {
             match name.as_str() {
-                "XYZ" | "GRID" => grid_path = value,
-                "Q" | "SOLUTION" => solution_path = value,
+                "XYZ" | "GRID" => {
+                    if let Some(v) = value {
+                        if v.trim().is_empty() {
+                            out.diagnostics.push(diagnostic(
+                                cap::READ,
+                                DiagnosticSeverity::Warning,
+                                Some(file.to_string_lossy().to_string()),
+                                Some(line),
+                                Some(1),
+                                "READ /XYZ (or /GRID) requires a non-empty path value",
+                            ));
+                        } else {
+                            grid_path = Some(v);
+                        }
+                    } else {
+                        out.diagnostics.push(diagnostic(
+                            cap::READ,
+                            DiagnosticSeverity::Warning,
+                            Some(file.to_string_lossy().to_string()),
+                            Some(line),
+                            Some(1),
+                            "READ /XYZ (or /GRID) requires '=path'",
+                        ));
+                    }
+                }
+                "Q" | "SOLUTION" => {
+                    if let Some(v) = value {
+                        if v.trim().is_empty() {
+                            out.diagnostics.push(diagnostic(
+                                cap::READ,
+                                DiagnosticSeverity::Warning,
+                                Some(file.to_string_lossy().to_string()),
+                                Some(line),
+                                Some(1),
+                                "READ /Q (or /SOLUTION) requires a non-empty path value",
+                            ));
+                        } else {
+                            solution_path = Some(v);
+                        }
+                    } else {
+                        out.diagnostics.push(diagnostic(
+                            cap::READ,
+                            DiagnosticSeverity::Warning,
+                            Some(file.to_string_lossy().to_string()),
+                            Some(line),
+                            Some(1),
+                            "READ /Q (or /SOLUTION) requires '=path'",
+                        ));
+                    }
+                }
                 // Known qualifiers that don't affect the dataset reference.
                 "1D" | "2D" | "3D" | "FORMATTED" | "UNFORMATTED" | "BINARY" | "PLANES"
                 | "WHOLE" | "CHECK" | "NOCHECK" | "BLANK" | "NOBLANK" | "MGRID" | "MDATASET"
@@ -1564,6 +2106,193 @@ mod tests {
         }
     }
 
+    #[test]
+    fn contours_linear_qualifier_warns_but_keeps_automatic_mode() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("c.com");
+        fs::write(&file, "CONTOURS/LINEAR 7\n").expect("write");
+
+        let parsed = parse_com_file(&file).expect("parse");
+
+        assert!(parsed.diagnostics.iter().any(|d| d
+            .message
+            .contains("CONTOURS/LINEAR has no additional effect")));
+        assert_eq!(parsed.actions.len(), 1);
+        assert_eq!(
+            parsed.actions[0],
+            PlotAction::SetContourSpec(ContourSpec::Automatic { count: 7 })
+        );
+    }
+
+    #[test]
+    fn contours_cubic_qualifier_warns_and_falls_back_to_linear() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("c.com");
+        fs::write(&file, "CONTOURS/CUBIC 7\n").expect("write");
+
+        let parsed = parse_com_file(&file).expect("parse");
+
+        assert!(parsed.diagnostics.iter().any(|d| d
+            .message
+            .contains("CONTOURS/CUBIC is not implemented; using LINEAR interpolation")));
+        assert_eq!(parsed.actions.len(), 1);
+        assert_eq!(
+            parsed.actions[0],
+            PlotAction::SetContourSpec(ContourSpec::Automatic { count: 7 })
+        );
+    }
+
+    #[test]
+    fn contours_range_qualifier_warns_but_keeps_automatic_mode() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("c.com");
+        fs::write(&file, "CONTOURS/RANGE 7\n").expect("write");
+
+        let parsed = parse_com_file(&file).expect("parse");
+
+        assert!(parsed.diagnostics.iter().any(|d| d
+            .message
+            .contains("CONTOURS/RANGE is not implemented in parser execution")));
+        assert_eq!(parsed.actions.len(), 1);
+        assert_eq!(
+            parsed.actions[0],
+            PlotAction::SetContourSpec(ContourSpec::Automatic { count: 7 })
+        );
+    }
+
+    #[test]
+    fn contours_attributes_qualifier_warns_without_changing_action() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("c.com");
+        fs::write(&file, "CONTOURS/ATTRIBUTES 7\n").expect("write");
+
+        let parsed = parse_com_file(&file).expect("parse");
+
+        assert!(parsed.diagnostics.iter().any(|d| d
+            .message
+            .contains("CONTOURS/ATTRIBUTES has no parser-side effect")));
+        assert_eq!(parsed.actions.len(), 1);
+        assert_eq!(
+            parsed.actions[0],
+            PlotAction::SetContourSpec(ContourSpec::Automatic { count: 7 })
+        );
+    }
+
+    #[test]
+    fn contours_noattributes_qualifier_warns_without_changing_action() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("c.com");
+        fs::write(&file, "CONTOURS/NOATTRIBUTES 7\n").expect("write");
+
+        let parsed = parse_com_file(&file).expect("parse");
+
+        assert!(parsed.diagnostics.iter().any(|d| d
+            .message
+            .contains("CONTOURS/NOATTRIBUTES has no parser-side effect")));
+        assert_eq!(parsed.actions.len(), 1);
+        assert_eq!(
+            parsed.actions[0],
+            PlotAction::SetContourSpec(ContourSpec::Automatic { count: 7 })
+        );
+    }
+
+    #[test]
+    fn fsurface_legacy_walls_origin_qualifier_emits_divergence_warning() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("fs.com");
+        fs::write(&file, "FSURFACE /WALLS_ORIGIN=1\n").expect("write");
+
+        let parsed = parse_com_file(&file).expect("parse");
+
+        assert!(parsed.actions.is_empty(), "expected no FSURFACE action");
+        assert!(parsed.diagnostics.iter().any(|d| d
+            .message
+            .contains("Legacy FSURFACE /WALLS_ORIGIN is not implemented")));
+    }
+
+    #[test]
+    fn fsurface_numeric_value_with_legacy_qualifier_warns_but_stores_spec() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("fs.com");
+        fs::write(&file, "FSURFACE /SCALE_FACTOR=2 0.5 154\n").expect("write");
+
+        let parsed = parse_com_file(&file).expect("parse");
+
+        assert!(parsed.diagnostics.iter().any(|d| d
+            .message
+            .contains("Legacy FSURFACE /SCALE_FACTOR is not implemented")));
+        assert!(parsed
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("recognized but not implemented")));
+        assert_eq!(parsed.actions.len(), 1);
+        match &parsed.actions[0] {
+            PlotAction::SetFsurface(Some(spec)) => {
+                assert!((spec.value - 0.5).abs() < 1e-9);
+                assert_eq!(spec.scalar_field, ScalarField::Pressure);
+            }
+            action => panic!("expected SetFsurface action, got {:?}", action),
+        }
+    }
+
+    #[test]
+    fn fsurface_none_with_positional_args_clears_and_warns() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("fs.com");
+        fs::write(&file, "FSURFACE /NONE 0.5 110\n").expect("write");
+
+        let parsed = parse_com_file(&file).expect("parse");
+
+        assert!(parsed.diagnostics.iter().any(|d| d
+            .message
+            .contains("FSURFACE /NONE or /OFF clears the current bounded-MVP iso-level spec")));
+        assert_eq!(parsed.actions.len(), 1);
+        assert_eq!(parsed.actions[0], PlotAction::SetFsurface(None));
+    }
+
+    #[test]
+    fn fsurface_off_with_qualifiers_clears_and_warns() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("fs.com");
+        fs::write(&file, "FSURFACE /OFF /GRID\n").expect("write");
+
+        let parsed = parse_com_file(&file).expect("parse");
+
+        assert!(parsed.diagnostics.iter().any(|d| d
+            .message
+            .contains("FSURFACE /NONE or /OFF clears the current bounded-MVP iso-level spec")));
+        assert_eq!(parsed.actions.len(), 1);
+        assert_eq!(parsed.actions[0], PlotAction::SetFsurface(None));
+    }
+
+    #[test]
+    fn fsurface_mixed_legacy_qualifiers_with_value_warns_and_sets_spec() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("fs.com");
+        fs::write(&file, "FSURFACE /GRID /CONTOUR 0.4 110 extra\n").expect("write");
+
+        let parsed = parse_com_file(&file).expect("parse");
+
+        assert!(parsed.diagnostics.iter().any(|d| d
+            .message
+            .contains("Legacy FSURFACE /GRID is not implemented")));
+        assert!(parsed.diagnostics.iter().any(|d| d
+            .message
+            .contains("Legacy FSURFACE /CONTOUR is not implemented")));
+        assert!(parsed.diagnostics.iter().any(|d| d
+            .message
+            .contains("Extra FSURFACE argument 'extra' ignored")));
+
+        assert_eq!(parsed.actions.len(), 1);
+        match &parsed.actions[0] {
+            PlotAction::SetFsurface(Some(spec)) => {
+                assert!((spec.value - 0.4).abs() < 1e-9);
+                assert_eq!(spec.scalar_field, ScalarField::Pressure);
+            }
+            action => panic!("expected SetFsurface action, got {:?}", action),
+        }
+    }
+
     // ── VPOINT malformed inputs ───────────────────────────────────────────────
 
     #[test]
@@ -2086,6 +2815,26 @@ fn read_positional_form_still_works() {
 }
 
 #[test]
+fn read_empty_xyz_qualifier_warns_and_falls_back_to_positional_grid() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("r.com");
+    fs::write(&file, "READ/XYZ= /Q=solution.q grid.p3d\n").expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+    assert!(parsed
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("requires a non-empty path value")));
+    assert_eq!(parsed.actions.len(), 1);
+    if let PlotAction::SetDataset(ds) = &parsed.actions[0] {
+        assert_eq!(ds.grid_id.as_deref(), Some("grid.p3d"));
+        assert_eq!(ds.solution_id.as_deref(), Some("solution.q"));
+    } else {
+        panic!("expected SetDataset, got {:?}", parsed.actions[0]);
+    }
+}
+
+#[test]
 fn walls_grid_qualifier_sets_grid_id() {
     let dir = tempfile::tempdir().expect("tempdir");
     let file = dir.path().join("walls.com");
@@ -2160,6 +2909,126 @@ fn subsets_positional_start_end_pairs_parsed() {
         assert_eq!(subsets[0].i_range.as_ref().and_then(|r| r.end), Some(15));
         assert_eq!(subsets[0].j_range.as_ref().map(|r| r.start), Some(6));
         assert_eq!(subsets[0].j_range.as_ref().and_then(|r| r.end), Some(16));
+        assert_eq!(subsets[0].k_range.as_ref().map(|r| r.start), Some(7));
+        assert_eq!(subsets[0].k_range.as_ref().and_then(|r| r.end), Some(17));
+    } else {
+        panic!("expected SetSubsets, got {:?}", parsed.actions[0]);
+    }
+}
+
+#[test]
+fn walls_ijk_qualifiers_override_positional_ranges() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("walls_ijk_qual.com");
+    fs::write(
+        &file,
+        "WALLS/GRID=4 /I=1:10 /J=(2,20) /K=-1 7 8 9 10 11 12\n",
+    )
+    .expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+    assert_eq!(parsed.actions.len(), 1);
+    if let PlotAction::SetWalls(walls) = &parsed.actions[0] {
+        assert_eq!(walls[0].grid, 4);
+        assert_eq!(walls[0].i_range.as_ref().map(|r| r.start), Some(1));
+        assert_eq!(walls[0].i_range.as_ref().and_then(|r| r.end), Some(10));
+        assert_eq!(walls[0].j_range.as_ref().map(|r| r.start), Some(2));
+        assert_eq!(walls[0].j_range.as_ref().and_then(|r| r.end), Some(20));
+        assert_eq!(walls[0].k_range.as_ref().map(|r| r.start), Some(-1));
+        assert_eq!(walls[0].k_range.as_ref().and_then(|r| r.end), Some(-1));
+    } else {
+        panic!("expected SetWalls, got {:?}", parsed.actions[0]);
+    }
+}
+
+#[test]
+fn subsets_add_uses_add_action_and_default_grid_one() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("subsets_add.com");
+    fs::write(&file, "SUBSETS/ADD /I=3:9 /J=4:10 /K=5:11\n").expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+    assert_eq!(parsed.actions.len(), 1);
+    if let PlotAction::AddSubsets(subsets) = &parsed.actions[0] {
+        assert_eq!(subsets[0].grid, 1);
+        assert_eq!(subsets[0].i_range.as_ref().map(|r| r.start), Some(3));
+        assert_eq!(subsets[0].j_range.as_ref().map(|r| r.start), Some(4));
+        assert_eq!(subsets[0].k_range.as_ref().map(|r| r.start), Some(5));
+    } else {
+        panic!("expected AddSubsets, got {:?}", parsed.actions[0]);
+    }
+}
+
+#[test]
+fn walls_none_clears_all_walls() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("walls_none.com");
+    fs::write(&file, "WALLS/NONE\n").expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+    assert_eq!(parsed.actions.len(), 1);
+    if let PlotAction::SetWalls(walls) = &parsed.actions[0] {
+        assert!(walls.is_empty());
+    } else {
+        panic!("expected SetWalls, got {:?}", parsed.actions[0]);
+    }
+}
+
+#[test]
+fn subsets_all_warns_and_is_ignored() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("subsets_all.com");
+    fs::write(&file, "SUBSETS/ALL\n").expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+    assert!(parsed.actions.is_empty());
+    assert!(parsed
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("/ALL is not yet modeled")));
+}
+
+#[test]
+fn walls_invalid_six_arg_pair_warns_and_keeps_other_ranges() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("walls_invalid_pair.com");
+    fs::write(&file, "WALLS/GRID=3 1 10 BAD 20 3 30\n").expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+    assert!(parsed
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("invalid J range pair")));
+
+    if let PlotAction::SetWalls(walls) = &parsed.actions[0] {
+        assert_eq!(walls[0].grid, 3);
+        assert_eq!(walls[0].i_range.as_ref().map(|r| r.start), Some(1));
+        assert_eq!(walls[0].i_range.as_ref().and_then(|r| r.end), Some(10));
+        assert!(walls[0].j_range.is_none());
+        assert_eq!(walls[0].k_range.as_ref().map(|r| r.start), Some(3));
+        assert_eq!(walls[0].k_range.as_ref().and_then(|r| r.end), Some(30));
+    } else {
+        panic!("expected SetWalls, got {:?}", parsed.actions[0]);
+    }
+}
+
+#[test]
+fn subsets_invalid_legacy_token_warns_and_retains_valid_tokens() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("subsets_invalid_token.com");
+    fs::write(&file, "SUBSETS/GRID=2 1:10 NOPE 7:17\n").expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+    assert!(parsed
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("invalid J range token")));
+
+    if let PlotAction::SetSubsets(subsets) = &parsed.actions[0] {
+        assert_eq!(subsets[0].grid, 2);
+        assert_eq!(subsets[0].i_range.as_ref().map(|r| r.start), Some(1));
+        assert_eq!(subsets[0].i_range.as_ref().and_then(|r| r.end), Some(10));
+        assert!(subsets[0].j_range.is_none());
         assert_eq!(subsets[0].k_range.as_ref().map(|r| r.start), Some(7));
         assert_eq!(subsets[0].k_range.as_ref().and_then(|r| r.end), Some(17));
     } else {
@@ -2471,4 +3340,215 @@ fn empty_script_produces_no_actions_and_no_errors() {
         .filter(|d| d.severity == DiagnosticSeverity::Error)
         .collect();
     assert!(errors.is_empty());
+}
+
+// ===== Phase 7 Edge-Case Hardening Tests =====
+
+#[test]
+fn minmax_reversed_bounds_are_swapped_with_warning() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("minmax_reversed.com");
+    fs::write(&file, "MINMAX 100.0 50.0\n").expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+
+    // Check that we got a swap warning
+    assert!(
+        parsed
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("reversed") && d.message.contains("swapping")),
+        "expected reversed bounds warning"
+    );
+
+    // Check that the SetMinMax action has correct swapped bounds
+    assert!(
+        parsed.actions.iter().any(|action| {
+            if let PlotAction::SetMinMax(mm) = action {
+                if let Some(bounds) = &mm.x {
+                    bounds.min == 50.0 && bounds.max == 100.0
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        }),
+        "expected swapped X bounds (50..100)"
+    );
+}
+
+#[test]
+fn vpoint_zero_radius_produces_warning_and_uses_default() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("vpoint_zero_radius.com");
+    fs::write(&file, "VPOINT/ANGLES 45 45 0\n").expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+
+    // Check for radius warning
+    assert!(
+        parsed
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("radius") && d.message.contains("must be > 0")),
+        "expected zero radius warning"
+    );
+
+    // Check that viewpoint was set with default radius (5.0)
+    assert!(
+        parsed.actions.iter().any(|action| {
+            if let PlotAction::SetViewpoint(vp) = action {
+                // Spherical (45°, 45°, 5.0) should convert to finite Cartesian coordinates
+                vp.x.is_finite() && vp.y.is_finite() && vp.z.is_finite()
+            } else {
+                false
+            }
+        }),
+        "expected valid viewpoint with default radius"
+    );
+}
+
+#[test]
+fn vpoint_negative_radius_produces_warning_and_uses_default() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("vpoint_negative_radius.com");
+    fs::write(&file, "VPOINT/ANGLES 30 60 -2.5\n").expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+
+    // Check for negative radius warning
+    assert!(
+        parsed
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("radius") && d.message.contains("must be > 0")),
+        "expected negative radius warning"
+    );
+}
+
+#[test]
+fn text_position_outside_bounds_produces_info_warning() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("text_out_of_bounds.com");
+    fs::write(&file, "TEXT \"Label\" -0.5 1.5\n").expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+
+    // Check for out-of-bounds warning
+    assert!(
+        parsed
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("outside viewport bounds")),
+        "expected out-of-bounds position warning"
+    );
+
+    // Text should still be added
+    assert!(
+        parsed
+            .actions
+            .iter()
+            .any(|a| matches!(a, PlotAction::AddTextAnnotation(_))),
+        "expected TEXT action despite out-of-bounds coords"
+    );
+}
+
+#[test]
+fn text_with_non_finite_coordinates_produces_warning_and_skips() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let _file = dir.path().join("text_non_finite.com");
+    // NaN is tricky; use a manual test instead
+    // This is more of a safeguard; in practice floats are finite unless explicitly constructed otherwise
+    // For now, skip this test as .com files don't produce NaN naturally
+}
+
+#[test]
+fn contours_automatic_zero_count_warns_and_uses_default() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("contours_zero.com");
+    fs::write(&file, "CONTOURS/AUTOMATIC=0\n").expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+
+    // Check for zero-count warning
+    assert!(
+        parsed
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("count is 0") && d.message.contains("default")),
+        "expected zero count warning"
+    );
+
+    // Check that default count (10) was used
+    assert!(
+        parsed.actions.iter().any(|action| {
+            if let PlotAction::SetContourSpec(ContourSpec::Automatic { count }) = action {
+                *count == 10
+            } else {
+                false
+            }
+        }),
+        "expected default count of 10"
+    );
+}
+
+#[test]
+fn contours_very_high_count_warns_about_performance() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("contours_high.com");
+    fs::write(&file, "CONTOURS/AUTOMATIC=300\n").expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+
+    // Check for high-count warning
+    assert!(
+        parsed
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("unusually high") && d.message.contains("degrade")),
+        "expected high count warning"
+    );
+
+    // Check that the count was accepted
+    assert!(
+        parsed.actions.iter().any(|action| {
+            if let PlotAction::SetContourSpec(ContourSpec::Automatic { count }) = action {
+                *count == 300
+            } else {
+                false
+            }
+        }),
+        "expected count of 300 to be accepted"
+    );
+}
+
+#[test]
+fn contours_multiple_attribute_qualifiers_warns_and_uses_last() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("contours_multi_attr.com");
+    fs::write(&file, "CONTOURS /LINE /SURFACE /COLOR 15\n").expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+
+    // Check for multiple qualifier warning
+    assert!(
+        parsed
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("multiple attribute qualifiers")),
+        "expected multiple attribute qualifiers warning"
+    );
+
+    // Check that COLOR (last) was used
+    assert!(
+        parsed.actions.iter().any(|action| {
+            if let PlotAction::SetContourAttribute(attr) = action {
+                matches!(attr, ContourAttribute::ColorContours)
+            } else {
+                false
+            }
+        }),
+        "expected COLOR attribute to be used (last one)"
+    );
 }

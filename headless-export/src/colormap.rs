@@ -2,6 +2,39 @@
 ///
 /// Ported from `src/utils/colorMapping.ts` to produce the same color output
 /// as the in-app Three.js renderer when given the same normalized t ∈ [0, 1].
+use std::sync::atomic::{AtomicU8, Ordering};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColormapName {
+    Viridis,
+    Turbo,
+    Rainbow,
+    Hot,
+    Grayscale,
+}
+
+static ACTIVE_COLORMAP: AtomicU8 = AtomicU8::new(0);
+
+pub fn set_active(name: ColormapName) {
+    let v = match name {
+        ColormapName::Viridis => 0,
+        ColormapName::Turbo => 1,
+        ColormapName::Rainbow => 2,
+        ColormapName::Hot => 3,
+        ColormapName::Grayscale => 4,
+    };
+    ACTIVE_COLORMAP.store(v, Ordering::Relaxed);
+}
+
+pub fn active() -> ColormapName {
+    match ACTIVE_COLORMAP.load(Ordering::Relaxed) {
+        1 => ColormapName::Turbo,
+        2 => ColormapName::Rainbow,
+        3 => ColormapName::Hot,
+        4 => ColormapName::Grayscale,
+        _ => ColormapName::Viridis,
+    }
+}
 
 /// Linearly interpolate a lookup table at normalized t ∈ [0, 1].
 fn lerp_lut(lut: &[[f32; 3]], t: f32) -> [u8; 3] {
@@ -72,11 +105,7 @@ pub fn rainbow(t: f32) -> [u8; 3] {
     } else {
         ((t - 0.8) / 0.2, 0.0, 1.0)
     };
-    [
-        (r * 255.0) as u8,
-        (g * 255.0) as u8,
-        (b * 255.0) as u8,
-    ]
+    [(r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8]
 }
 
 pub fn hot(t: f32) -> [u8; 3] {
@@ -88,11 +117,7 @@ pub fn hot(t: f32) -> [u8; 3] {
     } else {
         (1.0, 1.0, (t - 0.66) / 0.34)
     };
-    [
-        (r * 255.0) as u8,
-        (g * 255.0) as u8,
-        (b * 255.0) as u8,
-    ]
+    [(r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8]
 }
 
 pub fn grayscale(t: f32) -> [u8; 3] {
@@ -102,7 +127,17 @@ pub fn grayscale(t: f32) -> [u8; 3] {
 
 /// Default colormap (viridis), matching the in-app default.
 pub fn apply(t: f32) -> [u8; 3] {
-    viridis(t)
+    apply_with(t, active())
+}
+
+pub fn apply_with(t: f32, cmap: ColormapName) -> [u8; 3] {
+    match cmap {
+        ColormapName::Viridis => viridis(t),
+        ColormapName::Turbo => turbo(t),
+        ColormapName::Rainbow => rainbow(t),
+        ColormapName::Hot => hot(t),
+        ColormapName::Grayscale => grayscale(t),
+    }
 }
 
 #[cfg(test)]

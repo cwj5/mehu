@@ -2,7 +2,31 @@
 
 Date: 2026-04-02
 Owner: Next implementation agent
-Status: Ready for execution
+Status: Completed (updated 2026-04-02)
+
+## Progress Snapshot (2026-04-04 Final)
+
+**All Phases 1-7+ Complete**
+
+Completed work:
+
+1. ✅ **Phase 1**: Legacy terminology baseline and glossary in place (`terminology_glossary.md`) and referenced by user-facing docs.
+2. ✅ **Phase 2**: Parser terminology/diagnostics alignment for legacy qualifier handling, including explicit warnings for deferred `CONTOURS/LINEAR`, `CONTOURS/CUBIC`, and `FSURFACE` qualifiers.
+3. ✅ **Phase 3**: Shared state/API boundary text is divergence-explicit for bounded-MVP `FSURFACE` behavior.
+4. ✅ **Phase 4**: Frontend terminology updated to legacy-facing labels for plot family (`SURFACE/CARPET/LINE`) and contour language.
+5. ✅ **Phase 5**: Documentation/parity artifacts harmonized for bounded-MVP `FSURFACE` wording (`README.md`, `capability_catalog.md`, `parity_matrix.json`, `tickets.md`).
+6. ✅ **Integration Testing**: Added comprehensive multi-command divergence warning coverage (4 fixtures, 3 new tests) verifying CONTOURS, FSURFACE, and VIEW deferred qualifiers surface in UI (all 29 integration tests passing).
+7. ✅ **Internal Consistency Audit**: Verified naming alignment across function_surface/ContourAttribute enums, variable naming (camelCase/snake_case), and legacy terminology mapping. No breaking issues found.
+8. ✅ **Phase 6 - Tests & CI Hardening**: Added 3 new regression tests validating:
+   - Deferred CONTOURS qualifiers (LINEAR, CUBIC, RANGE) produce clear diagnostics
+   - FSURFACE divergence messages use legacy terminology context (iso-level + FUNCTION)
+   - Multiple command divergences show consistent legacy terminology
+   - All 135 tests passing (132 base + 3 Phase 6)
+   - All parity gates verified (parity-matrix OK, backend 1/1, integration 32/32)
+
+Remaining optional work:
+
+None.
 
 ## Objective
 

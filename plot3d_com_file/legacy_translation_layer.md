@@ -251,7 +251,7 @@ The geometry data from the backend mesh-generation routine (`Plot3DGrid::to_mesh
 4. Overlay WALLS if present.
 
 **Scope Limitations (TKT-009):**
-- Full FSURFACE feature parity (scale factor, walls origin, mode controls) was delivered in TKT-008.
+- Full legacy FSURFACE feature parity (scale factor, walls origin, and mode controls) has not been delivered; current behavior remains the bounded MVP iso-level + FUNCTION model documented in [terminology_glossary.md](./terminology_glossary.md).
 - TKT-009 formalizes the underlying rendering distinction for future maintenance and new features.
 
 ---
@@ -324,7 +324,7 @@ GUI-managed subset slices can produce any of these configurations; the mesh orie
 
 **Legacy Behavior:** Behavior is unspecified in available documentation.
 
-**Mitigation:** Use the existing field colormap to shade the function-surface mesh; emit diagnostics if explicit contour lines are requested on a function-surface.
+**Mitigation:** Use the existing field colormap to shade the function-surface mesh; emit diagnostics if explicit contour semantics are requested while `PLOT/SURFACE (CARPET/LINE)` is active.
 
 **Rationale:** From TKT-007's documented philosophy, "function surfaces do not use contour semantics; they are explicit 3D plots."
 
@@ -374,7 +374,7 @@ GUI-managed subset slices can produce any of these configurations; the mesh orie
 
 **In-App Behavior:** The Three.js viewer can overlay contour lines or color bands on a function surface by sampling the scalar field at the mesh vertices.
 
-**Mitigation:** A warning message is emitted: `"Renderer: contour spec is ignored in Function Surface mode (filled MVP)"`. The surface is still rendered with full scalar-field coloring via the field colormap.
+**Mitigation:** A warning message is emitted: `"CONTOURS levels/attributes are ignored when PLOT/SURFACE (CARPET/LINE) is active (current MVP behavior)."` The surface is still rendered with full scalar-field coloring via the field colormap.
 
 **Scope Note:** Iso-contour overlay on function surfaces requires additional marching-squares logic operating in 3D screen space and is out of scope for TKT-011. It can be added as a follow-up increment.
 

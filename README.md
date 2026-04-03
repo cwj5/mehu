@@ -23,7 +23,7 @@ A modern, cross-platform application for visualizing CFD (Computational Fluid Dy
 
 ## PLOT3D .com Parity Scope
 
-Source of truth: [plot3d_com_file/parity_matrix.json](plot3d_com_file/parity_matrix.json) (lastUpdated: `2026-03-29`).
+Source of truth: [plot3d_com_file/parity_matrix.json](plot3d_com_file/parity_matrix.json) (lastUpdated: `2026-04-04`).
 
 Current capability status snapshot:
 
@@ -38,7 +38,7 @@ Current capability status snapshot:
 | PLOT | supported | TKT-005 | Shared commit-boundary RenderIntent behavior implemented across script and GUI flows |
 | WALLS | supported | TKT-008 | Range-based WALLS state model and GUI controls implemented |
 | SUBSETS | supported | TKT-008 | Range-based SUBSETS state model and GUI controls implemented |
-| FSURFACE | supported | TKT-008 | FSURFACE controls and execution semantics implemented (bounded MVP behavior documented) |
+| FSURFACE | supported | TKT-008 | Bounded-MVP FSURFACE semantics implemented (iso-level + FUNCTION scalar field) |
 | TEXT | supported | TKT-008 | Plot text state and GUI controls implemented |
 | SHOW | supported | TKT-008 | SHOW status output and GUI display implemented |
 
@@ -55,6 +55,7 @@ Commands currently out of scope:
 
 ## Known Limitations and Deviations
 
+- Preferred legacy terms and approved internal aliases are documented in [plot3d_com_file/terminology_glossary.md](plot3d_com_file/terminology_glossary.md).
 - User-facing labels for in-scope commands follow legacy PLOT3D terminology (`CONTOUR`, `SURFACE/CARPET/LINE`, `CONTOURS` attributes and level modes).
 - `FSURFACE` wording is preserved as a legacy command name, but current behavior is a bounded MVP that stores an iso-level plus scalar field rather than full legacy FSURFACE axis-property controls.
 - Known legacy-to-modern rendering translation behavior and deviations are tracked in [plot3d_com_file/legacy_translation_layer.md](plot3d_com_file/legacy_translation_layer.md).

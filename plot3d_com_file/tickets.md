@@ -522,6 +522,8 @@ Current verification baseline (as of 2026-03-17):
 
 Completed: 2026-03-20. Added GUI parity controls for range-based `SUBSETS` and `WALLS` (including compact row rendering, edit/remove actions, and full-range `:` semantics backed by explicit full-span normalization), `FSURFACE` controls with immediate enable/disable apply behavior, `TEXT` annotation add/clear controls with sidebar-fit layout fixes, and a `SHOW` status panel with refresh output. Backend Tauri commands added and wired in `src-tauri/src/lib.rs` for `set_plot_walls`, `set_plot_fsurface`, `add_plot_text_annotation`, `clear_plot_text_annotations`, and `show_plot_status`; frontend integration and state synchronization added in `src/App.tsx`; existing integration tests updated for expanded `PlotState` shape and selector disambiguation.
 
+Bounded-MVP note: TKT-008 delivered interactive parity for the current FSURFACE model (iso-level + FUNCTION scalar field selection). Full legacy FSURFACE axis-property semantics (`/SCALE_FACTOR`, `/WALLS_ORIGIN`, `/GRID`, `/CONTOUR`) remain documented divergence and are not claimed as implemented here.
+
 Current verification baseline (as of 2026-03-20):
 
 1. `cargo test plot_state` passes in `src-tauri`.
@@ -538,6 +540,7 @@ Scope:
 1. Design a richer range-based selection model for `SUBSETS` and `WALLS`.
 2. Update or replace current index-slice controls so they align with that model.
 3. Add `FSURFACE` controls beyond the bounded MVP separation delivered in TKT-007, including scale factor, walls origin, and any needed mode controls.
+   - Status update: only the bounded-MVP FSURFACE controls were delivered in TKT-008; legacy axis-property qualifiers remain out of scope and divergence-documented.
 4. Add plot-text controls.
 5. Add a `SHOW` status view.
 

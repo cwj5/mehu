@@ -371,7 +371,11 @@ pub struct GridSubset {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FsurfaceSpec {
-    /// Absolute scalar value at which the iso-surface is drawn.
+    /// Current bounded-MVP FSURFACE representation.
+    ///
+    /// This stores an absolute iso-level plus FUNCTION (scalar field) selection,
+    /// not the full legacy FSURFACE axis-property controls such as
+    /// SCALE_FACTOR, WALLS_ORIGIN, or GRID/CONTOUR behavior.
     pub value: f64,
     pub scalar_field: ScalarField,
 }
@@ -555,7 +559,7 @@ pub enum PlotAction {
     // SUBSETS/ADD: append entries to the existing subsets list.
     AddSubsets(Vec<GridSubset>),
 
-    // FSURFACE: set or clear the iso-surface spec.
+    // FSURFACE: set or clear the bounded-MVP iso-level + FUNCTION spec.
     SetFsurface(Option<FsurfaceSpec>),
 
     // TEXT: append a text annotation.

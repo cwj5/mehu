@@ -166,6 +166,6 @@
         }
     ],
     "show_output": [
-        "SHOW: field=Pressure, family=Contour, axis_view=Custom, plot_up=None, text_annotations=1, walls=1, subsets=1"
+        "SHOW: field=Pressure, family=CONTOUR, axis_view=Custom, plot_up=None, text_annotations=1, walls=1, subsets=1"
     ]
 }

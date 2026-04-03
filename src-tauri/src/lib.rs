@@ -3270,7 +3270,8 @@ fn set_plot_walls(walls: Vec<plot_state::GridSubset>) -> Result<ApplyActionResul
     apply_plot_action(PlotAction::SetWalls(resolved))
 }
 
-/// Convenience command: set or clear FSURFACE specification.
+/// Convenience command: set or clear the bounded-MVP FSURFACE
+/// specification (iso-level + FUNCTION scalar field).
 #[tauri::command]
 fn set_plot_fsurface(
     fsurface: Option<plot_state::FsurfaceSpec>,
@@ -3305,10 +3306,15 @@ fn show_plot_status() -> Result<ShowStatusResult, String> {
         .map_err(|e| format!("Failed to lock plot state: {e}"))?;
     let current = guard.clone();
     let (state, diagnostics) = apply_action(current, PlotAction::ShowStatus);
+    let family = match state.plot_family {
+        plot_state::PlotFamily::Contour => "CONTOUR",
+        plot_state::PlotFamily::FunctionSurface => "SURFACE/CARPET/LINE",
+    };
+
     let status = format!(
-        "SHOW: field={:?}, family={:?}, axis_view={:?}, text_annotations={}, walls={}, subsets={}",
+        "SHOW: field={:?}, family={}, axis_view={:?}, text_annotations={}, walls={}, subsets={}",
         state.scalar_field,
-        state.plot_family,
+        family,
         state.axis_view,
         state.text_annotations.len(),
         state.walls.len(),
