@@ -1396,6 +1396,66 @@ describe('Cross-path parity (TKT-012C)', () => {
         expect(guiCommitStates).toEqual(scriptIntentStates);
         expect(currentState).toEqual(scriptResult.final_state);
     });
+
+    // Phase 6: Regression coverage for legacy terminology
+    it('regression: deferred CONTOURS and FSURFACE qualifiers produce warnings', async () => {
+        render(<App />);
+
+        const showCommandSidebarButton = await screen.findByRole('button', { name: 'Show Command Sidebar' });
+        fireEvent.click(showCommandSidebarButton);
+
+        const comPathInput = await screen.findByPlaceholderText('/absolute/path/to/script.com');
+        fireEvent.change(comPathInput, { target: { value: '/tmp/command-divergences-contours.com' } });
+
+        const executeComButton = await screen.findByRole('button', { name: 'Execute .com File' });
+        fireEvent.click(executeComButton);
+
+        // Verify deferred qualifier diagnostics appear with legacy terminology
+        await waitFor(() => {
+            expect(screen.getByText(/CONTOURS.*LINEAR/)).toBeTruthy();
+            expect(screen.getByText(/CONTOURS.*CUBIC/)).toBeTruthy();
+            expect(screen.getByText(/CONTOURS.*RANGE/)).toBeTruthy();
+        });
+    });
+
+    it('regression: FSURFACE divergence message uses legacy terminology context', async () => {
+        render(<App />);
+
+        const showCommandSidebarButton = await screen.findByRole('button', { name: 'Show Command Sidebar' });
+        fireEvent.click(showCommandSidebarButton);
+
+        const comPathInput = await screen.findByPlaceholderText('/absolute/path/to/script.com');
+        fireEvent.change(comPathInput, { target: { value: '/tmp/tkt-012c-function-surface.com' } });
+
+        const executeComButton = await screen.findByRole('button', { name: 'Execute .com File' });
+        fireEvent.click(executeComButton);
+
+        // Verify FSURFACE divergence message with legacy context
+        await waitFor(() => {
+            expect(screen.getByText(/FSURFACE.*GRID.*not implemented/i)).toBeTruthy();
+            expect(screen.getByText(/iso-level.*FUNCTION.*scalar field/i)).toBeTruthy();
+        });
+    });
+
+    it('regression: multiple command divergences show legacy terminology consistently', async () => {
+        render(<App />);
+
+        const showCommandSidebarButton = await screen.findByRole('button', { name: 'Show Command Sidebar' });
+        fireEvent.click(showCommandSidebarButton);
+
+        const comPathInput = await screen.findByPlaceholderText('/absolute/path/to/script.com');
+        fireEvent.change(comPathInput, { target: { value: '/tmp/command-divergences-all.com' } });
+
+        const executeComButton = await screen.findByRole('button', { name: 'Execute .com File' });
+        fireEvent.click(executeComButton);
+
+        // Verify all deferred qualifiers show with consistent legacy terminology
+        await waitFor(() => {
+            expect(screen.getByText(/CONTOURS.*LINEAR/)).toBeTruthy();
+            expect(screen.getByText(/FSURFACE.*SCALE_FACTOR/)).toBeTruthy();
+            expect(screen.getByText(/VIEW.*FROM/)).toBeTruthy();
+        });
+    });
 });
 
 // ──────────────────────────────────────────────────────────────────────────────
