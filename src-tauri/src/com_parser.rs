@@ -625,6 +625,36 @@ fn parse_contours(args: &[String], file: &Path, line: u32, out: &mut ParsedScrip
             "CONTOURS/CUBIC is not implemented; using LINEAR interpolation.",
         ));
     }
+    if qualifier_values.contains_key("RANGE") {
+        out.diagnostics.push(diagnostic(
+            cap::CONTOURS,
+            DiagnosticSeverity::Warning,
+            Some(file.to_string_lossy().to_string()),
+            Some(line),
+            Some(1),
+            "CONTOURS/RANGE is not implemented in parser execution; using the active contour-level mode only.",
+        ));
+    }
+    if qualifier_values.contains_key("ATTRIBUTES") {
+        out.diagnostics.push(diagnostic(
+            cap::CONTOURS,
+            DiagnosticSeverity::Warning,
+            Some(file.to_string_lossy().to_string()),
+            Some(line),
+            Some(1),
+            "CONTOURS/ATTRIBUTES has no parser-side effect; contour attribute rendering is controlled by explicit CONTOURS attribute qualifiers.",
+        ));
+    }
+    if qualifier_values.contains_key("NOATTRIBUTES") {
+        out.diagnostics.push(diagnostic(
+            cap::CONTOURS,
+            DiagnosticSeverity::Warning,
+            Some(file.to_string_lossy().to_string()),
+            Some(line),
+            Some(1),
+            "CONTOURS/NOATTRIBUTES has no parser-side effect in the current implementation.",
+        ));
+    }
 
     // Warn about truly unknown qualifiers for all contour modes.
     for qualifier in qualifier_values.keys() {
@@ -1715,6 +1745,60 @@ mod tests {
     }
 
     #[test]
+    fn contours_range_qualifier_warns_but_keeps_automatic_mode() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("c.com");
+        fs::write(&file, "CONTOURS/RANGE 7\n").expect("write");
+
+        let parsed = parse_com_file(&file).expect("parse");
+
+        assert!(parsed.diagnostics.iter().any(|d| d
+            .message
+            .contains("CONTOURS/RANGE is not implemented in parser execution")));
+        assert_eq!(parsed.actions.len(), 1);
+        assert_eq!(
+            parsed.actions[0],
+            PlotAction::SetContourSpec(ContourSpec::Automatic { count: 7 })
+        );
+    }
+
+    #[test]
+    fn contours_attributes_qualifier_warns_without_changing_action() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("c.com");
+        fs::write(&file, "CONTOURS/ATTRIBUTES 7\n").expect("write");
+
+        let parsed = parse_com_file(&file).expect("parse");
+
+        assert!(parsed.diagnostics.iter().any(|d| d
+            .message
+            .contains("CONTOURS/ATTRIBUTES has no parser-side effect")));
+        assert_eq!(parsed.actions.len(), 1);
+        assert_eq!(
+            parsed.actions[0],
+            PlotAction::SetContourSpec(ContourSpec::Automatic { count: 7 })
+        );
+    }
+
+    #[test]
+    fn contours_noattributes_qualifier_warns_without_changing_action() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("c.com");
+        fs::write(&file, "CONTOURS/NOATTRIBUTES 7\n").expect("write");
+
+        let parsed = parse_com_file(&file).expect("parse");
+
+        assert!(parsed.diagnostics.iter().any(|d| d
+            .message
+            .contains("CONTOURS/NOATTRIBUTES has no parser-side effect")));
+        assert_eq!(parsed.actions.len(), 1);
+        assert_eq!(
+            parsed.actions[0],
+            PlotAction::SetContourSpec(ContourSpec::Automatic { count: 7 })
+        );
+    }
+
+    #[test]
     fn fsurface_legacy_walls_origin_qualifier_emits_divergence_warning() {
         let dir = tempfile::tempdir().expect("tempdir");
         let file = dir.path().join("fs.com");
@@ -1739,9 +1823,10 @@ mod tests {
         assert!(parsed.diagnostics.iter().any(|d| d
             .message
             .contains("Legacy FSURFACE /SCALE_FACTOR is not implemented")));
-        assert!(parsed.diagnostics.iter().any(|d| d
-            .message
-            .contains("recognized but not implemented")));
+        assert!(parsed
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("recognized but not implemented")));
         assert_eq!(parsed.actions.len(), 1);
         match &parsed.actions[0] {
             PlotAction::SetFsurface(Some(spec)) => {
