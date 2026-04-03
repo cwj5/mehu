@@ -1,6 +1,6 @@
 {
     "schemaVersion": 1,
-    "lastUpdated": "2026-04-03",
+    "lastUpdated": "2026-04-04",
     "parityStates": [
         "supported",
         "script-only",
@@ -66,7 +66,7 @@
             "id": "FSURFACE",
             "status": "supported",
             "ticket": "TKT-008",
-            "notes": "FSURFACE controls and execution semantics are available in script and GUI paths with bounded MVP behavior documented. Legacy terminology alignment (2026-04-02) clarified divergence wording while preserving current MVP behavior, PR2 added explicit parser diagnostics when legacy FSURFACE axis-property qualifiers are used against the current iso-level + FUNCTION model, and PR6 follow-up hardened mixed-qualifier precedence and ignored-argument diagnostics for /NONE and /OFF clear-mode handling."
+            "notes": "FSURFACE controls and execution semantics are available in script and GUI paths with bounded MVP behavior documented. Legacy terminology alignment (2026-04-02) clarified divergence wording while preserving current MVP behavior, PR2 added explicit parser diagnostics when legacy FSURFACE axis-property qualifiers are used against the current iso-level + FUNCTION model, PR6 follow-up hardened mixed-qualifier precedence and ignored-argument diagnostics for /NONE and /OFF clear-mode handling, and capability-catalog wording now explicitly reflects the bounded-MVP FSURFACE scope."
         },
         {
             "id": "TEXT",

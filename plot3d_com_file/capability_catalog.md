@@ -1,6 +1,6 @@
 # PLOT3D Capability Catalog
 
-Last updated: 2026-03-12
+Last updated: 2026-04-03
 
 ## Purpose
 
@@ -37,7 +37,7 @@ Allowed status values:
 9. `SUBSETS`
    - Define active subset regions and related attributes.
 10. `FSURFACE`
-    - Configure function-surface behavior (scale/origin/mode).
+   - Configure bounded-MVP function-surface behavior (iso-level + FUNCTION scalar field).
 11. `TEXT`
     - Configure plot text lines.
 12. `SHOW`
