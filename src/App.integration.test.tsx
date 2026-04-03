@@ -648,9 +648,12 @@ describe('Cross-path parity (TKT-012C)', () => {
 
     const titleCaseFamily = (family: string) => {
         if (family === 'function_surface') {
-            return 'FunctionSurface';
+            return 'SURFACE/CARPET/LINE';
         }
-        return family.charAt(0).toUpperCase() + family.slice(1);
+        if (family === 'contour') {
+            return 'CONTOUR';
+        }
+        return family.toUpperCase();
     };
 
     const titleCaseAxisView = (axisView: string) => {
@@ -1256,7 +1259,7 @@ describe('PNG export workflow (TKT-010)', () => {
                     intents: [
                         { state: { scalar_field: 'none', plot_family: 'contour' } },
                     ],
-                    show_output: ['SHOW: field=none, family=contour'],
+                    show_output: ['SHOW: field=none, family=CONTOUR'],
                     diagnostics: [],
                 };
             }

@@ -103,10 +103,15 @@ pub fn execute_parsed_script(
 }
 
 fn format_show_output(state: &PlotState) -> String {
+    let family = match state.plot_family {
+        crate::plot_state::PlotFamily::Contour => "CONTOUR",
+        crate::plot_state::PlotFamily::FunctionSurface => "SURFACE/CARPET/LINE",
+    };
+
     format!(
-        "SHOW: field={:?}, family={:?}, axis_view={:?}, plot_up={:?}, text_annotations={}, walls={}, subsets={}",
+        "SHOW: field={:?}, family={}, axis_view={:?}, plot_up={:?}, text_annotations={}, walls={}, subsets={}",
         state.scalar_field,
-        state.plot_family,
+        family,
         state.axis_view,
         state.plot_up,
         state.text_annotations.len(),
