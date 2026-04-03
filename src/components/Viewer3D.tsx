@@ -641,7 +641,7 @@ function MeshRenderer({
     );
 }
 
-// Iso-surface renderer — double-sided with optional transparency.
+// Iso-surface renderer — current implementation detail for SURFACE-style contours.
 function IsoSurfaceRenderer({ meshGeometry, color, opacity = 1.0 }: {
     meshGeometry: MeshGeometry;
     color: string;
@@ -744,10 +744,10 @@ export default function Viewer3D({
 
     const renderNotice = useMemo(() => {
         if (!isContourPlotFamily && contourSpecMode !== 'none') {
-            return 'Contour levels/attributes are ignored in Function Surface mode (MVP behavior).';
+            return 'CONTOURS levels/attributes are ignored when PLOT/SURFACE (CARPET/LINE) is active (current MVP behavior).';
         }
         if (isContourPlotFamily && (contourAttribute === 'grid' || contourAttribute === 'dots')) {
-            return `${contourAttribute.toUpperCase()} contour attribute is not fully implemented yet; rendering line contours as a first-pass fallback.`;
+            return `${contourAttribute.toUpperCase()} CONTOURS attribute is not fully implemented yet; rendering LINE contours as a first-pass fallback.`;
         }
         return null;
     }, [contourAttribute, contourSpecMode, isContourPlotFamily]);
@@ -1809,7 +1809,7 @@ export default function Viewer3D({
                         );
                     })}
 
-                {/* Render iso-surfaces (surface-based contour attributes) */}
+                {/* Render iso-surfaces (SURFACE and COLOR CONTOURS attributes) */}
                 {isContourPlotFamily && (contourAttribute === 'surface' || contourAttribute === 'color_contours') &&
                     Object.entries(isoSurfaceGeometries).map(([id, iso]) => (
                         <group key={`iso::${id}`}>
@@ -1818,7 +1818,7 @@ export default function Viewer3D({
                     ))
                 }
 
-                {/* Render contour lines (line attribute, or grid/dots as first-pass fallback) */}
+                {/* Render contour lines (LINE attribute, or GRID/DOTS as first-pass fallback) */}
                 {isContourPlotFamily && (contourAttribute === 'line' || contourAttribute === 'grid' || contourAttribute === 'dots') &&
                     mergedContourLinesByColor.map((contour, idx) => (
                         <group key={`contour-color::${contour.color}::${idx}`}>
