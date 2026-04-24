@@ -23,7 +23,10 @@ This document outlines the future development work needed to create a full-featu
 
 **Logging in Tauri**
 - `console.log` isn’t visible in Tauri app logs. Use the shared logger so diagnostics show up in log export.
-
+**IBLANK Filtering UI (March 2026)**
+- IBLANK filtering is applied at mesh geometry generation, not at the grid cache level (cache is unchanged).
+- When `Ignore IBLANK` is ON (`respectIblank=false`), the `Show Fringe Points` toggle is disabled (greyed out) — this prevents invalid flag combinations that would hide fringe points when blanking is ignored.
+- Backend applies a safety normalization to prevent invalid flag combinations even if the frontend state diverges.
 **Performance Optimizations (v0.2.1 - February 2026)**
 - Automatic mesh decimation: Grids >250 nodes get 2-4x decimation for faster rendering
 - Parallel normal computation using rayon reduces mesh generation time by ~50-70%
