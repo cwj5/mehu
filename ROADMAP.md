@@ -150,8 +150,9 @@ This document outlines the future development work needed to create a full-featu
   - [ ] Arrow glyphs
   - [ ] Streamlines
   - [ ] Particle traces
-- [ ] Contour lines on surfaces
-- [ ] Iso-surfaces for 3D scalar fields
+- [x] Contour lines on surfaces (AUTOMATIC/INCREMENT/MANUAL/NONE modes; absolute physical values per ADR-0004)
+  - [x] Contour level tick marks overlaid on ColorLegend bar (resolved absolute values, normalized to field range)
+- [x] Iso-surfaces for 3D scalar fields (marching cubes; multi-level; opacity control)
 
 ### 2.3 Advanced Visualization Features
 - [x] Cross-sectional slicing (I, J, K planes)
@@ -288,7 +289,7 @@ Research and implement PLOT3D's 74 built-in functions:
 - [x] Unit tests for solution data computation (Rust + TypeScript)
 - [x] Test framework setup (Vitest + Rust test harness)
 - [ ] Integration tests for file I/O
-- [ ] Visual regression tests for rendering
+- [x] Visual regression tests for rendering (headless PNG exporter with SHA-256 + semantic drift checks; contour AUTOMATIC/INCREMENT/MANUAL fixture coverage)
 - [ ] Performance benchmarks
 - [ ] Test with real CFD datasets (larger variety needed)
 - [ ] Cross-platform testing (Linux, Windows, macOS)

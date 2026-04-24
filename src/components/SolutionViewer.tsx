@@ -12,6 +12,12 @@ interface SolutionViewerProps {
     selectedColorScheme?: ColorScheme;
     onScalarFieldChange?: (field: ScalarField) => void;
     onColorSchemeChange?: (scheme: ColorScheme) => void;
+    /** Resolved absolute contour levels to show as tick marks on the color legend. */
+    contourLevels?: number[];
+    /** Field min corresponding to the contour levels. */
+    contourFieldMin?: number;
+    /** Field max corresponding to the contour levels. */
+    contourFieldMax?: number;
 }
 
 export function SolutionViewer({
@@ -20,6 +26,9 @@ export function SolutionViewer({
     selectedColorScheme: controlledColorScheme,
     onScalarFieldChange,
     onColorSchemeChange,
+    contourLevels,
+    contourFieldMin,
+    contourFieldMax,
 }: SolutionViewerProps) {
     const [localSelectedField, setLocalSelectedField] = useState<ScalarField>('none');
     const [localColorScheme, setLocalColorScheme] = useState<ColorScheme>('viridis');
@@ -271,6 +280,9 @@ export function SolutionViewer({
                         orientation="horizontal"
                         numTicks={5}
                         label={SCALAR_FIELDS.find(f => f.field === localSelectedField)?.name}
+                        contourLevels={contourLevels}
+                        fieldMin={contourFieldMin}
+                        fieldMax={contourFieldMax}
                     />
 
                     <div style={{

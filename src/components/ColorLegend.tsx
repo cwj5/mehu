@@ -10,6 +10,12 @@ interface ColorLegendProps {
     numTicks?: number;
     numGradientStops?: number;
     label?: string;
+    /** Resolved absolute contour levels to overlay on the gradient bar. */
+    contourLevels?: number[];
+    /** Field minimum corresponding to the contour levels (defaults to `min`). */
+    fieldMin?: number;
+    /** Field maximum corresponding to the contour levels (defaults to `max`). */
+    fieldMax?: number;
 }
 
 /**
@@ -24,6 +30,9 @@ export function ColorLegend({
     numTicks = 5,
     numGradientStops = 64,
     label,
+    contourLevels,
+    fieldMin,
+    fieldMax,
 }: ColorLegendProps) {
     // Generate gradient stops
     const gradientStops = Array.from({ length: numGradientStops }, (_, i) => {
@@ -45,6 +54,16 @@ export function ColorLegend({
         };
     });
 
+    // Compute contour level tick positions as percentages along the bar.
+    const fMin = fieldMin ?? min;
+    const fMax = fieldMax ?? max;
+    const fSpan = fMax - fMin;
+    const contourTicks = (contourLevels && contourLevels.length > 0 && fSpan > 0)
+        ? contourLevels
+            .map(level => ({ level, position: ((level - fMin) / fSpan) * 100 }))
+            .filter(({ position }) => position >= 0 && position <= 100)
+        : [];
+
     const isVertical = orientation === 'vertical';
     const gradientDirection = isVertical ? 'to top' : 'to right';
 
@@ -63,7 +82,19 @@ export function ColorLegend({
                     style={{
                         background: `linear-gradient(${gradientDirection}, ${gradientStops.join(', ')})`,
                     }}
-                />
+                >
+                    {/* Contour level tick marks overlaid on the gradient bar */}
+                    {contourTicks.map(({ level, position }) => (
+                        <div
+                            key={level}
+                            className="color-legend-contour-tick"
+                            style={{
+                                [isVertical ? 'bottom' : 'left']: `${position}%`,
+                            }}
+                            title={formatValue(level)}
+                        />
+                    ))}
+                </div>
 
                 {/* Tick marks and labels */}
                 <div className="color-legend-ticks">

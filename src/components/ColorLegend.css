@@ -111,9 +111,31 @@
 
 /* Hover effects */
 .color-legend-gradient {
+    position: relative;
     transition: border-color 0.2s ease;
 }
 
 .color-legend-gradient:hover {
     border-color: #4b5563;
+}
+
+/* Contour level tick marks overlaid on the gradient bar */
+.color-legend-contour-tick {
+    position: absolute;
+    background: rgba(255, 255, 255, 0.9);
+    pointer-events: none;
+}
+
+.color-legend.horizontal .color-legend-contour-tick {
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    transform: translateX(-50%);
+}
+
+.color-legend.vertical .color-legend-contour-tick {
+    left: 0;
+    right: 0;
+    height: 2px;
+    transform: translateY(50%);
 }

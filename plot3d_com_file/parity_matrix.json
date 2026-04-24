@@ -1,6 +1,6 @@
 {
     "schemaVersion": 1,
-    "lastUpdated": "2026-04-02",
+    "lastUpdated": "2026-04-23",
     "parityStates": [
         "supported",
         "script-only",
@@ -42,7 +42,7 @@
             "id": "CONTOURS",
             "status": "supported",
             "ticket": "TKT-007",
-            "notes": "Absolute multi-level contour model (AUTOMATIC/INCREMENT/MANUAL) is implemented with deterministic renderer semantics; Phase B hardening added malformed tuple-arity coverage plus /INCREMENT precedence/default-fallback tests, with parser diagnostic consistency checks across contour modes and continued parser regression maintenance. Legacy terminology alignment (2026-04-02) updated user-facing CONTOURS wording, PR2 added explicit parser diagnostics for legacy /LINEAR and /CUBIC qualifier handling, and PR6 follow-up added explicit no-effect diagnostics for /RANGE and /(NO)ATTRIBUTES qualifiers."
+            "notes": "Absolute multi-level contour model (AUTOMATIC/INCREMENT/MANUAL) is implemented with deterministic renderer semantics; Phase B hardening added malformed tuple-arity coverage plus /INCREMENT precedence/default-fallback tests, with parser diagnostic consistency checks across contour modes and continued parser regression maintenance. Legacy terminology alignment (2026-04-02) updated user-facing CONTOURS wording, PR2 added explicit parser diagnostics for legacy /LINEAR and /CUBIC qualifier handling, and PR6 follow-up added explicit no-effect diagnostics for /RANGE and /(NO)ATTRIBUTES qualifiers. 2026-04-23: added ColorLegend contour level tick overlay (resolve_contour_levels IPC extended with field_min/field_max); added AUTOMATIC/INCREMENT/MANUAL headless regression fixtures; fixed marching squares zero-vertex edge case in renderer."
         },
         {
             "id": "PLOT",

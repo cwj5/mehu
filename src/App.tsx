@@ -447,6 +447,9 @@ const App = () => {
   const [contourLevel, setContourLevel] = useState(0);
   const [contourLevelDraft, setContourLevelDraft] = useState('0');
   const [isoSurfaceOpacity, setIsoSurfaceOpacity] = useState(1.0);
+  const [resolvedContourLevels, setResolvedContourLevels] = useState<number[]>([]);
+  const [contourFieldMin, setContourFieldMin] = useState(0);
+  const [contourFieldMax, setContourFieldMax] = useState(0);
   const [backendPlotState, setBackendPlotState] = useState<BackendPlotState | null>(null);
   const [backendDiagnostics, setBackendDiagnostics] = useState<BackendDiagnostic[]>([]);
   const [showCommandWindow, setShowCommandWindow] = useState(false);
@@ -1418,8 +1421,34 @@ const App = () => {
     }
   }, [backendPlotState, grids, gridSlices, sliceEnabled, subsetsDirty, manualSubsetDirty, manualWallsDirty]);
 
-  const dimensionsForGridNumber = (gridNumber: number) =>
-    grids.find((grid) => grid.gridIndex + 1 === gridNumber)?.dimensions;
+  // Resolve contour levels for the ColorLegend whenever plot state or grids change.
+  useEffect(() => {
+    const spec = backendPlotState?.contour_spec;
+    const refGrid = grids.find(g => g.solutionCacheId != null);
+    const hasSpec = spec && typeof spec === 'object' && 'mode' in (spec as object) &&
+      (spec as { mode: string }).mode !== 'none';
+
+    if (!refGrid || !hasSpec) {
+      setResolvedContourLevels([]);
+      setContourFieldMin(0);
+      setContourFieldMax(0);
+      return;
+    }
+
+    void (async () => {
+      try {
+        const result = await invoke<{ levels: number[]; field_min: number; field_max: number }>(
+          'resolve_contour_levels',
+          { solutionId: refGrid.solutionCacheId!, scalarField: backendPlotState!.scalar_field }
+        );
+        setResolvedContourLevels(result.levels);
+        setContourFieldMin(result.field_min);
+        setContourFieldMax(result.field_max);
+      } catch {
+        setResolvedContourLevels([]);
+      }
+    })();
+  }, [backendPlotState, grids]);
 
   // Callback from Viewer3D when its loading state changes.
   // Used by batch PNG export to wait for each render to settle.
@@ -1771,6 +1800,9 @@ const App = () => {
                       selectedColorScheme={currentColorScheme}
                       onScalarFieldChange={handleScalarFieldChange}
                       onColorSchemeChange={handleColorSchemeChange}
+                      contourLevels={resolvedContourLevels.length > 0 ? resolvedContourLevels : undefined}
+                      contourFieldMin={contourFieldMin}
+                      contourFieldMax={contourFieldMax}
                     />
                   </div>
                 )}

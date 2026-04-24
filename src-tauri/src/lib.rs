@@ -2381,6 +2381,10 @@ fn get_solution_field_range(solutionId: String, field: String) -> Result<FieldRa
 pub struct ContourLevelsResult {
     pub levels: Vec<f64>,
     pub diagnostics: Vec<plot_state::Diagnostic>,
+    /// Global scalar field minimum used to resolve the spec.
+    pub field_min: f64,
+    /// Global scalar field maximum used to resolve the spec.
+    pub field_max: f64,
 }
 
 /// Resolve the current contour specification to an ordered list of absolute
@@ -2409,6 +2413,8 @@ fn resolve_contour_levels(
         return Ok(ContourLevelsResult {
             levels: vec![],
             diagnostics: vec![],
+            field_min: 0.0,
+            field_max: 0.0,
         });
     }
 
@@ -2464,6 +2470,8 @@ fn resolve_contour_levels(
     Ok(ContourLevelsResult {
         levels,
         diagnostics,
+        field_min: min,
+        field_max: max,
     })
 }
 

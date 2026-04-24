@@ -90,5 +90,8 @@ check_case "synthetic_4x4x2_vpoint_plusx"
 check_case "synthetic_4x4x2_vpoint_plusx_surface"
 check_case "synthetic_1x4x4_surface"
 check_case "synthetic_4x1x4_surface"
+check_case "synthetic_4x4_contour_automatic"
+check_case "synthetic_4x4_contour_increment"
+check_case "synthetic_4x4_contour_manual"
 
 echo "Wrote semantic metrics summary to: $METRICS_FILE"
