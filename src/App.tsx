@@ -450,6 +450,10 @@ const App = () => {
   const [resolvedContourLevels, setResolvedContourLevels] = useState<number[]>([]);
   const [contourFieldMin, setContourFieldMin] = useState(0);
   const [contourFieldMax, setContourFieldMax] = useState(0);
+
+  const dimensionsForGridNumber = (gridNumber: number) =>
+    grids.find((grid) => grid.gridIndex + 1 === gridNumber)?.dimensions;
+
   const [backendPlotState, setBackendPlotState] = useState<BackendPlotState | null>(null);
   const [backendDiagnostics, setBackendDiagnostics] = useState<BackendDiagnostic[]>([]);
   const [showCommandWindow, setShowCommandWindow] = useState(false);

@@ -575,7 +575,7 @@ TKT-009 is complete when:
 - **Capability Catalog:** `plot3d_com_file/capability_catalog.md` (in-scope capabilities)
 - **Parity Matrix:** `plot3d_com_file/parity_matrix.json` (current implementation status)
 - **Surface Orientation Invariant:** `/memories/repo/plot3d-surface-orientation.md` (mesh generation invariants)
-- **TKT-007 Reference:** `plot3d_com_file/tickets.md` § TKT-007 (contour semantics and plot-family split)
+- **TKT-007 Reference:** `plot3d_com_file/parity_matrix.json` capability row `CONTOURS` (contour semantics and plot-family split)
 
 ---
 
