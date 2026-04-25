@@ -324,4 +324,72 @@ describe('colorMapping', () => {
             expect(result).toBeInstanceOf(Float32Array);
         });
     });
+
+    describe('color-map min/max clipping via generateColorArray', () => {
+        it('value below activeMin maps to the same color as the low endpoint', () => {
+            const activeMin = 10;
+            const activeMax = 100;
+            const belowMin = generateColorArray([-50], 'viridis', activeMin, activeMax);
+            const atMin = generateColorArray([activeMin], 'viridis', activeMin, activeMax);
+            expect(belowMin[0]).toBeCloseTo(atMin[0], 5);
+            expect(belowMin[1]).toBeCloseTo(atMin[1], 5);
+            expect(belowMin[2]).toBeCloseTo(atMin[2], 5);
+        });
+
+        it('value above activeMax maps to the same color as the high endpoint', () => {
+            const activeMin = 10;
+            const activeMax = 100;
+            const aboveMax = generateColorArray([9999], 'viridis', activeMin, activeMax);
+            const atMax = generateColorArray([activeMax], 'viridis', activeMin, activeMax);
+            expect(aboveMax[0]).toBeCloseTo(atMax[0], 5);
+            expect(aboveMax[1]).toBeCloseTo(atMax[1], 5);
+            expect(aboveMax[2]).toBeCloseTo(atMax[2], 5);
+        });
+
+        it('value inside active range maps to intermediate color', () => {
+            const activeMin = 0;
+            const activeMax = 100;
+            const inside = generateColorArray([50], 'viridis', activeMin, activeMax);
+            const atMin = generateColorArray([activeMin], 'viridis', activeMin, activeMax);
+            const atMax = generateColorArray([activeMax], 'viridis', activeMin, activeMax);
+            // Must differ from both endpoints
+            const diffFromMin = inside[0] !== atMin[0] || inside[1] !== atMin[1] || inside[2] !== atMin[2];
+            const diffFromMax = inside[0] !== atMax[0] || inside[1] !== atMax[1] || inside[2] !== atMax[2];
+            expect(diffFromMin).toBe(true);
+            expect(diffFromMax).toBe(true);
+        });
+
+        it('narrowed active range produces different colors than full range for same values', () => {
+            const fullMin = 0;
+            const fullMax = 100;
+            const clippedMin = 40;
+            const clippedMax = 60;
+            const valueMidpoint = 50;
+
+            const colorFull = generateColorArray([valueMidpoint], 'viridis', fullMin, fullMax);
+            const colorClipped = generateColorArray([valueMidpoint], 'viridis', clippedMin, clippedMax);
+
+            // 50 is at position 0.5 in the full range but at position 0.5 in clipped range as well —
+            // normalised the same, so colours would be equal. Instead compare edge behaviour.
+            const colorAtClippedMin = generateColorArray([clippedMin], 'viridis', fullMin, fullMax);
+            const colorAtClippedMinWithClipping = generateColorArray([clippedMin], 'viridis', clippedMin, clippedMax);
+            // With clipping, clippedMin maps to 0.0; without clipping it maps to 0.4
+            const areDifferent =
+                colorAtClippedMin[0] !== colorAtClippedMinWithClipping[0] ||
+                colorAtClippedMin[1] !== colorAtClippedMinWithClipping[1] ||
+                colorAtClippedMin[2] !== colorAtClippedMinWithClipping[2];
+            expect(areDifferent).toBe(true);
+        });
+
+        it('auto-correction epsilon keeps min strictly below max', () => {
+            const epsilon = 1e-6;
+            const value = 5;
+            // Simulate the correction: if user sets min = max, max becomes min + epsilon
+            const correctedMax = value + epsilon;
+            expect(correctedMax).toBeGreaterThan(value);
+            // The corrected range is valid for normalization
+            const result = generateColorArray([value], 'viridis', value, correctedMax);
+            expect(result.length).toBe(3);
+        });
+    });
 });

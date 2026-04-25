@@ -144,7 +144,8 @@ This document outlines the future development work needed to create a full-featu
   - [x] Color mapping to scalar values
   - [x] Configurable color schemes (rainbow, grayscale, viridis, turbo, hot)
   - [x] Color bar/legend display with dynamic scheme selection
-  - [ ] Value range adjustment (min/max clipping)
+  - [x] Value range adjustment (min/max clipping)
+    - Plan: `COLOR_MAP_MINMAX_CLIPPING_PLAN.md` (color-map-only scope, auto-correct invalid bounds, display actual range)
   - [ ] Display scalar values on hover (point probe)
 - [ ] Vector field visualization
   - [ ] Arrow glyphs
@@ -312,7 +313,7 @@ Research and implement PLOT3D's 74 built-in functions:
    - [x] Configurable color schemes (rainbow, grayscale, viridis, turbo, hot)
    - [x] Metadata parsing from PLOT3D solution files
    - [x] Color bar/legend UI component with dynamic scheme selection
-   - [ ] Allow value range adjustment (min/max clipping)
+   - [x] Allow value range adjustment (min/max clipping)
    - [ ] Display scalar values on hover (point probe)
 
 2. **Rendering Improvements** (Phase 2.1)

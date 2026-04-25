@@ -82,6 +82,9 @@ interface Viewer3DProps {
     cameraPlotUp?: CameraPlotUpAxis | null;
     onCameraCommit?: (vp: { x: number; y: number; z: number }) => void;
     onLoadingChange?: (isLoading: boolean) => void;
+    colorMapMin?: number | null;
+    colorMapMax?: number | null;
+    onActualRangeChange?: (min: number, max: number) => void;
 }
 
 function CameraViewpointSync({
@@ -723,7 +726,10 @@ export default function Viewer3D({
     cameraViewpoint,
     cameraPlotUp,
     onCameraCommit,
-    onLoadingChange
+    onLoadingChange,
+    colorMapMin,
+    colorMapMax,
+    onActualRangeChange,
 }: Viewer3DProps) {
     type IsoSurfaceGeometry = {
         mesh: MeshGeometry;
@@ -811,6 +817,7 @@ export default function Viewer3D({
 
     const lastColorKeyRef = useRef<string>('');
     const lastSliceKeyRef = useRef<string>('');
+    const lastReportedActualRangeRef = useRef<{ min: number; max: number } | null>(null);
     const requestIdRef = useRef(0);
     const isUserNavigatingRef = useRef(false);
     const controlsRef = useRef<any>(null);
@@ -933,7 +940,7 @@ export default function Viewer3D({
             return;
         }
 
-        const currentColorKey = `${scalarField}|${colorScheme}`;
+        const currentColorKey = `${scalarField}|${colorScheme}|${colorMapMin ?? ''}|${colorMapMax ?? ''}`;
         // Only include APPLIED slices in the slice key to avoid reprocessing while editing
         const sliceKey = `${sliceEnabled}|${ignoreIblank}|${showFringePoints}|${iblankFilterMode}|${subsetsContentKey}|${appliedSlicesKey}`;
         const shouldRecolor = lastColorKeyRef.current !== currentColorKey;
@@ -1103,6 +1110,15 @@ export default function Viewer3D({
                         const globalMin = Math.min(...ranges.map(r => r.min));
                         const globalMax = Math.max(...ranges.map(r => r.max));
                         displayedGlobalRange = { min: globalMin, max: globalMax };
+                        const isFiniteRange = Number.isFinite(globalMin) && Number.isFinite(globalMax);
+                        const lastReported = lastReportedActualRangeRef.current;
+                        const rangeChanged = !lastReported
+                            || lastReported.min !== globalMin
+                            || lastReported.max !== globalMax;
+                        if (isFiniteRange && rangeChanged) {
+                            lastReportedActualRangeRef.current = { min: globalMin, max: globalMax };
+                            onActualRangeChange?.(globalMin, globalMax);
+                        }
                         void invoke('frontend_log', {
                             message: `[Viewer3D][color-range] displayed-global field=${scalarField} normalize=[${globalMin}, ${globalMax}] solutions=${fieldRangeMap.size}`
                         });
@@ -1148,8 +1164,8 @@ export default function Viewer3D({
                                             respectIblank: !ignoreIblank,
                                             showFringePoints: showFringePoints,
                                             iblankFilterMode: iblankFilterMode,
-                                            globalMin: range?.min,
-                                            globalMax: range?.max,
+                                            globalMin: colorMapMin ?? range?.min,
+                                            globalMax: colorMapMax ?? range?.max,
                                         });
 
                                         const hasColors = mesh.colors && mesh.colors.length > 0;
@@ -1255,8 +1271,8 @@ export default function Viewer3D({
                                                 respectIblank: !ignoreIblank,
                                                 showFringePoints: showFringePoints,
                                                 iblankFilterMode: iblankFilterMode,
-                                                globalMin: range?.min,
-                                                globalMax: range?.max,
+                                                globalMin: colorMapMin ?? range?.min,
+                                                globalMax: colorMapMax ?? range?.max,
                                             });
                                         } catch (colorErr) {
                                             logger.error(`Solution coloring on subset failed: ${colorErr}`, 'Viewer3D');
@@ -1384,6 +1400,8 @@ export default function Viewer3D({
                         // No slicing - use the original grid (fallback path, shouldn't normally be reached)
                         if (gridItem.hasSolution && scalarField !== 'none' && gridItem.solutionCacheId) {
                             try {
+                                await fieldRangesPromise;
+                                const range = displayedGlobalRange ?? fieldRangeMap.get(gridItem.solutionCacheId);
                                 mesh = await invoke<MeshGeometry>('compute_solution_colors', {
                                     gridId: gridItem.gridCacheId!,
                                     solutionId: gridItem.solutionCacheId,
@@ -1392,6 +1410,8 @@ export default function Viewer3D({
                                     respectIblank: !ignoreIblank,
                                     showFringePoints: showFringePoints,
                                     iblankFilterMode: iblankFilterMode,
+                                    globalMin: colorMapMin ?? range?.min,
+                                    globalMax: colorMapMax ?? range?.max,
                                 });
                             } catch (invokeErr) {
                                 const invokeMsg = String(invokeErr);
@@ -1485,7 +1505,21 @@ export default function Viewer3D({
                 message: `[Viewer3D] effect cancelled ms=${Math.round(performance.now() - effectStart)}`
             });
         };
-    }, [grids, ignoreIblank, showFringePoints, iblankFilterMode, scalarField, colorScheme, sliceEnabled, subsetsContentKey, subsetsByGridId, appliedSlicesKey]);
+    }, [
+        grids,
+        ignoreIblank,
+        showFringePoints,
+        iblankFilterMode,
+        scalarField,
+        colorScheme,
+        colorMapMin,
+        colorMapMax,
+        onActualRangeChange,
+        sliceEnabled,
+        subsetsContentKey,
+        subsetsByGridId,
+        appliedSlicesKey,
+    ]);
     const visibleGrids = useMemo(
         () => getVisibleGridItems(grids, selectedGridIds, isolateSelected),
         [grids, isolateSelected, selectedGridIds]
@@ -1749,8 +1783,9 @@ export default function Viewer3D({
                         return null;
                     }
                     const dimmed = selectedGridIds.length > 0 && !selectedGridIds.includes(gridItem.id) && !isolateSelected;
-                    // Contour family uses neutral context geometry; function-surface keeps field coloring.
-                    const displayColor = isContourPlotFamily ? '#808080' : gridItem.color;
+                    // Keep neutral context geometry only when no scalar field is selected.
+                    const shouldForceSolidContext = isContourPlotFamily && scalarField === 'none';
+                    const displayColor = shouldForceSolidContext ? '#808080' : gridItem.color;
 
                     return (
                         <group key={gridItem.id}>
@@ -1760,7 +1795,7 @@ export default function Viewer3D({
                                     meshGeometry={mesh}
                                     color={displayColor}
                                     dimmed={dimmed}
-                                    forceSolidColor={isContourPlotFamily}
+                                    forceSolidColor={shouldForceSolidContext}
                                 />
                             )}
                             {/* Render wireframe */}
@@ -1769,7 +1804,7 @@ export default function Viewer3D({
                                     meshGeometry={mesh}
                                     color={displayColor}
                                     dimmed={dimmed}
-                                    forceSolidColor={isContourPlotFamily}
+                                    forceSolidColor={shouldForceSolidContext}
                                 />
                             )}
                         </group>
@@ -1785,8 +1820,8 @@ export default function Viewer3D({
                         return enabledArbitraryIds.has(sliceId);
                     })
                     .map(([id, mesh]) => {
-                        // Contour family uses neutral context geometry; function-surface keeps contrasty slice color.
-                        const sliceColor = isContourPlotFamily ? '#808080' : '#60a5fa';
+                        const shouldForceSolidContext = isContourPlotFamily && scalarField === 'none';
+                        const sliceColor = shouldForceSolidContext ? '#808080' : '#60a5fa';
                         return (
                             <group key={id}>
                                 {shadingMode === 'smooth' && (
@@ -1794,7 +1829,7 @@ export default function Viewer3D({
                                         meshGeometry={mesh}
                                         color={sliceColor}
                                         dimmed={false}
-                                        forceSolidColor={isContourPlotFamily}
+                                        forceSolidColor={shouldForceSolidContext}
                                     />
                                 )}
                                 {showWireframe && (
@@ -1802,7 +1837,7 @@ export default function Viewer3D({
                                         meshGeometry={mesh}
                                         color={sliceColor}
                                         dimmed={false}
-                                        forceSolidColor={isContourPlotFamily}
+                                        forceSolidColor={shouldForceSolidContext}
                                     />
                                 )}
                             </group>

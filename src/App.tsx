@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { useMemo, useState, useEffect, useRef } from "react";
+import { useMemo, useState, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Menu, MenuItem, Submenu, CheckMenuItem, PredefinedMenuItem } from "@tauri-apps/api/menu";
 import Viewer3D from "./components/Viewer3D";
@@ -467,6 +467,12 @@ const App = () => {
   const [textContentDraft, setTextContentDraft] = useState('');
   const [textXDraft, setTextXDraft] = useState('0.05');
   const [textYDraft, setTextYDraft] = useState('0.95');
+
+  // Color map clipping state
+  const [colorMapMin, setColorMapMin] = useState<number | null>(null);
+  const [colorMapMax, setColorMapMax] = useState<number | null>(null);
+  const [actualColorMapMin, setActualColorMapMin] = useState<number | null>(null);
+  const [actualColorMapMax, setActualColorMapMax] = useState<number | null>(null);
 
   // Export workflow state
   const [lastExecutionResult, setLastExecutionResult] = useState<ScriptExecutionResult | null>(null);
@@ -1454,6 +1460,11 @@ const App = () => {
     })();
   }, [backendPlotState, grids]);
 
+  const handleActualRangeChange = useCallback((min: number, max: number) => {
+    setActualColorMapMin((prev) => (prev === min ? prev : min));
+    setActualColorMapMax((prev) => (prev === max ? prev : max));
+  }, []);
+
   // Callback from Viewer3D when its loading state changes.
   // Used by batch PNG export to wait for each render to settle.
   const handleViewer3DLoadingChange = (isLoading: boolean) => {
@@ -1807,6 +1818,12 @@ const App = () => {
                       contourLevels={resolvedContourLevels.length > 0 ? resolvedContourLevels : undefined}
                       contourFieldMin={contourFieldMin}
                       contourFieldMax={contourFieldMax}
+                      colorMapMin={colorMapMin}
+                      colorMapMax={colorMapMax}
+                      actualMin={actualColorMapMin}
+                      actualMax={actualColorMapMax}
+                      onColorMapMinChange={setColorMapMin}
+                      onColorMapMaxChange={setColorMapMax}
                     />
                   </div>
                 )}
@@ -3009,6 +3026,9 @@ const App = () => {
               cameraPlotUp={backendPlotState?.plot_up ?? null}
               onCameraCommit={handleCameraCommit}
               onLoadingChange={handleViewer3DLoadingChange}
+              colorMapMin={colorMapMin}
+              colorMapMax={colorMapMax}
+              onActualRangeChange={handleActualRangeChange}
             />
           </div>
 
