@@ -195,6 +195,13 @@ Research and implement PLOT3D's 74 built-in functions:
   - [ ] Geometric calculations
 - [x] Implement function evaluation system in Rust
 - [x] Create UI for function selection and application
+- [x] Grid-diagnostic functions catalogued (FUNCTION 0–99): walls, grids, IBLANK holes, orphan points, tet/crossing checks
+- [x] Vector field functions catalogued (FUNCTION 200–299): velocity, vorticity, momentum, perturbation velocity, V×ω, pressure/density gradients
+- [x] Particle-trace functions catalogued (FUNCTION 300–399): particle traces, vortex lines
+- [x] Special overlay functions catalogued (FUNCTION 400+): shock locations by pressure gradient (plain + filtered)
+- [ ] Vector field rendering (arrow glyphs / streamlines)
+- [ ] Particle trace rendering
+- [ ] Special overlay rendering (shock surfaces)
 - [ ] Support custom user-defined functions
 
 ### 3.2 Data Processing
