@@ -1,4 +1,4 @@
-use crate::function_mapping::map_legacy_function_number;
+use crate::function_mapping::{map_function_number_to_action, map_legacy_function_number};
 use crate::plot_state::{
     cap, spherical_to_cartesian, AxisBounds, AxisView, ContourAttribute, ContourEntry, ContourSpec,
     DatasetRef, Diagnostic, DiagnosticSeverity, FsurfaceSpec, GridSubset, IndexRange,
@@ -269,15 +269,15 @@ fn parse_function(args: &[String], file: &Path, line: u32, out: &mut ParsedScrip
 
     match args[0].parse::<u16>() {
         Ok(number) => {
-            let (mapped, mut diags) = map_legacy_function_number(number);
+            let (action, mut diags) = map_function_number_to_action(number);
             for diag in &mut diags {
                 diag.file = Some(file.to_string_lossy().to_string());
                 diag.line = Some(line);
                 diag.column = Some(1);
             }
             out.diagnostics.extend(diags);
-            if let Some(field) = mapped {
-                out.actions.push(PlotAction::SetScalarField(field));
+            if let Some(action) = action {
+                out.actions.push(action);
             }
         }
         Err(_) => out.diagnostics.push(diagnostic(

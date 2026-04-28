@@ -515,6 +515,70 @@ impl Default for PlotFamily {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// Non-scalar function types (Phase E — 0-99, 200-299, 300-399, 400+)
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Grid-diagnostic / geometry visualization modes (FUNCTION 0–99).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GridFunction {
+    /// FUNCTION 0 — walls alone (geometry only).
+    Walls,
+    /// FUNCTION 1 — all grids.
+    Grids,
+    /// FUNCTION 2 — IBLANK hole outlines.
+    IBlankHoles,
+    /// FUNCTION 3 — hole-boundary orphan points.
+    OrphanPoints,
+    /// FUNCTION 10 — 2D crossing grid-line check.
+    CrossingGridLineCheck,
+    /// FUNCTION 11 — tetrahedron decomposition cell volume check.
+    TetDecompositionVolumeCheck,
+    /// FUNCTION 12 — tetrahedron decomposition grid crossing check.
+    TetDecompositionCrossingCheck,
+}
+
+/// Vector field selections (FUNCTION 200–299).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VectorField {
+    /// FUNCTION 200 — velocity vector (u, v, w).
+    Velocity,
+    /// FUNCTION 201 — vorticity vector (ωₓ, ω_y, ω_z).
+    Vorticity,
+    /// FUNCTION 202 — momentum vector (Q2, Q3, Q4).
+    Momentum,
+    /// FUNCTION 203 — perturbation velocity V′ = V − V∞.
+    PerturbationVelocity,
+    /// FUNCTION 204 — velocity × vorticity vector.
+    VelocityCrossVorticity,
+    /// FUNCTION 210 — pressure gradient vector ∇p.
+    PressureGradient,
+    /// FUNCTION 211 — density gradient vector ∇ρ.
+    DensityGradient,
+}
+
+/// Particle / stream-trace function selections (FUNCTION 300–399).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParticleFunction {
+    /// FUNCTION 300 — particle traces (trilinear + RK2 advection).
+    ParticleTraces,
+    /// FUNCTION 301 — vortex lines (advected by vorticity).
+    VortexLines,
+}
+
+/// Special overlay function selections (FUNCTION 400+).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpecialFunction {
+    /// FUNCTION 400 — shock locations based on pressure gradient.
+    ShockByPressureGradient,
+    /// FUNCTION 401 — filtered shock locations based on pressure gradient.
+    FilteredShockByPressureGradient,
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Dataset references
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -575,6 +639,18 @@ pub struct PlotState {
 
     // PLOT
     pub plot_family: PlotFamily,
+
+    // FUNCTION (non-scalar ranges — Phase E)
+    // These are set by FUNCTION N for N outside 100-199.
+    // Rendering is deferred; state is tracked for determinism.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grid_function: Option<GridFunction>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vector_field: Option<VectorField>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub particle_function: Option<ParticleFunction>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub special_function: Option<SpecialFunction>,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -590,8 +666,20 @@ pub enum PlotAction {
     // READ: set (or clear) the active dataset references.
     SetDataset(DatasetRef),
 
-    // FUNCTION: choose which scalar field to visualise.
+    // FUNCTION 100-199: choose which scalar field to visualise.
     SetScalarField(ScalarField),
+
+    // FUNCTION 0-99: select a grid-diagnostic / geometry mode.
+    SetGridFunction(GridFunction),
+
+    // FUNCTION 200-299: select a vector field (rendering deferred).
+    SetVectorField(VectorField),
+
+    // FUNCTION 300-399: select a particle/stream-trace function (rendering deferred).
+    SetParticleTrace(ParticleFunction),
+
+    // FUNCTION 400+: select a special overlay function (rendering deferred).
+    SetSpecialFunction(SpecialFunction),
 
     // VIEW: select a named axis-aligned camera preset.
     SetAxisView(AxisView),
@@ -933,6 +1021,22 @@ pub fn apply_action(mut state: PlotState, action: PlotAction) -> (PlotState, Vec
                     "GRID and DOTS CONTOURS attributes are not fully implemented; rendering as LINE contours.",
                 ));
             }
+        }
+
+        PlotAction::SetGridFunction(gf) => {
+            state.grid_function = Some(gf);
+        }
+
+        PlotAction::SetVectorField(vf) => {
+            state.vector_field = Some(vf);
+        }
+
+        PlotAction::SetParticleTrace(pf) => {
+            state.particle_function = Some(pf);
+        }
+
+        PlotAction::SetSpecialFunction(sf) => {
+            state.special_function = Some(sf);
         }
     }
 

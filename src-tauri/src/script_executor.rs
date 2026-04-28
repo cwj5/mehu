@@ -173,6 +173,10 @@ mod tests {
             name: "new_scalar_function_families",
             capabilities: &["FUNCTION"],
         },
+        ParityFixtureCase {
+            name: "non_scalar_function_ranges",
+            capabilities: &["FUNCTION"],
+        },
     ];
 
     fn parity_fixture_dir() -> PathBuf {
