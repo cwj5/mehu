@@ -6,12 +6,30 @@ import type { GridItem } from '../types/grids';
 import type { Plot3DSolution } from '../types/plot3d';
 import './SolutionViewer.css';
 
+const COLOR_MAP_EPSILON = 1e-6;
+
 interface SolutionViewerProps {
     selectedGrid: GridItem | null;
     selectedField?: ScalarField;
     selectedColorScheme?: ColorScheme;
     onScalarFieldChange?: (field: ScalarField) => void;
     onColorSchemeChange?: (scheme: ColorScheme) => void;
+    /** Resolved absolute contour levels to show as tick marks on the color legend. */
+    contourLevels?: number[];
+    /** Field min corresponding to the contour levels. */
+    contourFieldMin?: number;
+    /** Field max corresponding to the contour levels. */
+    contourFieldMax?: number;
+    /** Active color-map min (null = use actual). */
+    colorMapMin?: number | null;
+    /** Active color-map max (null = use actual). */
+    colorMapMax?: number | null;
+    /** Actual dataset min from backend range query. */
+    actualMin?: number | null;
+    /** Actual dataset max from backend range query. */
+    actualMax?: number | null;
+    onColorMapMinChange?: (value: number | null) => void;
+    onColorMapMaxChange?: (value: number | null) => void;
 }
 
 export function SolutionViewer({
@@ -20,11 +38,22 @@ export function SolutionViewer({
     selectedColorScheme: controlledColorScheme,
     onScalarFieldChange,
     onColorSchemeChange,
+    contourLevels,
+    contourFieldMin,
+    contourFieldMax,
+    colorMapMin,
+    colorMapMax,
+    actualMin,
+    actualMax,
+    onColorMapMinChange,
+    onColorMapMaxChange,
 }: SolutionViewerProps) {
     const [localSelectedField, setLocalSelectedField] = useState<ScalarField>('none');
     const [localColorScheme, setLocalColorScheme] = useState<ColorScheme>('viridis');
     const [fieldStats, setFieldStats] = useState<{ min: number, max: number, mean: number, stdDev: number } | null>(null);
     const statsRequestRef = useRef(0);
+    const [colorMapMinDraft, setColorMapMinDraft] = useState('');
+    const [colorMapMaxDraft, setColorMapMaxDraft] = useState('');
 
     const hasSolution = selectedGrid?.hasSolution === true;
 
@@ -168,6 +197,50 @@ export function SolutionViewer({
         onColorSchemeChange?.(scheme);
     };
 
+    const effectiveActualMin = actualMin ?? fieldStats?.min ?? null;
+    const effectiveActualMax = actualMax ?? fieldStats?.max ?? null;
+
+    const commitColorMapMin = (raw: string) => {
+        const parsed = Number.parseFloat(raw);
+        if (!Number.isFinite(parsed)) {
+            setColorMapMinDraft('');
+            onColorMapMinChange?.(null);
+            return;
+        }
+        const activeMax = colorMapMax ?? effectiveActualMax;
+        if (activeMax !== null && parsed >= activeMax) {
+            const correctedMax = parsed + COLOR_MAP_EPSILON;
+            onColorMapMaxChange?.(correctedMax);
+            setColorMapMaxDraft(String(correctedMax));
+        }
+        onColorMapMinChange?.(parsed);
+        setColorMapMinDraft(String(parsed));
+    };
+
+    const commitColorMapMax = (raw: string) => {
+        const parsed = Number.parseFloat(raw);
+        if (!Number.isFinite(parsed)) {
+            setColorMapMaxDraft('');
+            onColorMapMaxChange?.(null);
+            return;
+        }
+        const activeMin = colorMapMin ?? effectiveActualMin;
+        if (activeMin !== null && parsed <= activeMin) {
+            const correctedMin = parsed - COLOR_MAP_EPSILON;
+            onColorMapMinChange?.(correctedMin);
+            setColorMapMinDraft(String(correctedMin));
+        }
+        onColorMapMaxChange?.(parsed);
+        setColorMapMaxDraft(String(parsed));
+    };
+
+    const resetColorMapRange = () => {
+        onColorMapMinChange?.(null);
+        onColorMapMaxChange?.(null);
+        setColorMapMinDraft('');
+        setColorMapMaxDraft('');
+    };
+
     if (!selectedGrid) {
         return (
             <div style={{
@@ -265,12 +338,15 @@ export function SolutionViewer({
             {fieldStats && localSelectedField !== 'none' && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                     <ColorLegend
-                        min={fieldStats.min}
-                        max={fieldStats.max}
+                        min={colorMapMin ?? effectiveActualMin ?? fieldStats.min}
+                        max={colorMapMax ?? effectiveActualMax ?? fieldStats.max}
                         colorScheme={localColorScheme}
                         orientation="horizontal"
                         numTicks={5}
                         label={SCALAR_FIELDS.find(f => f.field === localSelectedField)?.name}
+                        contourLevels={contourLevels}
+                        fieldMin={contourFieldMin}
+                        fieldMax={contourFieldMax}
                     />
 
                     <div style={{
@@ -302,6 +378,96 @@ export function SolutionViewer({
                             <div style={{ color: '#e2e8f0', fontWeight: 'bold' }}>
                                 {formatValue(fieldStats.stdDev)}
                             </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {!fieldStats && effectiveActualMin !== null && effectiveActualMax !== null && localSelectedField !== 'none' && (
+                <ColorLegend
+                    min={colorMapMin ?? effectiveActualMin}
+                    max={colorMapMax ?? effectiveActualMax}
+                    colorScheme={localColorScheme}
+                    orientation="horizontal"
+                    numTicks={5}
+                    label={SCALAR_FIELDS.find(f => f.field === localSelectedField)?.name}
+                    contourLevels={contourLevels}
+                    fieldMin={contourFieldMin}
+                    fieldMax={contourFieldMax}
+                />
+            )}
+
+            {localSelectedField !== 'none' && effectiveActualMin !== null && effectiveActualMax !== null && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '11px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span style={{ color: '#cbd5e1', fontWeight: '600' }}>Color Range</span>
+                        {(colorMapMin !== null || colorMapMax !== null) && (
+                            <button
+                                onClick={resetColorMapRange}
+                                style={{
+                                    padding: '2px 6px',
+                                    background: 'transparent',
+                                    border: '1px solid #475569',
+                                    borderRadius: '3px',
+                                    color: '#94a3b8',
+                                    fontSize: '10px',
+                                    cursor: 'pointer',
+                                }}
+                            >
+                                Reset
+                            </button>
+                        )}
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                            <label htmlFor="color-map-min" style={{ color: '#94a3b8', fontSize: '10px' }}>Min</label>
+                            <input
+                                id="color-map-min"
+                                type="text"
+                                value={colorMapMinDraft !== '' ? colorMapMinDraft : (colorMapMin !== null ? String(colorMapMin) : '')}
+                                placeholder={formatValue(effectiveActualMin)}
+                                onChange={(e) => setColorMapMinDraft(e.target.value)}
+                                onBlur={(e) => commitColorMapMin(e.target.value)}
+                                onKeyDown={(e) => { if (e.key === 'Enter') commitColorMapMin((e.target as HTMLInputElement).value); }}
+                                style={{
+                                    padding: '4px 6px',
+                                    background: '#111827',
+                                    color: '#e2e8f0',
+                                    border: colorMapMin !== null ? '1px solid #3b82f6' : '1px solid #374151',
+                                    borderRadius: '3px',
+                                    fontSize: '11px',
+                                    width: '100%',
+                                    boxSizing: 'border-box',
+                                }}
+                            />
+                            <span style={{ color: '#475569', fontSize: '10px' }}>
+                                actual: {formatValue(effectiveActualMin)}
+                            </span>
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                            <label htmlFor="color-map-max" style={{ color: '#94a3b8', fontSize: '10px' }}>Max</label>
+                            <input
+                                id="color-map-max"
+                                type="text"
+                                value={colorMapMaxDraft !== '' ? colorMapMaxDraft : (colorMapMax !== null ? String(colorMapMax) : '')}
+                                placeholder={formatValue(effectiveActualMax)}
+                                onChange={(e) => setColorMapMaxDraft(e.target.value)}
+                                onBlur={(e) => commitColorMapMax(e.target.value)}
+                                onKeyDown={(e) => { if (e.key === 'Enter') commitColorMapMax((e.target as HTMLInputElement).value); }}
+                                style={{
+                                    padding: '4px 6px',
+                                    background: '#111827',
+                                    color: '#e2e8f0',
+                                    border: colorMapMax !== null ? '1px solid #3b82f6' : '1px solid #374151',
+                                    borderRadius: '3px',
+                                    fontSize: '11px',
+                                    width: '100%',
+                                    boxSizing: 'border-box',
+                                }}
+                            />
+                            <span style={{ color: '#475569', fontSize: '10px' }}>
+                                actual: {formatValue(effectiveActualMax)}
+                            </span>
                         </div>
                     </div>
                 </div>

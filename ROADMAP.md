@@ -23,7 +23,10 @@ This document outlines the future development work needed to create a full-featu
 
 **Logging in Tauri**
 - `console.log` isn’t visible in Tauri app logs. Use the shared logger so diagnostics show up in log export.
-
+**IBLANK Filtering UI (March 2026)**
+- IBLANK filtering is applied at mesh geometry generation, not at the grid cache level (cache is unchanged).
+- When `Ignore IBLANK` is ON (`respectIblank=false`), the `Show Fringe Points` toggle is disabled (greyed out) — this prevents invalid flag combinations that would hide fringe points when blanking is ignored.
+- Backend applies a safety normalization to prevent invalid flag combinations even if the frontend state diverges.
 **Performance Optimizations (v0.2.1 - February 2026)**
 - Automatic mesh decimation: Grids >250 nodes get 2-4x decimation for faster rendering
 - Parallel normal computation using rayon reduces mesh generation time by ~50-70%
@@ -141,14 +144,21 @@ This document outlines the future development work needed to create a full-featu
   - [x] Color mapping to scalar values
   - [x] Configurable color schemes (rainbow, grayscale, viridis, turbo, hot)
   - [x] Color bar/legend display with dynamic scheme selection
-  - [ ] Value range adjustment (min/max clipping)
-  - [ ] Display scalar values on hover (point probe)
+  - [x] Value range adjustment (min/max clipping)
+    - Plan: `COLOR_MAP_MINMAX_CLIPPING_PLAN.md` (color-map-only scope, auto-correct invalid bounds, display actual range)
+  - [x] Display scalar values via point probe (keypress-triggered sampling)
+    - [x] Probe sampling only on `p` / `P` (no continuous hover updates)
+    - [x] Snap mode (`P`) for nearest grid vertex
+    - [x] Dedicated probe window output (non-overlapping placement)
+    - [x] Report all derived function values (density, pressure, velocity, momentum, energy, gamma)
+    - [x] Report sampled I/J/K index
 - [ ] Vector field visualization
   - [ ] Arrow glyphs
   - [ ] Streamlines
   - [ ] Particle traces
-- [ ] Contour lines on surfaces
-- [ ] Iso-surfaces for 3D scalar fields
+- [x] Contour lines on surfaces (AUTOMATIC/INCREMENT/MANUAL/NONE modes; absolute physical values per ADR-0004)
+  - [x] Contour level tick marks overlaid on ColorLegend bar (resolved absolute values, normalized to field range)
+- [x] Iso-surfaces for 3D scalar fields (marching cubes; multi-level; opacity control)
 
 ### 2.3 Advanced Visualization Features
 - [x] Cross-sectional slicing (I, J, K planes)
@@ -216,7 +226,10 @@ Research and implement PLOT3D's 74 built-in functions:
 - [ ] Synchronized camera across viewports
 
 ### 4.3 Measurement and Analysis Tools
-- [ ] Point probe (display values at cursor)
+- [x] Point probe (display values at sampled cursor location)
+  - [x] Interpolated mode (`p`)
+  - [x] Snap-to-grid-point mode (`P`)
+  - [x] World XYZ and I/J/K index reporting
 - [ ] Distance measurement
 - [ ] Area and volume calculations
 - [ ] Line plot extraction
@@ -285,7 +298,7 @@ Research and implement PLOT3D's 74 built-in functions:
 - [x] Unit tests for solution data computation (Rust + TypeScript)
 - [x] Test framework setup (Vitest + Rust test harness)
 - [ ] Integration tests for file I/O
-- [ ] Visual regression tests for rendering
+- [x] Visual regression tests for rendering (headless PNG exporter with SHA-256 + semantic drift checks; contour AUTOMATIC/INCREMENT/MANUAL fixture coverage)
 - [ ] Performance benchmarks
 - [ ] Test with real CFD datasets (larger variety needed)
 - [ ] Cross-platform testing (Linux, Windows, macOS)
@@ -308,7 +321,7 @@ Research and implement PLOT3D's 74 built-in functions:
    - [x] Configurable color schemes (rainbow, grayscale, viridis, turbo, hot)
    - [x] Metadata parsing from PLOT3D solution files
    - [x] Color bar/legend UI component with dynamic scheme selection
-   - [ ] Allow value range adjustment (min/max clipping)
+   - [x] Allow value range adjustment (min/max clipping)
    - [ ] Display scalar values on hover (point probe)
 
 2. **Rendering Improvements** (Phase 2.1)

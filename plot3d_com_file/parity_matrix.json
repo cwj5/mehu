@@ -1,6 +1,6 @@
 {
     "schemaVersion": 1,
-    "lastUpdated": "2026-04-02",
+    "lastUpdated": "2026-04-27",
     "parityStates": [
         "supported",
         "script-only",
@@ -18,7 +18,7 @@
             "id": "FUNCTION",
             "status": "supported",
             "ticket": "TKT-003",
-            "notes": "Legacy FUNCTION numbers map deterministically into canonical ScalarField selections shared by script and GUI flows; known unimplemented equations emit soft-fail diagnostics."
+            "notes": "Legacy FUNCTION numbers map deterministically into canonical ScalarField selections shared by script and GUI flows; known unimplemented equations emit soft-fail diagnostics. 2026-04-27: point probe now reports full derived function-value bundle at sampled locations (interpolated and snap modes), including indexed I/J/K reporting for sampled vertices."
         },
         {
             "id": "VIEW",
@@ -42,7 +42,7 @@
             "id": "CONTOURS",
             "status": "supported",
             "ticket": "TKT-007",
-            "notes": "Absolute multi-level contour model (AUTOMATIC/INCREMENT/MANUAL) is implemented with deterministic renderer semantics; Phase B hardening added malformed tuple-arity coverage plus /INCREMENT precedence/default-fallback tests, with parser diagnostic consistency checks across contour modes and continued parser regression maintenance. Legacy terminology alignment (2026-04-02) updated user-facing CONTOURS wording, PR2 added explicit parser diagnostics for legacy /LINEAR and /CUBIC qualifier handling, and PR6 follow-up added explicit no-effect diagnostics for /RANGE and /(NO)ATTRIBUTES qualifiers."
+            "notes": "Absolute multi-level contour model (AUTOMATIC/INCREMENT/MANUAL) is implemented with deterministic renderer semantics; Phase B hardening added malformed tuple-arity coverage plus /INCREMENT precedence/default-fallback tests, with parser diagnostic consistency checks across contour modes and continued parser regression maintenance. Legacy terminology alignment (2026-04-02) updated user-facing CONTOURS wording, PR2 added explicit parser diagnostics for legacy /LINEAR and /CUBIC qualifier handling, and PR6 follow-up added explicit no-effect diagnostics for /RANGE and /(NO)ATTRIBUTES qualifiers. 2026-04-23: added ColorLegend contour level tick overlay (resolve_contour_levels IPC extended with field_min/field_max); added AUTOMATIC/INCREMENT/MANUAL headless regression fixtures; fixed marching squares zero-vertex edge case in renderer; restored missing App.tsx grid-dimension helper used by subset/walls labels (stability fix, no capability-scope change)."
         },
         {
             "id": "PLOT",

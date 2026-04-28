@@ -1703,3 +1703,126 @@ describe('PNG export workflow (TKT-010)', () => {
         expect(writeResult).toBe('/tmp/plot_view.png');
     });
 });
+
+describe('Color map min/max clipping (color-range-clip)', () => {
+    afterEach(() => {
+        cleanup();
+    });
+
+    beforeEach(() => {
+        invokeMock.mockReset();
+        viewer3DMock.mockReset();
+
+        invokeMock.mockImplementation(async (cmd: string) => {
+            if (cmd === 'get_plot_state') {
+                return {
+                    scalar_field: 'none',
+                    plot_family: 'contour',
+                    contour_attribute: 'line',
+                    axis_view: 'custom',
+                    plot_up: null,
+                    contour_spec: { mode: 'none' },
+                    walls: [],
+                    subsets: [],
+                    fsurface: null,
+                    text_annotations: [],
+                    viewpoint: null,
+                };
+            }
+            if (cmd === 'frontend_log') return null;
+            return null;
+        });
+    });
+
+    it('Viewer3D receives null colorMapMin and colorMapMax on initial render', async () => {
+        render(<App />);
+
+        await waitFor(() => expect(viewer3DMock).toHaveBeenCalled());
+
+        const lastCall = viewer3DMock.mock.calls[viewer3DMock.mock.calls.length - 1][0];
+        expect(lastCall.colorMapMin).toBeNull();
+        expect(lastCall.colorMapMax).toBeNull();
+    });
+
+    it('Viewer3D receives onActualRangeChange callback', async () => {
+        render(<App />);
+
+        await waitFor(() => expect(viewer3DMock).toHaveBeenCalled());
+
+        const lastCall = viewer3DMock.mock.calls[viewer3DMock.mock.calls.length - 1][0];
+        expect(typeof lastCall.onActualRangeChange).toBe('function');
+    });
+
+    it('contour workflow is unaffected by null colorMapMin/Max: commit_plot is invoked normally', async () => {
+        let commitPlotCallCount = 0;
+        invokeMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
+            if (cmd === 'get_plot_state') {
+                return {
+                    scalar_field: 'none',
+                    plot_family: 'contour',
+                    contour_attribute: 'line',
+                    axis_view: 'custom',
+                    plot_up: null,
+                    contour_spec: { mode: 'none' },
+                    walls: [],
+                    subsets: [],
+                    fsurface: null,
+                    text_annotations: [],
+                    viewpoint: null,
+                };
+            }
+            if (cmd === 'set_plot_axis_view') {
+                return {
+                    state: {
+                        scalar_field: 'none',
+                        plot_family: 'contour',
+                        contour_attribute: 'line',
+                        axis_view: String(args?.view ?? 'custom'),
+                        plot_up: null,
+                        contour_spec: { mode: 'none' },
+                        walls: [],
+                        subsets: [],
+                        fsurface: null,
+                        text_annotations: [],
+                        viewpoint: { x: 1, y: 0, z: 0 },
+                    },
+                    diagnostics: [],
+                };
+            }
+            if (cmd === 'commit_plot') {
+                commitPlotCallCount++;
+                return {
+                    state: {
+                        scalar_field: 'none',
+                        plot_family: 'contour',
+                        contour_attribute: 'line',
+                        axis_view: 'plus_x',
+                        plot_up: null,
+                        contour_spec: { mode: 'none' },
+                        walls: [],
+                        subsets: [],
+                        fsurface: null,
+                        text_annotations: [],
+                        viewpoint: { x: 1, y: 0, z: 0 },
+                    },
+                    diagnostics: [],
+                };
+            }
+            if (cmd === 'frontend_log') return null;
+            return null;
+        });
+
+        render(<App />);
+
+        // Trigger a non-color-range commit via the axis view selector in the sidebar
+        const axisSelect = await screen.findByDisplayValue('Custom');
+        fireEvent.change(axisSelect, { target: { value: 'plus_x' } });
+
+        await waitFor(() => expect(commitPlotCallCount).toBeGreaterThan(0));
+
+        // colorMapMin/Max should remain null — axis commit is isolated from color range
+        const lastCall = viewer3DMock.mock.calls[viewer3DMock.mock.calls.length - 1][0];
+        expect(lastCall.colorMapMin).toBeNull();
+        expect(lastCall.colorMapMax).toBeNull();
+    });
+});

@@ -1332,26 +1332,29 @@ fn draw_iso_features(
                 let (u01, v01) = uvs[idx01];
                 let (u11, v11) = uvs[idx11];
 
-                // Classify which edges are crossed (marching squares)
+                // Classify which edges are crossed (marching squares).
+                // Use sign-convention comparison: zero is treated as positive (above the level).
+                // This avoids missing crossings when a vertex lies exactly on the level value,
+                // which would cause gaps in contour lines at such vertices.
                 let mut pts: [Option<(f32, f32)>; 4] = [None; 4];
 
                 // Bottom edge: 00 → 10
-                if d00 * d10 < 0.0 {
+                if (d00 >= 0.0) != (d10 >= 0.0) {
                     let t = d00 / (d00 - d10);
                     pts[0] = Some((u00 + t * (u10 - u00), v00 + t * (v10 - v00)));
                 }
                 // Right edge: 10 → 11
-                if d10 * d11 < 0.0 {
+                if (d10 >= 0.0) != (d11 >= 0.0) {
                     let t = d10 / (d10 - d11);
                     pts[1] = Some((u10 + t * (u11 - u10), v10 + t * (v11 - v10)));
                 }
                 // Top edge: 01 → 11
-                if d01 * d11 < 0.0 {
+                if (d01 >= 0.0) != (d11 >= 0.0) {
                     let t = d01 / (d01 - d11);
                     pts[2] = Some((u01 + t * (u11 - u01), v01 + t * (v11 - v01)));
                 }
                 // Left edge: 00 → 01
-                if d00 * d01 < 0.0 {
+                if (d00 >= 0.0) != (d01 >= 0.0) {
                     let t = d00 / (d00 - d01);
                     pts[3] = Some((u00 + t * (u01 - u00), v00 + t * (v01 - v00)));
                 }

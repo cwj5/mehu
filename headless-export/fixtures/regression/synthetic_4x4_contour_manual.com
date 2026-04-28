@@ -1,0 +1,5 @@
+READ synthetic_4x4.xyz synthetic_4x4.q
+FUNCTION 100
+VIEW XY
+CONTOURS/MANUAL 1.2
+PLOT/CONTOUR

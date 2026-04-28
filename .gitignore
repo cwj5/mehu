@@ -39,3 +39,4 @@ headless-export/target/
 # Headless regression generated outputs
 headless-export/fixtures/regression/out/*.png
 headless-export/fixtures/regression/out/
+headless-export/fixtures/regression/*.png

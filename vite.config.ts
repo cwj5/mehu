@@ -34,6 +34,7 @@ export default defineConfig(async () => ({
       input: {
         main: new URL('./index.html', import.meta.url).pathname,
         about: new URL('./about.html', import.meta.url).pathname,
+        probe: new URL('./probe.html', import.meta.url).pathname,
       },
     },
   },

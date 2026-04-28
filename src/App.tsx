@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { useMemo, useState, useEffect, useRef } from "react";
+import { useMemo, useState, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Menu, MenuItem, Submenu, CheckMenuItem, PredefinedMenuItem } from "@tauri-apps/api/menu";
 import Viewer3D from "./components/Viewer3D";
@@ -447,6 +447,13 @@ const App = () => {
   const [contourLevel, setContourLevel] = useState(0);
   const [contourLevelDraft, setContourLevelDraft] = useState('0');
   const [isoSurfaceOpacity, setIsoSurfaceOpacity] = useState(1.0);
+  const [resolvedContourLevels, setResolvedContourLevels] = useState<number[]>([]);
+  const [contourFieldMin, setContourFieldMin] = useState(0);
+  const [contourFieldMax, setContourFieldMax] = useState(0);
+
+  const dimensionsForGridNumber = (gridNumber: number) =>
+    grids.find((grid) => grid.gridIndex + 1 === gridNumber)?.dimensions;
+
   const [backendPlotState, setBackendPlotState] = useState<BackendPlotState | null>(null);
   const [backendDiagnostics, setBackendDiagnostics] = useState<BackendDiagnostic[]>([]);
   const [showCommandWindow, setShowCommandWindow] = useState(false);
@@ -460,6 +467,12 @@ const App = () => {
   const [textContentDraft, setTextContentDraft] = useState('');
   const [textXDraft, setTextXDraft] = useState('0.05');
   const [textYDraft, setTextYDraft] = useState('0.95');
+
+  // Color map clipping state
+  const [colorMapMin, setColorMapMin] = useState<number | null>(null);
+  const [colorMapMax, setColorMapMax] = useState<number | null>(null);
+  const [actualColorMapMin, setActualColorMapMin] = useState<number | null>(null);
+  const [actualColorMapMax, setActualColorMapMax] = useState<number | null>(null);
 
   // Export workflow state
   const [lastExecutionResult, setLastExecutionResult] = useState<ScriptExecutionResult | null>(null);
@@ -1418,8 +1431,39 @@ const App = () => {
     }
   }, [backendPlotState, grids, gridSlices, sliceEnabled, subsetsDirty, manualSubsetDirty, manualWallsDirty]);
 
-  const dimensionsForGridNumber = (gridNumber: number) =>
-    grids.find((grid) => grid.gridIndex + 1 === gridNumber)?.dimensions;
+  // Resolve contour levels for the ColorLegend whenever plot state or grids change.
+  useEffect(() => {
+    const spec = backendPlotState?.contour_spec;
+    const refGrid = grids.find(g => g.solutionCacheId != null);
+    const hasSpec = spec && typeof spec === 'object' && 'mode' in (spec as object) &&
+      (spec as { mode: string }).mode !== 'none';
+
+    if (!refGrid || !hasSpec) {
+      setResolvedContourLevels([]);
+      setContourFieldMin(0);
+      setContourFieldMax(0);
+      return;
+    }
+
+    void (async () => {
+      try {
+        const result = await invoke<{ levels: number[]; field_min: number; field_max: number }>(
+          'resolve_contour_levels',
+          { solutionId: refGrid.solutionCacheId!, scalarField: backendPlotState!.scalar_field }
+        );
+        setResolvedContourLevels(result.levels);
+        setContourFieldMin(result.field_min);
+        setContourFieldMax(result.field_max);
+      } catch {
+        setResolvedContourLevels([]);
+      }
+    })();
+  }, [backendPlotState, grids]);
+
+  const handleActualRangeChange = useCallback((min: number, max: number) => {
+    setActualColorMapMin((prev) => (prev === min ? prev : min));
+    setActualColorMapMax((prev) => (prev === max ? prev : max));
+  }, []);
 
   // Callback from Viewer3D when its loading state changes.
   // Used by batch PNG export to wait for each render to settle.
@@ -1771,6 +1815,15 @@ const App = () => {
                       selectedColorScheme={currentColorScheme}
                       onScalarFieldChange={handleScalarFieldChange}
                       onColorSchemeChange={handleColorSchemeChange}
+                      contourLevels={resolvedContourLevels.length > 0 ? resolvedContourLevels : undefined}
+                      contourFieldMin={contourFieldMin}
+                      contourFieldMax={contourFieldMax}
+                      colorMapMin={colorMapMin}
+                      colorMapMax={colorMapMax}
+                      actualMin={actualColorMapMin}
+                      actualMax={actualColorMapMax}
+                      onColorMapMinChange={setColorMapMin}
+                      onColorMapMaxChange={setColorMapMax}
                     />
                   </div>
                 )}
@@ -2973,6 +3026,9 @@ const App = () => {
               cameraPlotUp={backendPlotState?.plot_up ?? null}
               onCameraCommit={handleCameraCommit}
               onLoadingChange={handleViewer3DLoadingChange}
+              colorMapMin={colorMapMin}
+              colorMapMax={colorMapMax}
+              onActualRangeChange={handleActualRangeChange}
             />
           </div>
 
