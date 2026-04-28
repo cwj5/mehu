@@ -128,6 +128,67 @@ impl ScalarField {
             "momentum_z" => Some(ScalarField::MomentumZ),
             "pressure" => Some(ScalarField::Pressure),
             "energy" => Some(ScalarField::Energy),
+            // Density family
+            "normalized_density" => Some(ScalarField::NormalizedDensity),
+            "stagnation_density" => Some(ScalarField::StagnationDensity),
+            "normalized_stagnation_density" => Some(ScalarField::NormalizedStagnationDensity),
+            "log_normalized_density" => Some(ScalarField::LogNormalizedDensity),
+            // Pressure family
+            "normalized_pressure" => Some(ScalarField::NormalizedPressure),
+            "stagnation_pressure" => Some(ScalarField::StagnationPressure),
+            "normalized_stagnation_pressure" => Some(ScalarField::NormalizedStagnationPressure),
+            "pressure_coefficient" => Some(ScalarField::PressureCoefficient),
+            "stagnation_pressure_coefficient" => Some(ScalarField::StagnationPressureCoefficient),
+            "pitot_pressure" => Some(ScalarField::PitotPressure),
+            "pitot_pressure_ratio" => Some(ScalarField::PitotPressureRatio),
+            "dynamic_pressure" => Some(ScalarField::DynamicPressure),
+            "log_normalized_pressure" => Some(ScalarField::LogNormalizedPressure),
+            // Temperature family
+            "temperature" => Some(ScalarField::Temperature),
+            "normalized_temperature" => Some(ScalarField::NormalizedTemperature),
+            "stagnation_temperature" => Some(ScalarField::StagnationTemperature),
+            "normalized_stagnation_temperature" => {
+                Some(ScalarField::NormalizedStagnationTemperature)
+            }
+            "log_normalized_temperature" => Some(ScalarField::LogNormalizedTemperature),
+            // Enthalpy family
+            "enthalpy" => Some(ScalarField::Enthalpy),
+            "normalized_enthalpy" => Some(ScalarField::NormalizedEnthalpy),
+            "stagnation_enthalpy" => Some(ScalarField::StagnationEnthalpy),
+            "normalized_stagnation_enthalpy" => Some(ScalarField::NormalizedStagnationEnthalpy),
+            // Energy family
+            "internal_energy" => Some(ScalarField::InternalEnergy),
+            "normalized_internal_energy" => Some(ScalarField::NormalizedInternalEnergy),
+            "stagnation_energy" => Some(ScalarField::StagnationEnergy),
+            "normalized_stagnation_energy" => Some(ScalarField::NormalizedStagnationEnergy),
+            "kinetic_energy" => Some(ScalarField::KineticEnergy),
+            "normalized_kinetic_energy" => Some(ScalarField::NormalizedKineticEnergy),
+            // Velocity / flow family
+            "mach_number" => Some(ScalarField::MachNumber),
+            "speed_of_sound" => Some(ScalarField::SpeedOfSound),
+            "cross_flow_velocity" => Some(ScalarField::CrossFlowVelocity),
+            "normalized_2d_stream_function" => Some(ScalarField::Normalized2dStreamFunction),
+            "velocity_divergence" => Some(ScalarField::VelocityDivergence),
+            // Entropy family
+            "entropy" => Some(ScalarField::Entropy),
+            "entropy_measure_s1" => Some(ScalarField::EntropyMeasureS1),
+            // Vorticity family
+            "vorticity_x" => Some(ScalarField::VorticityX),
+            "vorticity_y" => Some(ScalarField::VorticityY),
+            "vorticity_z" => Some(ScalarField::VorticityZ),
+            "vorticity_magnitude" => Some(ScalarField::VorticityMagnitude),
+            "swirl" => Some(ScalarField::Swirl),
+            "velocity_cross_vorticity_magnitude" => {
+                Some(ScalarField::VelocityCrossVorticityMagnitude)
+            }
+            "helicity_density" => Some(ScalarField::HelicityDensity),
+            "relative_helicity" => Some(ScalarField::RelativeHelicity),
+            "filtered_relative_helicity" => Some(ScalarField::FilteredRelativeHelicity),
+            // Shock / gradient family
+            "shock_function_pressure_gradient" => Some(ScalarField::ShockFunctionPressureGradient),
+            "filtered_shock_function" => Some(ScalarField::FilteredShockFunction),
+            "pressure_gradient_magnitude" => Some(ScalarField::PressureGradientMagnitude),
+            "density_gradient_magnitude" => Some(ScalarField::DensityGradientMagnitude),
             _ => None,
         }
     }
