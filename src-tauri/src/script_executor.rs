@@ -169,6 +169,10 @@ mod tests {
             name: "function_surface_line_family",
             capabilities: &["FUNCTION", "VIEW", "MINMAX", "FSURFACE", "PLOT"],
         },
+        ParityFixtureCase {
+            name: "new_scalar_function_families",
+            capabilities: &["FUNCTION"],
+        },
     ];
 
     fn parity_fixture_dir() -> PathBuf {

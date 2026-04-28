@@ -1543,156 +1543,6 @@ fn convert_grid_to_mesh(
     Ok(mesh)
 }
 
-/// Helper function to compute a scalar field value from a single point's solution data
-fn compute_scalar_field_value(solution: &Plot3DSolution, field: plot_state::ScalarField) -> f32 {
-    use plot_state::ScalarField;
-
-    if solution.rho.is_empty() {
-        return 0.0;
-    }
-
-    match field {
-        ScalarField::Density => solution.rho[0],
-
-        ScalarField::VelocityMagnitude => {
-            let rho = solution.rho[0];
-            if rho > 0.0 {
-                let u = solution.rhou[0] / rho;
-                let v = solution.rhov[0] / rho;
-                let w = solution.rhow[0] / rho;
-                (u * u + v * v + w * w).sqrt()
-            } else {
-                0.0
-            }
-        }
-
-        ScalarField::MomentumX => solution.rhou[0],
-        ScalarField::MomentumY => solution.rhov[0],
-        ScalarField::MomentumZ => solution.rhow[0],
-
-        ScalarField::UVelocity => {
-            let rho = solution.rho[0];
-            if rho > 0.0 {
-                solution.rhou[0] / rho
-            } else {
-                0.0
-            }
-        }
-        ScalarField::VVelocity => {
-            let rho = solution.rho[0];
-            if rho > 0.0 {
-                solution.rhov[0] / rho
-            } else {
-                0.0
-            }
-        }
-        ScalarField::WVelocity => {
-            let rho = solution.rho[0];
-            if rho > 0.0 {
-                solution.rhow[0] / rho
-            } else {
-                0.0
-            }
-        }
-
-        ScalarField::Pressure => {
-            const DEFAULT_GAMMA: f32 = 1.4;
-            let rho = solution.rho[0];
-            if rho > 0.0 {
-                let gamma = solution
-                    .gamma
-                    .as_ref()
-                    .map(|g| g[0])
-                    .unwrap_or(DEFAULT_GAMMA);
-                let u = solution.rhou[0] / rho;
-                let v = solution.rhov[0] / rho;
-                let w = solution.rhow[0] / rho;
-                let kinetic_energy = 0.5 * rho * (u * u + v * v + w * w);
-                let internal_energy = solution.rhoe[0] - kinetic_energy;
-                (gamma - 1.0) * internal_energy
-            } else {
-                0.0
-            }
-        }
-
-        ScalarField::Energy => solution.rhoe[0],
-
-        // Known placeholder scalar fields exist for legacy FUNCTION mapping but
-        // are intentionally not computed until equations are explicitly added.
-        _ => 0.0,
-    }
-}
-
-/// Compute scalar field value directly from conservative variables at a point
-fn compute_scalar_field_from_components(
-    rho: f32,
-    rhou: f32,
-    rhov: f32,
-    rhow: f32,
-    rhoe: f32,
-    gamma: Option<f32>,
-    field: plot_state::ScalarField,
-) -> f32 {
-    use plot_state::ScalarField;
-
-    match field {
-        ScalarField::Density => rho,
-        ScalarField::UVelocity => {
-            if rho > 0.0 {
-                rhou / rho
-            } else {
-                0.0
-            }
-        }
-        ScalarField::VVelocity => {
-            if rho > 0.0 {
-                rhov / rho
-            } else {
-                0.0
-            }
-        }
-        ScalarField::WVelocity => {
-            if rho > 0.0 {
-                rhow / rho
-            } else {
-                0.0
-            }
-        }
-        ScalarField::VelocityMagnitude => {
-            if rho > 0.0 {
-                let u = rhou / rho;
-                let v = rhov / rho;
-                let w = rhow / rho;
-                (u * u + v * v + w * w).sqrt()
-            } else {
-                0.0
-            }
-        }
-        ScalarField::MomentumX => rhou,
-        ScalarField::MomentumY => rhov,
-        ScalarField::MomentumZ => rhow,
-        ScalarField::Pressure => {
-            const DEFAULT_GAMMA: f32 = 1.4;
-            if rho > 0.0 {
-                let gamma = gamma.unwrap_or(DEFAULT_GAMMA);
-                let u = rhou / rho;
-                let v = rhov / rho;
-                let w = rhow / rho;
-                let kinetic_energy = 0.5 * rho * (u * u + v * v + w * w);
-                let internal_energy = rhoe - kinetic_energy;
-                (gamma - 1.0) * internal_energy
-            } else {
-                0.0
-            }
-        }
-        ScalarField::Energy => rhoe,
-
-        // Known placeholder scalar fields exist for legacy FUNCTION mapping but
-        // are intentionally not computed until equations are explicitly added.
-        _ => 0.0,
-    }
-}
-
 // ============================================================================
 // NEW: ID-Based Compute Commands (Phase 2)
 // ============================================================================
@@ -1965,7 +1815,7 @@ fn compute_solution_colors(
     window: WebviewWindow,
 ) -> Result<MeshGeometry, String> {
     use plot_state::ScalarField;
-    use solution::{compute_colors, compute_scalar_field_surface, ColorScheme};
+    use solution::{compute_colors, compute_scalar_field_surface_with_grid, ColorScheme};
 
     let _ = window.emit("loading-start", format!("Computing {} field...", field));
 
@@ -2071,8 +1921,9 @@ fn compute_solution_colors(
         ));
     }
 
-    // Compute colors and scalar values
-    let values = compute_scalar_field_surface(&solution, field_enum, decimation_factor);
+    // Compute colors and scalar values (use grid for derivative fields)
+    let values =
+        compute_scalar_field_surface_with_grid(&solution, &grid, field_enum, decimation_factor);
     let probe_components = build_surface_probe_components(
         &solution,
         grid.dimensions.i as usize,
@@ -2162,7 +2013,7 @@ fn compute_solution_colors_sliced(
     window: WebviewWindow,
 ) -> Result<MeshGeometry, String> {
     use plot_state::ScalarField;
-    use solution::{compute_colors_with_range, ColorScheme};
+    use solution::{compute_colors_with_range, compute_scalar_field_with_grid, ColorScheme};
 
     let _ = window.emit(
         "loading-start",
@@ -2265,6 +2116,9 @@ fn compute_solution_colors_sliced(
     let slice_idx = sliceIndex as usize;
 
     // Map each point in sliced grid to original grid for solution values
+    // Pre-compute full scalar field (including derivative fields via grid).
+    let full_field = compute_scalar_field_with_grid(&solution, &original_grid, field_enum);
+
     let mut values = Vec::with_capacity(sliced_grid.total_points());
     let mut probe_components =
         Vec::with_capacity(sliced_grid.total_points() * PROBE_COMPONENT_STRIDE);
@@ -2278,8 +2132,7 @@ fn compute_solution_colors_sliced(
             for j_idx in 0..j_slice {
                 for i_idx in 0..i_slice {
                     let orig_linear = linear_index_original(i_idx, j_idx, slice_idx);
-                    let point_solution = create_point_solution(&solution, orig_linear);
-                    values.push(compute_scalar_field_value(&point_solution, field_enum));
+                    values.push(full_field[orig_linear]);
                     push_probe_components_at(&solution, orig_linear, &mut probe_components);
                     push_probe_ijk(i_idx, j_idx, slice_idx, &mut probe_ijk);
                 }
@@ -2289,8 +2142,7 @@ fn compute_solution_colors_sliced(
             for k_idx in 0..j_slice {
                 for i_idx in 0..i_slice {
                     let orig_linear = linear_index_original(i_idx, slice_idx, k_idx);
-                    let point_solution = create_point_solution(&solution, orig_linear);
-                    values.push(compute_scalar_field_value(&point_solution, field_enum));
+                    values.push(full_field[orig_linear]);
                     push_probe_components_at(&solution, orig_linear, &mut probe_components);
                     push_probe_ijk(i_idx, slice_idx, k_idx, &mut probe_ijk);
                 }
@@ -2300,8 +2152,7 @@ fn compute_solution_colors_sliced(
             for k_idx in 0..j_slice {
                 for j_idx in 0..i_slice {
                     let orig_linear = linear_index_original(slice_idx, j_idx, k_idx);
-                    let point_solution = create_point_solution(&solution, orig_linear);
-                    values.push(compute_scalar_field_value(&point_solution, field_enum));
+                    values.push(full_field[orig_linear]);
                     push_probe_components_at(&solution, orig_linear, &mut probe_components);
                     push_probe_ijk(slice_idx, j_idx, k_idx, &mut probe_ijk);
                 }
@@ -2445,7 +2296,7 @@ fn compute_solution_colors_subset_by_id(
     window: WebviewWindow,
 ) -> Result<MeshGeometry, String> {
     use plot_state::ScalarField;
-    use solution::{compute_colors_with_range, ColorScheme};
+    use solution::{compute_colors_with_range, compute_scalar_field_with_grid, ColorScheme};
 
     let _ = window.emit(
         "loading-start",
@@ -2530,12 +2381,14 @@ fn compute_solution_colors_subset_by_id(
     let (subset_grid, original_indices) =
         build_subset_grid(&grid, iStart, iEnd, jStart, jEnd, kStart, kEnd)?;
 
+    // Pre-compute full scalar field (including derivative fields via grid).
+    let full_field = compute_scalar_field_with_grid(&solution, &grid, field_enum);
+
     let mut values = Vec::with_capacity(original_indices.len());
     let mut probe_components = Vec::with_capacity(original_indices.len() * PROBE_COMPONENT_STRIDE);
     let mut probe_ijk = Vec::with_capacity(original_indices.len() * PROBE_IJK_STRIDE);
     for &orig in &original_indices {
-        let point_solution = create_point_solution(&solution, orig);
-        values.push(compute_scalar_field_value(&point_solution, field_enum));
+        values.push(full_field[orig]);
         push_probe_components_at(&solution, orig, &mut probe_components);
         let (i_idx, j_idx, k_idx) =
             linear_index_to_ijk(orig, grid.dimensions.i as usize, grid.dimensions.j as usize);
@@ -2599,21 +2452,6 @@ fn compute_solution_colors_subset_by_id(
 
     let _ = window.emit("loading-end", ());
     Ok(mesh)
-}
-
-/// Helper function to create a point solution from a solution array at a given index
-fn create_point_solution(solution: &Plot3DSolution, index: usize) -> Plot3DSolution {
-    Plot3DSolution {
-        grid_index: 0,
-        dimensions: GridDimensions { i: 1, j: 1, k: 1 },
-        rho: vec![solution.rho[index]],
-        rhou: vec![solution.rhou[index]],
-        rhov: vec![solution.rhov[index]],
-        rhow: vec![solution.rhow[index]],
-        rhoe: vec![solution.rhoe[index]],
-        gamma: solution.gamma.as_ref().map(|g| vec![g[index]]),
-        metadata: None,
-    }
 }
 
 /// Compute solution colors for arbitrary plane using cached data (ID-based)
@@ -2747,23 +2585,10 @@ fn compute_solution_colors_arbitrary_plane(
         .as_ref()
         .ok_or_else(|| "No vertex cell data available".to_string())?;
 
-    // Precompute scalar field at original grid nodes, then interpolate scalar values
-    // to arbitrary-plane vertices using the stored corner weights.
-    // This directly interpolates the selected field data onto the plane.
-    let nodal_field_values: Vec<f32> = (0..grid_points)
-        .map(|idx| {
-            let gamma = solution.gamma.as_ref().map(|g| g[idx]);
-            compute_scalar_field_from_components(
-                solution.rho[idx],
-                solution.rhou[idx],
-                solution.rhov[idx],
-                solution.rhow[idx],
-                solution.rhoe[idx],
-                gamma,
-                field_enum,
-            )
-        })
-        .collect();
+    // Precompute scalar field at original grid nodes (including derivative fields via grid),
+    // then interpolate to arbitrary-plane vertices using the stored corner weights.
+    use solution::compute_scalar_field_with_grid;
+    let nodal_field_values: Vec<f32> = compute_scalar_field_with_grid(&solution, &grid, field_enum);
 
     let i_orig = grid.dimensions.i as usize;
     let j_orig = grid.dimensions.j as usize;
@@ -2952,23 +2777,13 @@ fn get_solution_field_range(solutionId: String, field: String) -> Result<FieldRa
     let field_enum =
         ScalarField::from_str(&field).ok_or_else(|| format!("Unknown scalar field: {}", field))?;
 
-    // Compute all field values
+    // Compute field range. Grid not available here; derivative fields return zeros.
+    use solution::compute_scalar_field;
     let mut min: Option<f32> = None;
     let mut max: Option<f32> = None;
 
     let grid_points = solution.rho.len();
-    for idx in 0..grid_points {
-        let gamma = solution.gamma.as_ref().map(|g| g[idx]);
-        let value = compute_scalar_field_from_components(
-            solution.rho[idx],
-            solution.rhou[idx],
-            solution.rhov[idx],
-            solution.rhow[idx],
-            solution.rhoe[idx],
-            gamma,
-            field_enum,
-        );
-
+    for value in compute_scalar_field(&solution, field_enum) {
         if !value.is_finite() {
             continue;
         }
@@ -3065,20 +2880,12 @@ fn resolve_contour_levels(
         Arc::clone(&cached.solution)
     };
 
-    // Compute field range (same logic as get_solution_field_range).
+    // Compute field range. Grid not available here; derivative fields return zeros.
+    use solution::compute_scalar_field;
+    let field_values = compute_scalar_field(&solution, field_enum);
     let mut min_val: Option<f32> = None;
     let mut max_val: Option<f32> = None;
-    for idx in 0..solution.rho.len() {
-        let gamma = solution.gamma.as_ref().map(|g| g[idx]);
-        let value = compute_scalar_field_from_components(
-            solution.rho[idx],
-            solution.rhou[idx],
-            solution.rhov[idx],
-            solution.rhow[idx],
-            solution.rhoe[idx],
-            gamma,
-            field_enum,
-        );
+    for value in field_values {
         if !value.is_finite() {
             continue;
         }

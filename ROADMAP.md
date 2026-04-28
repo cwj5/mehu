@@ -185,16 +185,16 @@ This document outlines the future development work needed to create a full-featu
 
 ### 3.1 Function Categories
 Research and implement PLOT3D's 74 built-in functions:
-- [ ] Document all 74 functions from PLOT3D manual
-- [ ] Categorize functions by type:
+- [x] Document all 74 functions from PLOT3D manual
+- [x] Categorize functions by type:
   - [ ] Coordinate transformations
-  - [ ] Flow variables (pressure, velocity, Mach number)
-  - [ ] Derivatives and gradients
-  - [ ] Thermodynamic properties
-  - [ ] Vorticity and turbulence metrics
+  - [x] Flow variables (pressure, velocity, Mach number)
+  - [x] Derivatives and gradients
+  - [x] Thermodynamic properties
+  - [x] Vorticity and turbulence metrics
   - [ ] Geometric calculations
-- [ ] Implement function evaluation system in Rust
-- [ ] Create UI for function selection and application
+- [x] Implement function evaluation system in Rust
+- [x] Create UI for function selection and application
 - [ ] Support custom user-defined functions
 
 ### 3.2 Data Processing

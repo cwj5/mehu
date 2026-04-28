@@ -255,6 +255,132 @@ The fluid is assumed to be air. The perfect gas law is also used. The following 
 
 > **TODO:** List equations for the various functions
 
+### Scalar Function Equations
+
+All quantities use non-dimensional conservative variables stored per grid point:
+`ρ` (Q1), `ρu` (Q2), `ρv` (Q3), `ρw` (Q4), `ρe₀` (Q5).
+Freestream reference: `ρ∞ = 1`, `c∞ = 1`, `p∞ = 1/γ`,
+`V∞ = M∞` (from `fsmach` metadata, default 1.0), `γ = 1.4`.
+
+Derived quantities used below:
+
+| Symbol | Expression |
+|--------|------------|
+| `u, v, w` | `ρu/ρ`, `ρv/ρ`, `ρw/ρ` |
+| `V²` | `u² + v² + w²` |
+| `eᵢ` | `ρe₀/ρ − ½V²` (specific internal energy) |
+| `p` | `(γ−1) ρ eᵢ` |
+| `a` | `√(γ p / ρ)` (speed of sound) |
+| `M` | `√V² / a` (Mach number) |
+| `T` | `p / ρ` (temperature, perfect gas) |
+| `h` | `eᵢ + p/ρ` (specific enthalpy) |
+
+#### Density family (FUNCTION 101–104)
+
+| # | Name | Equation |
+|---|------|----------|
+| 100 | Density | `ρ` |
+| 101 | Normalized density | `ρ / ρ∞` |
+| 102 | Stagnation density | `ρ (1 + (γ−1)/2 · M²)^(1/(γ−1))` |
+| 103 | Normalized stagnation density | `ρ₀ / ρ∞` |
+| 104 | Log normalized density | `ln(ρ / ρ∞)` |
+
+#### Pressure family (FUNCTION 110–119)
+
+| # | Name | Equation |
+|---|------|----------|
+| 110 | Pressure | `p = (γ−1)(ρe₀ − ½ρV²)` |
+| 111 | Normalized pressure | `p / p∞` |
+| 112 | Stagnation pressure | `p (1 + (γ−1)/2 · M²)^(γ/(γ−1))` |
+| 113 | Normalized stagnation pressure | `p₀ / p∞` |
+| 114 | Pressure coefficient | `Cₚ = (p − p∞) / (½ρ∞V∞²)` |
+| 115 | Stagnation pressure coefficient | `Cₚ₀ = (p₀ − p∞) / (½ρ∞V∞²)` |
+| 116 | Pitot pressure | `p₀` (subsonic); Rayleigh pitot formula (supersonic) |
+| 117 | Pitot pressure ratio | `p_pitot / p∞` |
+| 118 | Dynamic pressure | `q = ½ρV²` |
+| 119 | Log normalized pressure | `ln(p / p∞)` |
+
+#### Temperature family (FUNCTION 120–124)
+
+| # | Name | Equation |
+|---|------|----------|
+| 120 | Temperature | `T = p / ρ` |
+| 121 | Normalized temperature | `T / T∞` |
+| 122 | Stagnation temperature | `T₀ = T (1 + (γ−1)/2 · M²)` |
+| 123 | Normalized stagnation temperature | `T₀ / T∞` |
+| 124 | Log normalized temperature | `ln(T / T∞)` |
+
+#### Enthalpy family (FUNCTION 130–133)
+
+| # | Name | Equation |
+|---|------|----------|
+| 130 | Enthalpy | `h = eᵢ + p/ρ` |
+| 131 | Normalized enthalpy | `h / h∞` |
+| 132 | Stagnation enthalpy | `h₀ = h + ½V²` |
+| 133 | Normalized stagnation enthalpy | `h₀ / h∞` |
+
+#### Energy family (FUNCTION 140–145)
+
+| # | Name | Equation |
+|---|------|----------|
+| 140 | Internal energy | `eᵢ = ρe₀/ρ − ½V²` |
+| 141 | Normalized internal energy | `eᵢ / eᵢ∞` |
+| 142 | Stagnation energy | `e₀ = ρe₀ / ρ` |
+| 143 | Normalized stagnation energy | `e₀ / e₀∞` |
+| 144 | Kinetic energy | `KE = ½V²` |
+| 145 | Normalized kinetic energy | `KE / KE∞` |
+
+#### Velocity / flow family (FUNCTION 150–158)
+
+| # | Name | Equation |
+|---|------|----------|
+| 150–152 | u, v, w velocity | `ρu/ρ`, `ρv/ρ`, `ρw/ρ` |
+| 153 | Velocity magnitude | `\|V\| = √V²` |
+| 154 | Mach number | `M = \|V\| / a` |
+| 155 | Speed of sound | `a = √(γ p / ρ)` |
+| 156 | Cross-flow velocity | `V_cf = √(v² + w²)` |
+| 157 | Normalized 2D stream function | `\|V_cf\| / \|V\|` (≈ sin of flow-axis angle) |
+| 158 | Velocity divergence | `∇·V` (requires grid; finite-difference on curvilinear mesh) |
+
+#### Momentum / conserved (FUNCTION 160–163)
+
+| # | Name | Equation |
+|---|------|----------|
+| 160–162 | x, y, z momentum | `ρu`, `ρv`, `ρw` |
+| 163 | Stagnation energy per unit volume | `ρe₀` |
+
+#### Entropy (FUNCTION 170–171)
+
+| # | Name | Equation |
+|---|------|----------|
+| 170 | Entropy | `s = cᵥ ln(p / ρ^γ)` |
+| 171 | Entropy measure s1 | `s₁ = p / ρ^γ` (un-logged form; 1.0 at freestream) |
+
+#### Vorticity / rotation (FUNCTION 180–188)
+
+All vorticity components require grid coordinates (finite-difference curl of velocity field).
+
+| # | Name | Equation |
+|---|------|----------|
+| 180–182 | ωₓ, ω_y, ω_z | `(∂w/∂y − ∂v/∂z)`, `(∂u/∂z − ∂w/∂x)`, `(∂v/∂x − ∂u/∂y)` |
+| 183 | Vorticity magnitude | `\|ω\|` |
+| 184 | Swirl | `ω · V / \|V\|` (projection of ω onto velocity) |
+| 185 | Velocity × vorticity magnitude | `\|V × ω\|` |
+| 186 | Helicity density | `V · ω` |
+| 187 | Relative helicity | `(V · ω) / (\|V\| \|ω\|)` |
+| 188 | Filtered relative helicity | relative helicity masked to `\|ω\| > threshold` |
+
+#### Shock / gradient family (FUNCTION 190–193)
+
+All gradient-based fields require grid coordinates.
+
+| # | Name | Equation |
+|---|------|----------|
+| 190 | Shock function (pressure gradient) | `\|∇p\| / p` |
+| 191 | Filtered shock function | shock function masked to `M > 1` |
+| 192 | Pressure gradient magnitude | `\|∇p\|` |
+| 193 | Density gradient magnitude | `\|∇ρ\|` |
+
 ## HELP
 
 **Format:**

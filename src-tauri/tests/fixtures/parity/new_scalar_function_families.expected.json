@@ -1,0 +1,28 @@
+{
+    "final_state": {
+        "dataset": {
+            "grid_id": null,
+            "solution_id": null
+        },
+        "scalar_field": "shock_function_pressure_gradient",
+        "axis_view": "custom",
+        "viewpoint": null,
+        "plot_up": null,
+        "minmax": {
+            "x": null,
+            "y": null,
+            "z": null
+        },
+        "contour_spec": {
+            "mode": "none"
+        },
+        "contour_attribute": "line",
+        "walls": [],
+        "subsets": [],
+        "fsurface": null,
+        "text_annotations": [],
+        "plot_family": "contour"
+    },
+    "intents": [],
+    "show_output": []
+}

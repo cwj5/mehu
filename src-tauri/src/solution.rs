@@ -658,12 +658,11 @@ pub fn compute_scalar_field(solution: &Plot3DSolution, field: ScalarField) -> Ve
 // compute_scalar_field_surface
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Compute scalar field for the k=0 surface with optional decimation.
-///
-/// Delegates field computation to `compute_scalar_field`, then extracts the
-/// decimated k=0 surface slice.
-pub fn compute_scalar_field_surface(
+/// Compute scalar field for the k=0 surface with optional decimation, using
+/// grid coordinates for derivative-based fields (vorticity, divergence, gradients, etc.).
+pub fn compute_scalar_field_surface_with_grid(
     solution: &Plot3DSolution,
+    grid: &Plot3DGrid,
     field: ScalarField,
     decimation_factor: usize,
 ) -> Vec<f32> {
@@ -673,7 +672,7 @@ pub fn compute_scalar_field_surface(
     let i_decimated = ((ni - 1) / decimation) + 1;
     let j_decimated = ((nj - 1) / decimation) + 1;
 
-    let full_field = compute_scalar_field(solution, field);
+    let full_field = compute_scalar_field_with_grid(solution, grid, field);
 
     let mut values = Vec::with_capacity(i_decimated * j_decimated);
     for j_step in 0..j_decimated {
@@ -1681,27 +1680,61 @@ mod tests {
         assert_eq!(stats.mean, 3e6);
     }
 
+    fn create_test_grid_for_solution(solution: &Plot3DSolution) -> Plot3DGrid {
+        use crate::plot3d::{GridDimensions, Plot3DGrid};
+        let ni = solution.dimensions.i as usize;
+        let nj = solution.dimensions.j as usize;
+        let nk = solution.dimensions.k as usize;
+        let n = ni * nj * nk;
+        let mut x = Vec::with_capacity(n);
+        let mut y = Vec::with_capacity(n);
+        let mut z = Vec::with_capacity(n);
+        for k in 0..nk {
+            for j in 0..nj {
+                for i in 0..ni {
+                    x.push(i as f32);
+                    y.push(j as f32);
+                    z.push(k as f32);
+                }
+            }
+        }
+        Plot3DGrid {
+            dimensions: GridDimensions {
+                i: ni as u32,
+                j: nj as u32,
+                k: nk as u32,
+            },
+            x_coords: x,
+            y_coords: y,
+            z_coords: z,
+            iblank: None,
+        }
+    }
+
     #[test]
     fn test_compute_scalar_field_surface() {
         let solution = create_test_solution(18, false);
+        let grid = create_test_grid_for_solution(&solution);
         let decimation = 2;
 
-        let result = compute_scalar_field_surface(&solution, ScalarField::Density, decimation);
+        let result = compute_scalar_field_surface_with_grid(
+            &solution,
+            &grid,
+            ScalarField::Density,
+            decimation,
+        );
 
-        // With decimation factor 2 on a 2x2 grid (18 points total, but dimensions are 2x2x1)
-        // Result should contain surface values
         assert!(!result.is_empty());
-
-        // All values should be valid
         for &v in &result {
             assert!(v.is_finite());
-            assert!(v > 0.0); // Density is positive
+            assert!(v > 0.0);
         }
     }
 
     #[test]
     fn test_compute_scalar_field_surface_all_fields() {
         let solution = create_test_solution(18, true);
+        let grid = create_test_grid_for_solution(&solution);
 
         let fields = vec![
             ScalarField::Density,
@@ -1714,10 +1747,8 @@ mod tests {
         ];
 
         for field in fields {
-            let result = compute_scalar_field_surface(&solution, field, 1);
+            let result = compute_scalar_field_surface_with_grid(&solution, &grid, field, 1);
             assert!(!result.is_empty());
-
-            // All values should be finite
             for &v in &result {
                 assert!(v.is_finite(), "Field {:?} produced non-finite value", field);
             }
@@ -1727,14 +1758,14 @@ mod tests {
     #[test]
     fn test_compute_scalar_field_surface_decimation() {
         let solution = create_test_solution(18, false);
+        let grid = create_test_grid_for_solution(&solution);
 
-        let result_no_decimation = compute_scalar_field_surface(&solution, ScalarField::Density, 1);
-        let result_decimation = compute_scalar_field_surface(&solution, ScalarField::Density, 2);
+        let result_no_decimation =
+            compute_scalar_field_surface_with_grid(&solution, &grid, ScalarField::Density, 1);
+        let result_decimation =
+            compute_scalar_field_surface_with_grid(&solution, &grid, ScalarField::Density, 2);
 
-        // Decimated result should have fewer points
         assert!(result_decimation.len() <= result_no_decimation.len());
-
-        // Both should be non-empty
         assert!(!result_no_decimation.is_empty());
         assert!(!result_decimation.is_empty());
     }
