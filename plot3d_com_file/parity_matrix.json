@@ -1,6 +1,6 @@
 {
     "schemaVersion": 1,
-    "lastUpdated": "2026-04-24",
+    "lastUpdated": "2026-04-27",
     "parityStates": [
         "supported",
         "script-only",
@@ -18,7 +18,7 @@
             "id": "FUNCTION",
             "status": "supported",
             "ticket": "TKT-003",
-            "notes": "Legacy FUNCTION numbers map deterministically into canonical ScalarField selections shared by script and GUI flows; known unimplemented equations emit soft-fail diagnostics."
+            "notes": "Legacy FUNCTION numbers map deterministically into canonical ScalarField selections shared by script and GUI flows; known unimplemented equations emit soft-fail diagnostics. 2026-04-27: point probe now reports full derived function-value bundle at sampled locations (interpolated and snap modes), including indexed I/J/K reporting for sampled vertices."
         },
         {
             "id": "VIEW",

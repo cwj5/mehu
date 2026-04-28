@@ -146,7 +146,12 @@ This document outlines the future development work needed to create a full-featu
   - [x] Color bar/legend display with dynamic scheme selection
   - [x] Value range adjustment (min/max clipping)
     - Plan: `COLOR_MAP_MINMAX_CLIPPING_PLAN.md` (color-map-only scope, auto-correct invalid bounds, display actual range)
-  - [ ] Display scalar values on hover (point probe)
+  - [x] Display scalar values via point probe (keypress-triggered sampling)
+    - [x] Probe sampling only on `p` / `P` (no continuous hover updates)
+    - [x] Snap mode (`P`) for nearest grid vertex
+    - [x] Dedicated probe window output (non-overlapping placement)
+    - [x] Report all derived function values (density, pressure, velocity, momentum, energy, gamma)
+    - [x] Report sampled I/J/K index
 - [ ] Vector field visualization
   - [ ] Arrow glyphs
   - [ ] Streamlines
@@ -221,7 +226,10 @@ Research and implement PLOT3D's 74 built-in functions:
 - [ ] Synchronized camera across viewports
 
 ### 4.3 Measurement and Analysis Tools
-- [ ] Point probe (display values at cursor)
+- [x] Point probe (display values at sampled cursor location)
+  - [x] Interpolated mode (`p`)
+  - [x] Snap-to-grid-point mode (`P`)
+  - [x] World XYZ and I/J/K index reporting
 - [ ] Distance measurement
 - [ ] Area and volume calculations
 - [ ] Line plot extraction

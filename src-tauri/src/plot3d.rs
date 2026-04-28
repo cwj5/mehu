@@ -109,6 +109,12 @@ pub struct MeshGeometry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub colors: Option<Vec<f32>>, // Optional vertex colors (r, g, b interleaved)
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub scalar_values: Option<Vec<f32>>, // Raw scalar field values per vertex (1 per vertex, same order as vertices/3)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub probe_components: Option<Vec<f32>>, // Interleaved per-vertex probe components: rho,rhou,rhov,rhow,rhoe,gamma
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub probe_ijk: Option<Vec<u32>>, // Interleaved per-vertex indices: i,j,k (1-based)
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub vertex_cell_data: Option<Vec<VertexCellData>>, // Cell interpolation data for solution mapping
 }
 
@@ -1214,6 +1220,9 @@ impl Plot3DGrid {
             vertex_count,
             face_count: triangle_indices.len() / 3,
             colors: None,
+            scalar_values: None,
+            probe_components: None,
+            probe_ijk: None,
             vertex_cell_data: Some(vertex_cell_data),
         })
     }
@@ -1399,6 +1408,9 @@ impl Plot3DGrid {
             vertex_count: total_points,
             face_count: triangle_count,
             colors: None,
+            scalar_values: None,
+            probe_components: None,
+            probe_ijk: None,
             vertex_cell_data: None,
         }
     }
@@ -1597,6 +1609,9 @@ impl Plot3DGrid {
             vertex_count: output_vertex_count as usize,
             face_count,
             colors: None,
+            scalar_values: None,
+            probe_components: None,
+            probe_ijk: None,
             vertex_cell_data: None,
         }
     }
@@ -1755,6 +1770,9 @@ impl Plot3DGrid {
             vertex_count: total_vertices,
             face_count,
             colors: None,
+            scalar_values: None,
+            probe_components: None,
+            probe_ijk: None,
             vertex_cell_data: None,
         }
     }
@@ -1798,6 +1816,9 @@ impl Plot3DGrid {
                 vertex_count: 0,
                 face_count: 0,
                 colors: None,
+                scalar_values: None,
+                probe_components: None,
+                probe_ijk: None,
                 vertex_cell_data: None,
             });
         }
@@ -2002,6 +2023,9 @@ impl Plot3DGrid {
             vertex_count,
             face_count,
             colors: None,
+            scalar_values: None,
+            probe_components: None,
+            probe_ijk: None,
             vertex_cell_data: None,
         })
     }

@@ -23,6 +23,87 @@ interface MeshGeometry {
     vertex_count: number;
     face_count: number;
     colors?: number[];
+    scalar_values?: number[]; // Raw scalar field values (1 per vertex)
+    probe_components?: number[]; // Interleaved per-vertex components: rho,rhou,rhov,rhow,rhoe,gamma
+    probe_ijk?: number[]; // Interleaved per-vertex indices: i,j,k (1-based)
+}
+
+type ProbeMode = 'off' | 'interpolated' | 'snap';
+
+interface ProbeFields {
+    density: number;
+    momentum_x: number;
+    momentum_y: number;
+    momentum_z: number;
+    energy: number;
+    u_velocity: number;
+    v_velocity: number;
+    w_velocity: number;
+    velocity_magnitude: number;
+    pressure: number;
+    gamma: number;
+}
+
+interface ProbeInfo {
+    position: [number, number, number];
+    scalarValue: number | null;
+    gridId: string;
+    worldPosition: [number, number, number];
+    ijkIndex: [number, number, number] | null;
+    mode: Exclude<ProbeMode, 'off'>;
+    fields: ProbeFields | null;
+}
+
+interface ProbeTarget {
+    probeId: string;
+    displayGridId: string;
+    mesh: MeshGeometry;
+}
+
+const PROBE_COMPONENT_STRIDE = 6;
+const PROBE_IJK_STRIDE = 3;
+
+function computeProbeFieldsFromComponents(components: [number, number, number, number, number, number]): ProbeFields {
+    const [rho, rhou, rhov, rhow, rhoe, gammaIn] = components;
+    const gamma = Number.isFinite(gammaIn) && gammaIn > 0 ? gammaIn : 1.4;
+
+    const safeRho = Number.isFinite(rho) ? rho : 0;
+    const safeRhou = Number.isFinite(rhou) ? rhou : 0;
+    const safeRhov = Number.isFinite(rhov) ? rhov : 0;
+    const safeRhow = Number.isFinite(rhow) ? rhow : 0;
+    const safeRhoe = Number.isFinite(rhoe) ? rhoe : 0;
+
+    const u = safeRho > 0 ? safeRhou / safeRho : 0;
+    const v = safeRho > 0 ? safeRhov / safeRho : 0;
+    const w = safeRho > 0 ? safeRhow / safeRho : 0;
+    const velocityMagnitude = Math.sqrt(u * u + v * v + w * w);
+    const kineticEnergy = 0.5 * safeRho * (u * u + v * v + w * w);
+    const pressure = safeRho > 0 ? (gamma - 1.0) * (safeRhoe - kineticEnergy) : 0;
+
+    return {
+        density: safeRho,
+        momentum_x: safeRhou,
+        momentum_y: safeRhov,
+        momentum_z: safeRhow,
+        energy: safeRhoe,
+        u_velocity: u,
+        v_velocity: v,
+        w_velocity: w,
+        velocity_magnitude: velocityMagnitude,
+        pressure,
+        gamma,
+    };
+}
+
+function formatProbeNumeric(value: number): string {
+    if (!Number.isFinite(value)) {
+        return 'NaN';
+    }
+    const abs = Math.abs(value);
+    if (abs > 0 && (abs < 0.001 || abs >= 10000)) {
+        return value.toExponential(6);
+    }
+    return value.toFixed(6);
 }
 
 interface SerializableGrid {
@@ -704,6 +785,288 @@ function ContourLineRenderer({ lineData, color }: { lineData: Float32Array; colo
     return <primitive object={lineSegments} frustumCulled={true} />;
 }
 
+// Point probe interaction handler component
+function PointerInteractionHandler({
+    probeTargets,
+    probeMode,
+    sampleRequestToken,
+    raycasterRef,
+    pointerRef,
+    onProbe,
+}: {
+    probeTargets: ProbeTarget[];
+    probeMode: ProbeMode;
+    sampleRequestToken: number;
+    raycasterRef: MutableRefObject<THREE.Raycaster>;
+    pointerRef: MutableRefObject<THREE.Vector2>;
+    onProbe: (info: ProbeInfo | null) => void;
+}) {
+    const { camera, gl } = useThree();
+    const groupRef = useRef<THREE.Group>(null);
+    const hasPointerSampleRef = useRef(false);
+
+    const toVertex = (mesh: MeshGeometry, idx: number): THREE.Vector3 => {
+        return new THREE.Vector3(
+            mesh.vertices[idx * 3],
+            mesh.vertices[idx * 3 + 1],
+            mesh.vertices[idx * 3 + 2]
+        );
+    };
+
+    const toProbeComponents = (
+        probeComponents: number[] | undefined,
+        idxA: number,
+        idxB: number,
+        idxC: number,
+        wA: number,
+        wB: number,
+        wC: number
+    ): [number, number, number, number, number, number] | null => {
+        if (!probeComponents || probeComponents.length === 0) {
+            return null;
+        }
+
+        const startA = idxA * PROBE_COMPONENT_STRIDE;
+        const startB = idxB * PROBE_COMPONENT_STRIDE;
+        const startC = idxC * PROBE_COMPONENT_STRIDE;
+        if (
+            startA + (PROBE_COMPONENT_STRIDE - 1) >= probeComponents.length ||
+            startB + (PROBE_COMPONENT_STRIDE - 1) >= probeComponents.length ||
+            startC + (PROBE_COMPONENT_STRIDE - 1) >= probeComponents.length
+        ) {
+            return null;
+        }
+
+        const out: number[] = [];
+        for (let i = 0; i < PROBE_COMPONENT_STRIDE; i += 1) {
+            out.push(
+                wA * probeComponents[startA + i] +
+                wB * probeComponents[startB + i] +
+                wC * probeComponents[startC + i]
+            );
+        }
+        return out as [number, number, number, number, number, number];
+    };
+
+    const probeIjkAtVertex = (probeIjk: number[] | undefined, idx: number): [number, number, number] | null => {
+        if (!probeIjk || probeIjk.length === 0) {
+            return null;
+        }
+        const start = idx * PROBE_IJK_STRIDE;
+        if (start + (PROBE_IJK_STRIDE - 1) >= probeIjk.length) {
+            return null;
+        }
+        return [probeIjk[start], probeIjk[start + 1], probeIjk[start + 2]];
+    };
+
+    const sampleProbeAtCurrentPointer = () => {
+        if (probeMode === 'off') {
+            return;
+        }
+
+        // Convert screen coordinates to normalized device coordinates
+        // Update raycaster
+        raycasterRef.current.setFromCamera(pointerRef.current, camera);
+
+        // Test intersections with rendered probe targets
+        if (groupRef.current && groupRef.current.children.length > 0) {
+            const intersects = raycasterRef.current.intersectObjects(groupRef.current.children, true);
+
+            if (intersects.length > 0) {
+                const hit = intersects[0];
+                const mesh = hit.object as THREE.Mesh;
+
+                const targetId = String(mesh.userData.probeId ?? '');
+                const matchedTarget = probeTargets.find((target) => target.probeId === targetId);
+
+                if (matchedTarget) {
+                    const face = hit.face;
+                    if (face) {
+                        const matchedMesh = matchedTarget.mesh;
+
+                        // Triangle vertex indices
+                        const a = face.a;
+                        const b = face.b;
+                        const c = face.c;
+
+                        const point = hit.point;
+                        const va = toVertex(matchedMesh, a);
+                        const vb = toVertex(matchedMesh, b);
+                        const vc = toVertex(matchedMesh, c);
+
+                        // Compute barycentric coordinates
+                        const v0 = vc.clone().sub(va);
+                        const v1 = vb.clone().sub(va);
+                        const v2 = point.clone().sub(va);
+
+                        const dot00 = v0.dot(v0);
+                        const dot01 = v0.dot(v1);
+                        const dot02 = v0.dot(v2);
+                        const dot11 = v1.dot(v1);
+                        const dot12 = v1.dot(v2);
+
+                        const denom = dot00 * dot11 - dot01 * dot01;
+                        if (Math.abs(denom) < 1e-12) {
+                            onProbe(null);
+                            return;
+                        }
+                        const invDenom = 1 / denom;
+                        const baryU = (dot11 * dot02 - dot01 * dot12) * invDenom;
+                        const baryV = (dot00 * dot12 - dot01 * dot02) * invDenom;
+                        const baryW = 1 - baryU - baryV;
+
+                        let sampledPosition = point;
+                        let scalarValue: number | null = null;
+                        let fields: ProbeFields | null = null;
+                        let ijkIndex: [number, number, number] | null = null;
+
+                        if (probeMode === 'snap') {
+                            const dA = point.distanceToSquared(va);
+                            const dB = point.distanceToSquared(vb);
+                            const dC = point.distanceToSquared(vc);
+                            let snappedIdx = a;
+                            let snappedPos = va;
+                            if (dB < dA && dB <= dC) {
+                                snappedIdx = b;
+                                snappedPos = vb;
+                            } else if (dC < dA && dC < dB) {
+                                snappedIdx = c;
+                                snappedPos = vc;
+                            }
+
+                            sampledPosition = snappedPos;
+
+                            if (matchedMesh.scalar_values && snappedIdx < matchedMesh.scalar_values.length) {
+                                scalarValue = matchedMesh.scalar_values[snappedIdx];
+                            }
+
+                            if (matchedMesh.probe_components) {
+                                const start = snappedIdx * PROBE_COMPONENT_STRIDE;
+                                if (start + (PROBE_COMPONENT_STRIDE - 1) < matchedMesh.probe_components.length) {
+                                    fields = computeProbeFieldsFromComponents([
+                                        matchedMesh.probe_components[start],
+                                        matchedMesh.probe_components[start + 1],
+                                        matchedMesh.probe_components[start + 2],
+                                        matchedMesh.probe_components[start + 3],
+                                        matchedMesh.probe_components[start + 4],
+                                        matchedMesh.probe_components[start + 5],
+                                    ]);
+                                }
+                            }
+
+                            ijkIndex = probeIjkAtVertex(matchedMesh.probe_ijk, snappedIdx);
+                        } else {
+                            if (matchedMesh.scalar_values) {
+                                const scalarValues = matchedMesh.scalar_values;
+                                if (a < scalarValues.length && b < scalarValues.length && c < scalarValues.length) {
+                                    scalarValue =
+                                        baryW * scalarValues[a] + baryU * scalarValues[b] + baryV * scalarValues[c];
+                                }
+                            }
+
+                            const components = toProbeComponents(
+                                matchedMesh.probe_components,
+                                a,
+                                b,
+                                c,
+                                baryW,
+                                baryU,
+                                baryV
+                            );
+                            if (components) {
+                                fields = computeProbeFieldsFromComponents(components);
+                            }
+
+                            let representativeIdx = a;
+                            let representativeWeight = baryW;
+                            if (baryU > representativeWeight) {
+                                representativeIdx = b;
+                                representativeWeight = baryU;
+                            }
+                            if (baryV > representativeWeight) {
+                                representativeIdx = c;
+                            }
+                            ijkIndex = probeIjkAtVertex(matchedMesh.probe_ijk, representativeIdx);
+                        }
+
+                        onProbe({
+                            position: [sampledPosition.x, sampledPosition.y, sampledPosition.z],
+                            scalarValue,
+                            gridId: matchedTarget.displayGridId,
+                            worldPosition: [sampledPosition.x, sampledPosition.y, sampledPosition.z],
+                            ijkIndex,
+                            mode: probeMode,
+                            fields,
+                        });
+                    }
+                } else {
+                    onProbe(null);
+                }
+            } else {
+                // No hit - clear probe
+                onProbe(null);
+            }
+        }
+    };
+
+    const handlePointerMove = (event: PointerEvent) => {
+        const rect = gl.domElement.getBoundingClientRect();
+        pointerRef.current.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+        pointerRef.current.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+        hasPointerSampleRef.current = true;
+    };
+
+    useEffect(() => {
+        const canvas = gl.domElement;
+        canvas.addEventListener('pointermove', handlePointerMove);
+        return () => {
+            canvas.removeEventListener('pointermove', handlePointerMove);
+        };
+    }, [gl, camera, probeTargets, probeMode]);
+
+    useEffect(() => {
+        if (!hasPointerSampleRef.current) {
+            logger.info('[Probe] sample request ignored: no pointer position sampled yet', 'Viewer3D');
+            void invoke('frontend_log', {
+                message: '[Viewer3D][Probe] sample request ignored: no pointer position sampled yet'
+            }).catch(() => {
+                // Ignore logging transport failures.
+            });
+            return;
+        }
+        logger.info(`[Probe] sample request token received -> sampling at current pointer (mode=${probeMode})`, 'Viewer3D');
+        void invoke('frontend_log', {
+            message: `[Viewer3D][Probe] sample request token received -> sampling at current pointer (mode=${probeMode})`
+        }).catch(() => {
+            // Ignore logging transport failures.
+        });
+        sampleProbeAtCurrentPointer();
+    }, [sampleRequestToken]);
+
+    // Create dummy geometry to ensure this component renders and children are set
+    return (
+        <group ref={groupRef}>
+            {/* Invisible meshes for raycasting - built from raw vertex/index data */}
+            {probeTargets.map((target) => {
+                const meshData = target.mesh;
+                if (!meshData || !meshData.triangle_indices || meshData.triangle_indices.length === 0) {
+                    return null;
+                }
+
+                const geo = new THREE.BufferGeometry();
+                geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(meshData.vertices), 3));
+                geo.setIndex(new THREE.BufferAttribute(new Uint32Array(meshData.triangle_indices), 1));
+
+                return (
+                    <mesh key={`raycast-${target.probeId}`} geometry={geo} userData={{ probeId: target.probeId }}>
+                        <meshBasicMaterial side={THREE.DoubleSide} transparent opacity={0} depthWrite={false} />
+                    </mesh>
+                );
+            })}
+        </group>
+    );
+}
+
 export default function Viewer3D({
     grids,
     selectedGridIds,
@@ -821,6 +1184,151 @@ export default function Viewer3D({
     const requestIdRef = useRef(0);
     const isUserNavigatingRef = useRef(false);
     const controlsRef = useRef<any>(null);
+
+    // Point probe state
+    const [probeMode, setProbeMode] = useState<ProbeMode>('off');
+    const [probeSampleRequestToken, setProbeSampleRequestToken] = useState(0);
+    const [probeInfo, setProbeInfo] = useState<ProbeInfo | null>(null);
+    const raycasterRef = useRef(new THREE.Raycaster());
+    const pointerRef = useRef(new THREE.Vector2());
+    const probeWindowReadyRef = useRef(false);
+
+    const probeLog = (message: string) => {
+        logger.info(`[Probe] ${message}`, 'Viewer3D');
+        void invoke('frontend_log', { message: `[Viewer3D][Probe] ${message}` }).catch(() => {
+            // Ignore logging transport failures so probe UX is unaffected.
+        });
+    };
+
+    const ensureProbePopup = async () => {
+        probeLog('ensureProbePopup start (tauri window)');
+        try {
+            await invoke('open_probe_window');
+            probeWindowReadyRef.current = true;
+            probeLog('open_probe_window succeeded');
+        } catch (err) {
+            probeWindowReadyRef.current = false;
+            probeLog(`open_probe_window failed: ${err}`);
+        }
+    };
+
+    useEffect(() => {
+        probeLog('probe keydown listener installed');
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.key === 'Escape') {
+                probeLog('Escape pressed -> disabling probe');
+                setProbeMode('off');
+                setProbeInfo(null);
+                return;
+            }
+
+            if (event.key !== 'p' && event.key !== 'P') {
+                return;
+            }
+
+            event.preventDefault();
+            const wantsSnap = event.shiftKey || event.key === 'P';
+            const nextMode: ProbeMode = wantsSnap ? 'snap' : 'interpolated';
+            probeLog(`probe key pressed: key=${event.key} shift=${event.shiftKey ? '1' : '0'} nextMode=${nextMode}`);
+            void ensureProbePopup();
+            setProbeMode(nextMode);
+            setProbeSampleRequestToken((prev) => prev + 1);
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        return () => {
+            window.removeEventListener('keydown', handleKeyDown);
+            probeLog('probe keydown listener removed');
+        };
+    }, []);
+
+    useEffect(() => {
+        probeLog(`probeMode changed -> ${probeMode}`);
+        if (probeMode === 'off') {
+            probeLog('closing probe popup because mode is off');
+            probeWindowReadyRef.current = false;
+            void invoke('close_probe_window').catch((err) => {
+                probeLog(`close_probe_window failed: ${err}`);
+            });
+        }
+    }, [probeMode]);
+
+    useEffect(() => {
+        return () => {
+            probeLog('component unmount -> closing probe popup');
+            probeWindowReadyRef.current = false;
+            void invoke('close_probe_window').catch((err) => {
+                probeLog(`close_probe_window on unmount failed: ${err}`);
+            });
+        };
+    }, []);
+
+    useEffect(() => {
+        if (probeMode === 'off') {
+            return;
+        }
+
+        if (!probeWindowReadyRef.current) {
+            probeLog(`popup update skipped: probe window not ready (mode=${probeMode})`);
+            return;
+        }
+
+        const modeText = probeMode === 'snap' ? 'SNAP (nearest grid point)' : 'INTERPOLATED';
+        const fields = probeInfo?.fields;
+
+        const fieldRows = fields
+            ? [
+                ['density', fields.density],
+                ['pressure', fields.pressure],
+                ['velocity_magnitude', fields.velocity_magnitude],
+                ['u_velocity', fields.u_velocity],
+                ['v_velocity', fields.v_velocity],
+                ['w_velocity', fields.w_velocity],
+                ['momentum_x', fields.momentum_x],
+                ['momentum_y', fields.momentum_y],
+                ['momentum_z', fields.momentum_z],
+                ['energy', fields.energy],
+                ['gamma', fields.gamma],
+            ]
+                .map(([label, value]) => `<tr><td>${label}</td><td>${formatProbeNumeric(value as number)}</td></tr>`)
+                .join('')
+            : '<tr><td colspan="2">No solution values at this point</td></tr>';
+
+        const scalarLabel = scalarField === 'none' ? 'selected_scalar' : scalarField;
+        const scalarValueText =
+            probeInfo?.scalarValue == null ? 'N/A' : formatProbeNumeric(probeInfo.scalarValue);
+
+        const popupHtml = `
+            <style>
+                body { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; margin: 0; padding: 14px; background: #111827; color: #e5e7eb; }
+                .meta { margin-bottom: 10px; font-size: 12px; line-height: 1.5; }
+                .title { font-size: 14px; font-weight: 700; margin-bottom: 6px; color: #93c5fd; }
+                table { width: 100%; border-collapse: collapse; font-size: 12px; }
+                td { border-top: 1px solid #374151; padding: 6px 4px; vertical-align: top; }
+                td:first-child { color: #9ca3af; width: 46%; }
+                td:last-child { color: #f9fafb; text-align: right; }
+            </style>
+            <div class="title">Point Probe</div>
+            <div class="meta">Mode: ${modeText}</div>
+            <div class="meta">Grid: ${probeInfo?.gridId ?? '---'}</div>
+            <div class="meta">I,J,K: ${probeInfo?.ijkIndex ? `(${probeInfo.ijkIndex.join(', ')})` : '---'}</div>
+            <div class="meta">Position: ${probeInfo
+                ? `(${probeInfo.worldPosition.map((v) => formatProbeNumeric(v)).join(', ')})`
+                : '---'}</div>
+            <div class="meta">${scalarLabel}: ${scalarValueText}</div>
+            <table>
+                <tbody>${fieldRows}</tbody>
+            </table>
+        `;
+        void invoke('update_probe_window_html', { html: popupHtml })
+            .then(() => {
+                probeLog(`popup content updated: mode=${probeMode} hasProbe=${probeInfo ? 'yes' : 'no'}`);
+            })
+            .catch((err) => {
+                probeWindowReadyRef.current = false;
+                probeLog(`popup content update failed: ${err}`);
+            });
+    }, [probeInfo, probeMode, scalarField]);
 
     // Memoize a key based on applied slices (updates only on Apply)
     const appliedSlicesKey = useMemo(
@@ -1321,12 +1829,18 @@ export default function Viewer3D({
                                     triangle_indices: [],
                                     normals: [],
                                     colors: undefined,
+                                    scalar_values: undefined,
+                                    probe_components: undefined,
+                                    probe_ijk: undefined,
                                     vertex_count: 0,
                                     face_count: 0,
                                 };
 
                                 // Check if all slices have colors before processing them
                                 const allHaveColors = subsetMeshes.every(({ mesh }) => mesh.colors && mesh.colors.length > 0);
+                                const allHaveScalars = subsetMeshes.every(({ mesh }) => mesh.scalar_values && mesh.scalar_values.length > 0);
+                                const allHaveProbeComponents = subsetMeshes.every(({ mesh }) => mesh.probe_components && mesh.probe_components.length > 0);
+                                const allHaveProbeIjk = subsetMeshes.every(({ mesh }) => mesh.probe_ijk && mesh.probe_ijk.length > 0);
                                 void invoke('frontend_log', {
                                     message: `[Viewer3D] Merging ${subsetMeshes.length} subsets, allHaveColors=${allHaveColors}`
                                 });
@@ -1339,6 +1853,15 @@ export default function Viewer3D({
                                 if (allHaveColors) {
                                     mergedMesh.colors = [];
                                 }
+                                if (allHaveScalars) {
+                                    mergedMesh.scalar_values = [];
+                                }
+                                if (allHaveProbeComponents) {
+                                    mergedMesh.probe_components = [];
+                                }
+                                if (allHaveProbeIjk) {
+                                    mergedMesh.probe_ijk = [];
+                                }
 
                                 for (const { mesh: sliceMesh } of subsetMeshes) {
                                     const vertexOffset = mergedMesh.vertices.length / 3;
@@ -1350,6 +1873,15 @@ export default function Viewer3D({
                                     // Append colors only if we're collecting them from all slices
                                     if (mergedMesh.colors && sliceMesh.colors && sliceMesh.colors.length > 0) {
                                         mergedMesh.colors.push(...sliceMesh.colors);
+                                    }
+                                    if (mergedMesh.scalar_values && sliceMesh.scalar_values && sliceMesh.scalar_values.length > 0) {
+                                        mergedMesh.scalar_values.push(...sliceMesh.scalar_values);
+                                    }
+                                    if (mergedMesh.probe_components && sliceMesh.probe_components && sliceMesh.probe_components.length > 0) {
+                                        mergedMesh.probe_components.push(...sliceMesh.probe_components);
+                                    }
+                                    if (mergedMesh.probe_ijk && sliceMesh.probe_ijk && sliceMesh.probe_ijk.length > 0) {
+                                        mergedMesh.probe_ijk.push(...sliceMesh.probe_ijk);
                                     }
 
                                     // Append indices (offset by vertex count)
@@ -1385,6 +1917,36 @@ export default function Viewer3D({
                                         message: `[Viewer3D] No colors in merged mesh`
                                     });
                                     logger.debug(`No colors in merged mesh (expected for uncolored slices)`, 'Viewer3D');
+                                }
+
+                                if (mergedMesh.scalar_values && mergedMesh.scalar_values.length !== mergedMesh.vertex_count) {
+                                    logger.warn(
+                                        `Scalar array length mismatch on merged subset mesh: have ${mergedMesh.scalar_values.length} need ${mergedMesh.vertex_count}. Discarding scalar probe values.`,
+                                        'Viewer3D'
+                                    );
+                                    mergedMesh.scalar_values = undefined;
+                                }
+
+                                if (
+                                    mergedMesh.probe_components &&
+                                    mergedMesh.probe_components.length !== mergedMesh.vertex_count * PROBE_COMPONENT_STRIDE
+                                ) {
+                                    logger.warn(
+                                        `Probe component length mismatch on merged subset mesh: have ${mergedMesh.probe_components.length} need ${mergedMesh.vertex_count * PROBE_COMPONENT_STRIDE}. Discarding probe components.`,
+                                        'Viewer3D'
+                                    );
+                                    mergedMesh.probe_components = undefined;
+                                }
+
+                                if (
+                                    mergedMesh.probe_ijk &&
+                                    mergedMesh.probe_ijk.length !== mergedMesh.vertex_count * PROBE_IJK_STRIDE
+                                ) {
+                                    logger.warn(
+                                        `Probe IJK length mismatch on merged subset mesh: have ${mergedMesh.probe_ijk.length} need ${mergedMesh.vertex_count * PROBE_IJK_STRIDE}. Discarding IJK metadata.`,
+                                        'Viewer3D'
+                                    );
+                                    mergedMesh.probe_ijk = undefined;
                                 }
 
                                 mesh = mergedMesh;
@@ -1747,6 +2309,42 @@ export default function Viewer3D({
         [arbitrarySlices]
     );
 
+    const probeTargets = useMemo<ProbeTarget[]>(() => {
+        const targets: ProbeTarget[] = [];
+
+        for (const gridItem of visibleGrids) {
+            const mesh = meshById[gridItem.id];
+            if (!mesh) {
+                continue;
+            }
+            targets.push({
+                probeId: gridItem.id,
+                displayGridId: gridItem.id,
+                mesh,
+            });
+        }
+
+        for (const [id, mesh] of Object.entries(meshById)) {
+            if (!id.startsWith('arbitrary::')) {
+                continue;
+            }
+            const parts = id.split('::');
+            const sliceId = parts[1];
+            const gridId = parts[2] ?? id;
+            if (!enabledArbitraryIds.has(sliceId)) {
+                continue;
+            }
+
+            targets.push({
+                probeId: id,
+                displayGridId: gridId,
+                mesh,
+            });
+        }
+
+        return targets;
+    }, [enabledArbitraryIds, meshById, visibleGrids]);
+
     const stats = useMemo(() => {
         return visibleGrids.reduce(
             (acc, grid) => {
@@ -1862,6 +2460,16 @@ export default function Viewer3D({
                     ))
                 }
 
+                {/* Point probe interaction */}
+                <PointerInteractionHandler
+                    probeTargets={probeTargets}
+                    probeMode={probeMode}
+                    sampleRequestToken={probeSampleRequestToken}
+                    raycasterRef={raycasterRef}
+                    pointerRef={pointerRef}
+                    onProbe={setProbeInfo}
+                />
+
                 {/* Camera controls */}
                 <CameraCommitControls
                     onCameraCommit={onCameraCommit}
@@ -1898,6 +2506,8 @@ export default function Viewer3D({
                         Vertices: {stats.vertices}
                         <br />
                         Edges: {stats.edges}
+                        <br />
+                        Probe: {probeMode === 'off' ? 'OFF (press p or P)' : probeMode === 'snap' ? 'SNAP (P)' : 'INTERPOLATED (p)'}
                     </div>
                 )}
             </div>
@@ -1953,6 +2563,7 @@ export default function Viewer3D({
                     </div>
                 </div>
             )}
+
         </div>
     );
 }

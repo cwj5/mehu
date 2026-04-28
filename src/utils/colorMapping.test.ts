@@ -366,8 +366,9 @@ describe('colorMapping', () => {
             const clippedMax = 60;
             const valueMidpoint = 50;
 
-            const colorFull = generateColorArray([valueMidpoint], 'viridis', fullMin, fullMax);
-            const colorClipped = generateColorArray([valueMidpoint], 'viridis', clippedMin, clippedMax);
+            // Note: These are kept for potential future test extension but currently unused
+            void generateColorArray([valueMidpoint], 'viridis', fullMin, fullMax);
+            void generateColorArray([valueMidpoint], 'viridis', clippedMin, clippedMax);
 
             // 50 is at position 0.5 in the full range but at position 0.5 in clipped range as well —
             // normalised the same, so colours would be equal. Instead compare edge behaviour.

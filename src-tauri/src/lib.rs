@@ -23,9 +23,7 @@ mod solution;
 #[cfg(test)]
 mod logger_tests;
 
-use logger::{
-    clear_logs, export_logs, get_logs, log_debug, log_error, log_info, log_warn, LogEntry,
-};
+use logger::{clear_logs, export_logs, get_logs, log_debug, log_error, log_info, LogEntry};
 use once_cell::sync::Lazy;
 use plot3d::{
     extract_contour_lines_from_triangles, get_last_solution_metadata, read_plot3d_function,
@@ -291,6 +289,435 @@ fn align_surface_mesh_colors(
     }
 }
 
+/// Align scalar field values to mesh vertices using the same filtering logic as colors
+fn filter_vertex_mode_surface_scalar_values(
+    scalar_values: &[f32],
+    iblank: Option<&Vec<i32>>,
+    grid_i: usize,
+    grid_j: usize,
+    decimation: usize,
+    respect_iblank: bool,
+    show_fringe_points: bool,
+) -> Option<Vec<f32>> {
+    if !respect_iblank || iblank.is_none() {
+        return if scalar_values.is_empty() {
+            None
+        } else {
+            Some(scalar_values.to_vec())
+        };
+    }
+
+    let i_decimated = ((grid_i - 1) / decimation) + 1;
+    let j_decimated = ((grid_j - 1) / decimation) + 1;
+
+    let mut filtered_values = Vec::new();
+    for j_step in 0..j_decimated {
+        let j_idx = (j_step * decimation).min(grid_j - 1);
+        for i_step in 0..i_decimated {
+            let i_idx = (i_step * decimation).min(grid_i - 1);
+            let grid_idx = j_idx * grid_i + i_idx;
+            if is_hidden_iblank_point(iblank, grid_idx, respect_iblank, show_fringe_points) {
+                continue;
+            }
+
+            let grid_vertex_idx = j_step * i_decimated + i_step;
+            if grid_vertex_idx < scalar_values.len() {
+                filtered_values.push(scalar_values[grid_vertex_idx]);
+            }
+        }
+    }
+
+    if filtered_values.is_empty() {
+        None
+    } else {
+        Some(filtered_values)
+    }
+}
+
+fn compact_mesh_and_scalar_values_to_used_vertices(
+    mesh: &mut MeshGeometry,
+    scalar_values: &[f32],
+) -> Option<Vec<f32>> {
+    let old_vertex_count = mesh.vertices.len() / 3;
+    if old_vertex_count == 0 {
+        mesh.vertex_count = 0;
+        mesh.face_count = 0;
+        return None;
+    }
+
+    let mut used = vec![false; old_vertex_count];
+    for &idx in &mesh.indices {
+        let uidx = idx as usize;
+        if uidx < old_vertex_count {
+            used[uidx] = true;
+        }
+    }
+    for &idx in &mesh.triangle_indices {
+        let uidx = idx as usize;
+        if uidx < old_vertex_count {
+            used[uidx] = true;
+        }
+    }
+
+    if !used.iter().any(|&u| u) {
+        return None;
+    }
+
+    let mut new_values = Vec::new();
+    for old_idx in 0..old_vertex_count {
+        if !used[old_idx] {
+            continue;
+        }
+        if old_idx < scalar_values.len() {
+            new_values.push(scalar_values[old_idx]);
+        }
+    }
+
+    if new_values.is_empty() {
+        None
+    } else {
+        Some(new_values)
+    }
+}
+
+fn align_surface_mesh_scalar_values(
+    mesh: &mut MeshGeometry,
+    scalar_values: &[f32],
+    iblank: Option<&Vec<i32>>,
+    grid_i: usize,
+    grid_j: usize,
+    decimation: usize,
+    respect_iblank: bool,
+    show_fringe_points: bool,
+    filter_mode: IblankFilterMode,
+) -> Option<Vec<f32>> {
+    match filter_mode {
+        IblankFilterMode::Vertex => filter_vertex_mode_surface_scalar_values(
+            scalar_values,
+            iblank,
+            grid_i,
+            grid_j,
+            decimation,
+            respect_iblank,
+            show_fringe_points,
+        ),
+        IblankFilterMode::Cell => {
+            compact_mesh_and_scalar_values_to_used_vertices(mesh, scalar_values)
+        }
+    }
+}
+
+const PROBE_COMPONENT_STRIDE: usize = 6;
+const PROBE_IJK_STRIDE: usize = 3;
+
+fn push_probe_components_at(solution: &Plot3DSolution, idx: usize, output: &mut Vec<f32>) {
+    const DEFAULT_GAMMA: f32 = 1.4;
+    output.push(solution.rho[idx]);
+    output.push(solution.rhou[idx]);
+    output.push(solution.rhov[idx]);
+    output.push(solution.rhow[idx]);
+    output.push(solution.rhoe[idx]);
+    output.push(
+        solution
+            .gamma
+            .as_ref()
+            .and_then(|g| g.get(idx))
+            .copied()
+            .unwrap_or(DEFAULT_GAMMA),
+    );
+}
+
+fn build_surface_probe_components(
+    solution: &Plot3DSolution,
+    grid_i: usize,
+    grid_j: usize,
+    decimation: usize,
+) -> Vec<f32> {
+    let i_decimated = ((grid_i - 1) / decimation) + 1;
+    let j_decimated = ((grid_j - 1) / decimation) + 1;
+    let mut probe_components =
+        Vec::with_capacity(i_decimated * j_decimated * PROBE_COMPONENT_STRIDE);
+
+    for j_step in 0..j_decimated {
+        let j_idx = (j_step * decimation).min(grid_j - 1);
+        for i_step in 0..i_decimated {
+            let i_idx = (i_step * decimation).min(grid_i - 1);
+            let grid_idx = j_idx * grid_i + i_idx;
+            push_probe_components_at(solution, grid_idx, &mut probe_components);
+        }
+    }
+
+    probe_components
+}
+
+fn filter_vertex_mode_surface_probe_components(
+    probe_components: &[f32],
+    iblank: Option<&Vec<i32>>,
+    grid_i: usize,
+    grid_j: usize,
+    decimation: usize,
+    respect_iblank: bool,
+    show_fringe_points: bool,
+) -> Option<Vec<f32>> {
+    if !respect_iblank || iblank.is_none() {
+        return if probe_components.is_empty() {
+            None
+        } else {
+            Some(probe_components.to_vec())
+        };
+    }
+
+    let i_decimated = ((grid_i - 1) / decimation) + 1;
+    let j_decimated = ((grid_j - 1) / decimation) + 1;
+
+    let mut filtered = Vec::new();
+    for j_step in 0..j_decimated {
+        let j_idx = (j_step * decimation).min(grid_j - 1);
+        for i_step in 0..i_decimated {
+            let i_idx = (i_step * decimation).min(grid_i - 1);
+            let grid_idx = j_idx * grid_i + i_idx;
+            if is_hidden_iblank_point(iblank, grid_idx, respect_iblank, show_fringe_points) {
+                continue;
+            }
+
+            let grid_vertex_idx = j_step * i_decimated + i_step;
+            let start = grid_vertex_idx * PROBE_COMPONENT_STRIDE;
+            if start + (PROBE_COMPONENT_STRIDE - 1) < probe_components.len() {
+                filtered
+                    .extend_from_slice(&probe_components[start..start + PROBE_COMPONENT_STRIDE]);
+            }
+        }
+    }
+
+    if filtered.is_empty() {
+        None
+    } else {
+        Some(filtered)
+    }
+}
+
+fn compact_mesh_and_probe_components_to_used_vertices(
+    mesh: &mut MeshGeometry,
+    probe_components: &[f32],
+) -> Option<Vec<f32>> {
+    let old_vertex_count = mesh.vertices.len() / 3;
+    if old_vertex_count == 0 {
+        mesh.vertex_count = 0;
+        mesh.face_count = 0;
+        return None;
+    }
+
+    let mut used = vec![false; old_vertex_count];
+    for &idx in &mesh.indices {
+        let uidx = idx as usize;
+        if uidx < old_vertex_count {
+            used[uidx] = true;
+        }
+    }
+    for &idx in &mesh.triangle_indices {
+        let uidx = idx as usize;
+        if uidx < old_vertex_count {
+            used[uidx] = true;
+        }
+    }
+
+    if !used.iter().any(|&u| u) {
+        return None;
+    }
+
+    let mut compacted = Vec::new();
+    for old_idx in 0..old_vertex_count {
+        if !used[old_idx] {
+            continue;
+        }
+
+        let start = old_idx * PROBE_COMPONENT_STRIDE;
+        if start + (PROBE_COMPONENT_STRIDE - 1) < probe_components.len() {
+            compacted.extend_from_slice(&probe_components[start..start + PROBE_COMPONENT_STRIDE]);
+        }
+    }
+
+    if compacted.is_empty() {
+        None
+    } else {
+        Some(compacted)
+    }
+}
+
+fn align_surface_mesh_probe_components(
+    mesh: &mut MeshGeometry,
+    probe_components: &[f32],
+    iblank: Option<&Vec<i32>>,
+    grid_i: usize,
+    grid_j: usize,
+    decimation: usize,
+    respect_iblank: bool,
+    show_fringe_points: bool,
+    filter_mode: IblankFilterMode,
+) -> Option<Vec<f32>> {
+    match filter_mode {
+        IblankFilterMode::Vertex => filter_vertex_mode_surface_probe_components(
+            probe_components,
+            iblank,
+            grid_i,
+            grid_j,
+            decimation,
+            respect_iblank,
+            show_fringe_points,
+        ),
+        IblankFilterMode::Cell => {
+            compact_mesh_and_probe_components_to_used_vertices(mesh, probe_components)
+        }
+    }
+}
+
+fn push_probe_ijk(i: usize, j: usize, k: usize, output: &mut Vec<u32>) {
+    output.push((i + 1) as u32);
+    output.push((j + 1) as u32);
+    output.push((k + 1) as u32);
+}
+
+fn linear_index_to_ijk(idx: usize, dim_i: usize, dim_j: usize) -> (usize, usize, usize) {
+    let i = idx % dim_i;
+    let j = (idx / dim_i) % dim_j;
+    let k = idx / (dim_i * dim_j);
+    (i, j, k)
+}
+
+fn build_surface_probe_ijk(grid_i: usize, grid_j: usize, decimation: usize) -> Vec<u32> {
+    let i_decimated = ((grid_i - 1) / decimation) + 1;
+    let j_decimated = ((grid_j - 1) / decimation) + 1;
+    let mut probe_ijk = Vec::with_capacity(i_decimated * j_decimated * PROBE_IJK_STRIDE);
+
+    for j_step in 0..j_decimated {
+        let j_idx = (j_step * decimation).min(grid_j - 1);
+        for i_step in 0..i_decimated {
+            let i_idx = (i_step * decimation).min(grid_i - 1);
+            push_probe_ijk(i_idx, j_idx, 0, &mut probe_ijk);
+        }
+    }
+
+    probe_ijk
+}
+
+fn filter_vertex_mode_surface_probe_ijk(
+    probe_ijk: &[u32],
+    iblank: Option<&Vec<i32>>,
+    grid_i: usize,
+    grid_j: usize,
+    decimation: usize,
+    respect_iblank: bool,
+    show_fringe_points: bool,
+) -> Option<Vec<u32>> {
+    if !respect_iblank || iblank.is_none() {
+        return if probe_ijk.is_empty() {
+            None
+        } else {
+            Some(probe_ijk.to_vec())
+        };
+    }
+
+    let i_decimated = ((grid_i - 1) / decimation) + 1;
+    let j_decimated = ((grid_j - 1) / decimation) + 1;
+
+    let mut filtered = Vec::new();
+    for j_step in 0..j_decimated {
+        let j_idx = (j_step * decimation).min(grid_j - 1);
+        for i_step in 0..i_decimated {
+            let i_idx = (i_step * decimation).min(grid_i - 1);
+            let grid_idx = j_idx * grid_i + i_idx;
+            if is_hidden_iblank_point(iblank, grid_idx, respect_iblank, show_fringe_points) {
+                continue;
+            }
+
+            let grid_vertex_idx = j_step * i_decimated + i_step;
+            let start = grid_vertex_idx * PROBE_IJK_STRIDE;
+            if start + (PROBE_IJK_STRIDE - 1) < probe_ijk.len() {
+                filtered.extend_from_slice(&probe_ijk[start..start + PROBE_IJK_STRIDE]);
+            }
+        }
+    }
+
+    if filtered.is_empty() {
+        None
+    } else {
+        Some(filtered)
+    }
+}
+
+fn compact_mesh_and_probe_ijk_to_used_vertices(
+    mesh: &mut MeshGeometry,
+    probe_ijk: &[u32],
+) -> Option<Vec<u32>> {
+    let old_vertex_count = mesh.vertices.len() / 3;
+    if old_vertex_count == 0 {
+        mesh.vertex_count = 0;
+        mesh.face_count = 0;
+        return None;
+    }
+
+    let mut used = vec![false; old_vertex_count];
+    for &idx in &mesh.indices {
+        let uidx = idx as usize;
+        if uidx < old_vertex_count {
+            used[uidx] = true;
+        }
+    }
+    for &idx in &mesh.triangle_indices {
+        let uidx = idx as usize;
+        if uidx < old_vertex_count {
+            used[uidx] = true;
+        }
+    }
+
+    if !used.iter().any(|&u| u) {
+        return None;
+    }
+
+    let mut compacted = Vec::new();
+    for old_idx in 0..old_vertex_count {
+        if !used[old_idx] {
+            continue;
+        }
+
+        let start = old_idx * PROBE_IJK_STRIDE;
+        if start + (PROBE_IJK_STRIDE - 1) < probe_ijk.len() {
+            compacted.extend_from_slice(&probe_ijk[start..start + PROBE_IJK_STRIDE]);
+        }
+    }
+
+    if compacted.is_empty() {
+        None
+    } else {
+        Some(compacted)
+    }
+}
+
+fn align_surface_mesh_probe_ijk(
+    mesh: &mut MeshGeometry,
+    probe_ijk: &[u32],
+    iblank: Option<&Vec<i32>>,
+    grid_i: usize,
+    grid_j: usize,
+    decimation: usize,
+    respect_iblank: bool,
+    show_fringe_points: bool,
+    filter_mode: IblankFilterMode,
+) -> Option<Vec<u32>> {
+    match filter_mode {
+        IblankFilterMode::Vertex => filter_vertex_mode_surface_probe_ijk(
+            probe_ijk,
+            iblank,
+            grid_i,
+            grid_j,
+            decimation,
+            respect_iblank,
+            show_fringe_points,
+        ),
+        IblankFilterMode::Cell => compact_mesh_and_probe_ijk_to_used_vertices(mesh, probe_ijk),
+    }
+}
+
 #[cfg(test)]
 mod iblank_flag_tests {
     use super::{
@@ -349,6 +776,9 @@ mod iblank_flag_tests {
             vertex_count: 0,
             face_count: 0,
             colors: None,
+            scalar_values: None,
+            probe_components: None,
+            probe_ijk: None,
             vertex_cell_data: None,
         };
 
@@ -392,6 +822,9 @@ mod iblank_flag_tests {
             vertex_count: 4,
             face_count: 1,
             colors: None,
+            scalar_values: None,
+            probe_components: None,
+            probe_ijk: None,
             vertex_cell_data: None,
         };
 
@@ -1638,8 +2071,19 @@ fn compute_solution_colors(
         ));
     }
 
-    // Compute colors
+    // Compute colors and scalar values
     let values = compute_scalar_field_surface(&solution, field_enum, decimation_factor);
+    let probe_components = build_surface_probe_components(
+        &solution,
+        grid.dimensions.i as usize,
+        grid.dimensions.j as usize,
+        decimation_factor.max(1),
+    );
+    let probe_ijk = build_surface_probe_ijk(
+        grid.dimensions.i as usize,
+        grid.dimensions.j as usize,
+        decimation_factor.max(1),
+    );
     let colors = compute_colors(&values, &scheme);
 
     let mut mesh = grid.to_mesh_surface_geometry_decimated(
@@ -1659,6 +2103,42 @@ fn compute_solution_colors(
         effective_show_fringe_points,
         effective_filter_mode,
     );
+
+    // Also populate scalar values for point probe
+    mesh.scalar_values = align_surface_mesh_scalar_values(
+        &mut mesh,
+        &values,
+        grid.iblank.as_ref(),
+        grid.dimensions.i as usize,
+        grid.dimensions.j as usize,
+        decimation_factor.max(1),
+        effective_respect_iblank,
+        effective_show_fringe_points,
+        effective_filter_mode,
+    );
+    mesh.probe_components = align_surface_mesh_probe_components(
+        &mut mesh,
+        &probe_components,
+        grid.iblank.as_ref(),
+        grid.dimensions.i as usize,
+        grid.dimensions.j as usize,
+        decimation_factor.max(1),
+        effective_respect_iblank,
+        effective_show_fringe_points,
+        effective_filter_mode,
+    );
+    mesh.probe_ijk = align_surface_mesh_probe_ijk(
+        &mut mesh,
+        &probe_ijk,
+        grid.iblank.as_ref(),
+        grid.dimensions.i as usize,
+        grid.dimensions.j as usize,
+        decimation_factor.max(1),
+        effective_respect_iblank,
+        effective_show_fringe_points,
+        effective_filter_mode,
+    );
+
     let _ = window.emit("loading-end", ());
 
     Ok(mesh)
@@ -1786,6 +2266,9 @@ fn compute_solution_colors_sliced(
 
     // Map each point in sliced grid to original grid for solution values
     let mut values = Vec::with_capacity(sliced_grid.total_points());
+    let mut probe_components =
+        Vec::with_capacity(sliced_grid.total_points() * PROBE_COMPONENT_STRIDE);
+    let mut probe_ijk = Vec::with_capacity(sliced_grid.total_points() * PROBE_IJK_STRIDE);
 
     let linear_index_original =
         |i: usize, j: usize, k: usize| -> usize { i + j * i_orig + k * i_orig * j_orig };
@@ -1797,6 +2280,8 @@ fn compute_solution_colors_sliced(
                     let orig_linear = linear_index_original(i_idx, j_idx, slice_idx);
                     let point_solution = create_point_solution(&solution, orig_linear);
                     values.push(compute_scalar_field_value(&point_solution, field_enum));
+                    push_probe_components_at(&solution, orig_linear, &mut probe_components);
+                    push_probe_ijk(i_idx, j_idx, slice_idx, &mut probe_ijk);
                 }
             }
         }
@@ -1806,6 +2291,8 @@ fn compute_solution_colors_sliced(
                     let orig_linear = linear_index_original(i_idx, slice_idx, k_idx);
                     let point_solution = create_point_solution(&solution, orig_linear);
                     values.push(compute_scalar_field_value(&point_solution, field_enum));
+                    push_probe_components_at(&solution, orig_linear, &mut probe_components);
+                    push_probe_ijk(i_idx, slice_idx, k_idx, &mut probe_ijk);
                 }
             }
         }
@@ -1815,6 +2302,8 @@ fn compute_solution_colors_sliced(
                     let orig_linear = linear_index_original(slice_idx, j_idx, k_idx);
                     let point_solution = create_point_solution(&solution, orig_linear);
                     values.push(compute_scalar_field_value(&point_solution, field_enum));
+                    push_probe_components_at(&solution, orig_linear, &mut probe_components);
+                    push_probe_ijk(slice_idx, j_idx, k_idx, &mut probe_ijk);
                 }
             }
         }
@@ -1885,6 +2374,41 @@ fn compute_solution_colors_sliced(
     mesh.colors = align_surface_mesh_colors(
         &mut mesh,
         &colors,
+        sliced_grid.iblank.as_ref(),
+        sliced_grid.dimensions.i as usize,
+        sliced_grid.dimensions.j as usize,
+        1,
+        effective_respect_iblank,
+        effective_show_fringe_points,
+        effective_filter_mode,
+    );
+
+    // Also populate scalar values for point probe
+    mesh.scalar_values = align_surface_mesh_scalar_values(
+        &mut mesh,
+        &values,
+        sliced_grid.iblank.as_ref(),
+        sliced_grid.dimensions.i as usize,
+        sliced_grid.dimensions.j as usize,
+        1,
+        effective_respect_iblank,
+        effective_show_fringe_points,
+        effective_filter_mode,
+    );
+    mesh.probe_components = align_surface_mesh_probe_components(
+        &mut mesh,
+        &probe_components,
+        sliced_grid.iblank.as_ref(),
+        sliced_grid.dimensions.i as usize,
+        sliced_grid.dimensions.j as usize,
+        1,
+        effective_respect_iblank,
+        effective_show_fringe_points,
+        effective_filter_mode,
+    );
+    mesh.probe_ijk = align_surface_mesh_probe_ijk(
+        &mut mesh,
+        &probe_ijk,
         sliced_grid.iblank.as_ref(),
         sliced_grid.dimensions.i as usize,
         sliced_grid.dimensions.j as usize,
@@ -2007,9 +2531,15 @@ fn compute_solution_colors_subset_by_id(
         build_subset_grid(&grid, iStart, iEnd, jStart, jEnd, kStart, kEnd)?;
 
     let mut values = Vec::with_capacity(original_indices.len());
+    let mut probe_components = Vec::with_capacity(original_indices.len() * PROBE_COMPONENT_STRIDE);
+    let mut probe_ijk = Vec::with_capacity(original_indices.len() * PROBE_IJK_STRIDE);
     for &orig in &original_indices {
         let point_solution = create_point_solution(&solution, orig);
         values.push(compute_scalar_field_value(&point_solution, field_enum));
+        push_probe_components_at(&solution, orig, &mut probe_components);
+        let (i_idx, j_idx, k_idx) =
+            linear_index_to_ijk(orig, grid.dimensions.i as usize, grid.dimensions.j as usize);
+        push_probe_ijk(i_idx, j_idx, k_idx, &mut probe_ijk);
     }
 
     let colors = compute_colors_with_range(&values, &scheme, global_min, global_max);
@@ -2020,16 +2550,52 @@ fn compute_solution_colors_subset_by_id(
         1,
     );
 
-    if colors.len() == mesh.vertices.len() {
-        mesh.colors = Some(colors);
-    } else {
-        log_warn(&format!(
-            "Subset color/vertex length mismatch: colors={} vertices={} (discarding colors)",
-            colors.len(),
-            mesh.vertices.len()
-        ));
-        mesh.colors = None;
-    }
+    mesh.colors = align_surface_mesh_colors(
+        &mut mesh,
+        &colors,
+        subset_grid.iblank.as_ref(),
+        subset_grid.dimensions.i as usize,
+        subset_grid.dimensions.j as usize,
+        1,
+        effective_respect_iblank,
+        effective_show_fringe_points,
+        effective_filter_mode,
+    );
+
+    mesh.scalar_values = align_surface_mesh_scalar_values(
+        &mut mesh,
+        &values,
+        subset_grid.iblank.as_ref(),
+        subset_grid.dimensions.i as usize,
+        subset_grid.dimensions.j as usize,
+        1,
+        effective_respect_iblank,
+        effective_show_fringe_points,
+        effective_filter_mode,
+    );
+
+    mesh.probe_components = align_surface_mesh_probe_components(
+        &mut mesh,
+        &probe_components,
+        subset_grid.iblank.as_ref(),
+        subset_grid.dimensions.i as usize,
+        subset_grid.dimensions.j as usize,
+        1,
+        effective_respect_iblank,
+        effective_show_fringe_points,
+        effective_filter_mode,
+    );
+    mesh.probe_ijk = align_surface_mesh_probe_ijk(
+        &mut mesh,
+        &probe_ijk,
+        subset_grid.iblank.as_ref(),
+        subset_grid.dimensions.i as usize,
+        subset_grid.dimensions.j as usize,
+        1,
+        effective_respect_iblank,
+        effective_show_fringe_points,
+        effective_filter_mode,
+    );
 
     let _ = window.emit("loading-end", ());
     Ok(mesh)
@@ -2205,6 +2771,19 @@ fn compute_solution_colors_arbitrary_plane(
         |i: usize, j: usize, k: usize| -> usize { i + j * i_orig + k * i_orig * j_orig };
 
     let mut values = Vec::with_capacity(vertex_cell_data.len());
+    let mut probe_components = Vec::with_capacity(vertex_cell_data.len() * PROBE_COMPONENT_STRIDE);
+    let mut probe_ijk = Vec::with_capacity(vertex_cell_data.len() * PROBE_IJK_STRIDE);
+
+    let nodal_gamma_values: Vec<f32> = (0..grid_points)
+        .map(|idx| {
+            solution
+                .gamma
+                .as_ref()
+                .and_then(|g| g.get(idx))
+                .copied()
+                .unwrap_or(1.4)
+        })
+        .collect();
 
     for cell_data in vertex_cell_data {
         let i = cell_data.cell_i;
@@ -2221,6 +2800,16 @@ fn compute_solution_colors_arbitrary_plane(
             linear_index(i + 1, j + 1, k + 1),
             linear_index(i, j + 1, k + 1),
         ];
+        let corner_ijk = [
+            (i, j, k),
+            (i + 1, j, k),
+            (i + 1, j + 1, k),
+            (i, j + 1, k),
+            (i, j, k + 1),
+            (i + 1, j, k + 1),
+            (i + 1, j + 1, k + 1),
+            (i, j + 1, k + 1),
+        ];
 
         let mut interpolated_field = 0.0;
 
@@ -2230,6 +2819,44 @@ fn compute_solution_colors_arbitrary_plane(
         }
 
         values.push(interpolated_field);
+
+        let mut interpolated_rho = 0.0;
+        let mut interpolated_rhou = 0.0;
+        let mut interpolated_rhov = 0.0;
+        let mut interpolated_rhow = 0.0;
+        let mut interpolated_rhoe = 0.0;
+        let mut interpolated_gamma = 0.0;
+
+        for (idx, &corner_idx) in corner_indices.iter().enumerate() {
+            let weight = cell_data.weights[idx];
+            interpolated_rho += weight * solution.rho[corner_idx];
+            interpolated_rhou += weight * solution.rhou[corner_idx];
+            interpolated_rhov += weight * solution.rhov[corner_idx];
+            interpolated_rhow += weight * solution.rhow[corner_idx];
+            interpolated_rhoe += weight * solution.rhoe[corner_idx];
+            interpolated_gamma += weight * nodal_gamma_values[corner_idx];
+        }
+
+        probe_components.extend_from_slice(&[
+            interpolated_rho,
+            interpolated_rhou,
+            interpolated_rhov,
+            interpolated_rhow,
+            interpolated_rhoe,
+            interpolated_gamma,
+        ]);
+
+        let mut max_weight_idx = 0usize;
+        let mut max_weight = cell_data.weights[0];
+        for idx in 1..cell_data.weights.len() {
+            let weight = cell_data.weights[idx];
+            if weight > max_weight {
+                max_weight = weight;
+                max_weight_idx = idx;
+            }
+        }
+        let (ii, jj, kk) = corner_ijk[max_weight_idx];
+        push_probe_ijk(ii, jj, kk, &mut probe_ijk);
     }
 
     // Log displayed range (values on this shown arbitrary plane) and normalization range
@@ -2285,6 +2912,11 @@ fn compute_solution_colors_arbitrary_plane(
 
     let colors = compute_colors_with_range(&values, &scheme, global_min, global_max);
     mesh.colors = Some(colors);
+
+    // Also populate scalar values for point probe (same as values array)
+    mesh.scalar_values = Some(values);
+    mesh.probe_components = Some(probe_components);
+    mesh.probe_ijk = Some(probe_ijk);
 
     Ok(mesh)
 }
@@ -3152,6 +3784,74 @@ async fn open_about_window(app: tauri::AppHandle) -> Result<(), String> {
     }
 }
 
+/// Open (or focus) the Point Probe window
+#[tauri::command]
+async fn open_probe_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("point-probe") {
+        // If already open, keep it visible but do not steal focus.
+        let _ = window.show();
+        Ok(())
+    } else {
+        let main_window = app.get_webview_window("main");
+        let mut probe_builder = WebviewWindow::builder(
+            &app,
+            "point-probe",
+            tauri::WebviewUrl::App("/probe.html".into()),
+        );
+
+        // Prefer placing the probe window to the right of the main window so
+        // it does not overlap the active viewport when there is space.
+        if let Some(main) = &main_window {
+            if let (Ok(pos), Ok(size)) = (main.outer_position(), main.outer_size()) {
+                let target_x = pos.x as f64 + size.width as f64 + 24.0;
+                let target_y = pos.y as f64 + 24.0;
+                probe_builder = probe_builder.position(target_x, target_y);
+            }
+        }
+
+        probe_builder
+            .title("Point Probe")
+            .inner_size(420.0, 560.0)
+            .resizable(true)
+            .minimizable(true)
+            .maximizable(false)
+            .focused(true)
+            .build()
+            .map_err(|e| format!("Failed to create Point Probe window: {}", e))?;
+        Ok(())
+    }
+}
+
+/// Close the Point Probe window if it exists
+#[tauri::command]
+fn close_probe_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("point-probe") {
+        window
+            .close()
+            .map_err(|e| format!("Failed to close Point Probe window: {}", e))?;
+    }
+    Ok(())
+}
+
+/// Update Point Probe window HTML payload by evaluating JS in the probe window
+#[tauri::command]
+fn update_probe_window_html(app: tauri::AppHandle, html: String) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("point-probe") {
+        let html_js = serde_json::to_string(&html)
+            .map_err(|e| format!("Failed to serialize probe HTML payload: {}", e))?;
+        let script = format!(
+            "(function() {{ const root = document.getElementById('root'); if (root) {{ root.innerHTML = {}; }} }})();",
+            html_js
+        );
+
+        window
+            .eval(&script)
+            .map_err(|e| format!("Failed to evaluate probe HTML update script: {}", e))?;
+        return Ok(());
+    }
+    Err("Point Probe window is not open".to_string())
+}
+
 /// Return the current `PlotState` for dev inspection and parity verification.
 /// This command is intentionally read-only; mutations go through
 /// `apply_plot_action`.
@@ -3474,6 +4174,9 @@ pub fn run() {
             write_png_file,
             frontend_log,
             open_about_window,
+            open_probe_window,
+            close_probe_window,
+            update_probe_window_html,
             get_plot_state,
             apply_plot_action,
             set_plot_scalar_field,
