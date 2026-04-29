@@ -49,7 +49,11 @@ struct RefState {
 
 impl RefState {
     fn from_solution(solution: &Plot3DSolution) -> Self {
-        let gamma = DEFAULT_GAMMA;
+        let gamma = solution
+            .metadata
+            .as_ref()
+            .and_then(|m| m.gaminf)
+            .unwrap_or(DEFAULT_GAMMA);
         let minf = solution
             .metadata
             .as_ref()
@@ -276,13 +280,16 @@ pub fn compute_scalar_field(solution: &Plot3DSolution, field: ScalarField) -> Ve
 
         // ── Pressure family (111-119) ─────────────────────────────────────────
 
-        // 111: p/p_∞ = p·γ  (p_∞ = 1/γ)
-        ScalarField::NormalizedPressure => (0..n)
-            .map(|i| match Pt::at(i, solution) {
-                None => 0.0,
-                Some(pt) => pt.p * pt.gamma,
-            })
-            .collect(),
+        // 111: p/p_∞ = p·γ∞  (p_∞ = 1/γ∞)
+        ScalarField::NormalizedPressure => {
+            let g_inf = ref_state.gamma;
+            (0..n)
+                .map(|i| match Pt::at(i, solution) {
+                    None => 0.0,
+                    Some(pt) => pt.p * g_inf,
+                })
+                .collect()
+        }
 
         // 112: p₀ = p·[1+(γ-1)/2·M²]^(γ/(γ-1))
         ScalarField::StagnationPressure => (0..n)
@@ -295,16 +302,19 @@ pub fn compute_scalar_field(solution: &Plot3DSolution, field: ScalarField) -> Ve
             })
             .collect(),
 
-        // 113: p₀/p_∞ = p₀·γ
-        ScalarField::NormalizedStagnationPressure => (0..n)
-            .map(|i| match Pt::at(i, solution) {
-                None => 0.0,
-                Some(pt) => {
-                    let base = 1.0 + (pt.gamma - 1.0) / 2.0 * pt.mach * pt.mach;
-                    pt.p * base.powf(pt.gamma / (pt.gamma - 1.0)) * pt.gamma
-                }
-            })
-            .collect(),
+        // 113: p₀/p_∞ = p₀·γ∞
+        ScalarField::NormalizedStagnationPressure => {
+            let g_inf = ref_state.gamma;
+            (0..n)
+                .map(|i| match Pt::at(i, solution) {
+                    None => 0.0,
+                    Some(pt) => {
+                        let base = 1.0 + (pt.gamma - 1.0) / 2.0 * pt.mach * pt.mach;
+                        pt.p * base.powf(pt.gamma / (pt.gamma - 1.0)) * g_inf
+                    }
+                })
+                .collect()
+        }
 
         // 114: Cp = (p − p_∞) / (½ρ_∞V_∞²)
         ScalarField::PressureCoefficient => {
@@ -354,13 +364,16 @@ pub fn compute_scalar_field(solution: &Plot3DSolution, field: ScalarField) -> Ve
             })
             .collect(),
 
-        // 117: pp/p_∞ = pp·γ
-        ScalarField::PitotPressureRatio => (0..n)
-            .map(|i| match Pt::at(i, solution) {
-                None => 0.0,
-                Some(pt) => pitot_pressure(pt.p, pt.mach, pt.gamma) * pt.gamma,
-            })
-            .collect(),
+        // 117: pp/p_∞ = pp·γ∞
+        ScalarField::PitotPressureRatio => {
+            let g_inf = ref_state.gamma;
+            (0..n)
+                .map(|i| match Pt::at(i, solution) {
+                    None => 0.0,
+                    Some(pt) => pitot_pressure(pt.p, pt.mach, pt.gamma) * g_inf,
+                })
+                .collect()
+        }
 
         // 118: q = ½ρV²
         ScalarField::DynamicPressure => (0..n)
@@ -377,20 +390,23 @@ pub fn compute_scalar_field(solution: &Plot3DSolution, field: ScalarField) -> Ve
             })
             .collect(),
 
-        // 119: ln(p/p_∞) = ln(p·γ)
-        ScalarField::LogNormalizedPressure => (0..n)
-            .map(|i| match Pt::at(i, solution) {
-                None => 0.0,
-                Some(pt) => {
-                    let norm_p = pt.p * pt.gamma;
-                    if norm_p > 0.0 {
-                        norm_p.ln()
-                    } else {
-                        0.0
+        // 119: ln(p/p_∞) = ln(p·γ∞)
+        ScalarField::LogNormalizedPressure => {
+            let g_inf = ref_state.gamma;
+            (0..n)
+                .map(|i| match Pt::at(i, solution) {
+                    None => 0.0,
+                    Some(pt) => {
+                        let norm_p = pt.p * g_inf;
+                        if norm_p > 0.0 {
+                            norm_p.ln()
+                        } else {
+                            0.0
+                        }
                     }
-                }
-            })
-            .collect(),
+                })
+                .collect()
+        }
 
         // ── Temperature family (120-124) ──────────────────────────────────────
 
@@ -402,13 +418,16 @@ pub fn compute_scalar_field(solution: &Plot3DSolution, field: ScalarField) -> Ve
             })
             .collect(),
 
-        // 121: T/T_∞ = T·γ  (T_∞ = p_∞/(ρ_∞R) = 1/γ)
-        ScalarField::NormalizedTemperature => (0..n)
-            .map(|i| match Pt::at(i, solution) {
-                None => 0.0,
-                Some(pt) => pt.p / pt.rho * pt.gamma,
-            })
-            .collect(),
+        // 121: T/T_∞ = T·γ∞  (T_∞ = p_∞/(ρ_∞R) = 1/γ∞)
+        ScalarField::NormalizedTemperature => {
+            let g_inf = ref_state.gamma;
+            (0..n)
+                .map(|i| match Pt::at(i, solution) {
+                    None => 0.0,
+                    Some(pt) => pt.p / pt.rho * g_inf,
+                })
+                .collect()
+        }
 
         // 122: T₀ = T·[1+(γ-1)/2·M²]
         ScalarField::StagnationTemperature => (0..n)
@@ -421,31 +440,37 @@ pub fn compute_scalar_field(solution: &Plot3DSolution, field: ScalarField) -> Ve
             })
             .collect(),
 
-        // 123: T₀/T_∞ = T₀·γ
-        ScalarField::NormalizedStagnationTemperature => (0..n)
-            .map(|i| match Pt::at(i, solution) {
-                None => 0.0,
-                Some(pt) => {
-                    let base = 1.0 + (pt.gamma - 1.0) / 2.0 * pt.mach * pt.mach;
-                    (pt.p / pt.rho) * base * pt.gamma
-                }
-            })
-            .collect(),
-
-        // 124: ln(T/T_∞) = ln(T·γ)
-        ScalarField::LogNormalizedTemperature => (0..n)
-            .map(|i| match Pt::at(i, solution) {
-                None => 0.0,
-                Some(pt) => {
-                    let norm_t = pt.p / pt.rho * pt.gamma;
-                    if norm_t > 0.0 {
-                        norm_t.ln()
-                    } else {
-                        0.0
+        // 123: T₀/T_∞ = T₀·γ∞
+        ScalarField::NormalizedStagnationTemperature => {
+            let g_inf = ref_state.gamma;
+            (0..n)
+                .map(|i| match Pt::at(i, solution) {
+                    None => 0.0,
+                    Some(pt) => {
+                        let base = 1.0 + (pt.gamma - 1.0) / 2.0 * pt.mach * pt.mach;
+                        (pt.p / pt.rho) * base * g_inf
                     }
-                }
-            })
-            .collect(),
+                })
+                .collect()
+        }
+
+        // 124: ln(T/T_∞) = ln(T·γ∞)
+        ScalarField::LogNormalizedTemperature => {
+            let g_inf = ref_state.gamma;
+            (0..n)
+                .map(|i| match Pt::at(i, solution) {
+                    None => 0.0,
+                    Some(pt) => {
+                        let norm_t = pt.p / pt.rho * g_inf;
+                        if norm_t > 0.0 {
+                            norm_t.ln()
+                        } else {
+                            0.0
+                        }
+                    }
+                })
+                .collect()
+        }
 
         // ── Enthalpy family (130-133) ─────────────────────────────────────────
 
@@ -457,13 +482,16 @@ pub fn compute_scalar_field(solution: &Plot3DSolution, field: ScalarField) -> Ve
             })
             .collect(),
 
-        // 131: h/h_∞ = h·(γ-1)  (h_∞ = 1/(γ-1))
-        ScalarField::NormalizedEnthalpy => (0..n)
-            .map(|i| match Pt::at(i, solution) {
-                None => 0.0,
-                Some(pt) => pt.gamma * pt.ei * (pt.gamma - 1.0),
-            })
-            .collect(),
+        // 131: h/h_∞ = h·(γ∞-1)  (h_∞ = 1/(γ∞-1))
+        ScalarField::NormalizedEnthalpy => {
+            let g_inf = ref_state.gamma;
+            (0..n)
+                .map(|i| match Pt::at(i, solution) {
+                    None => 0.0,
+                    Some(pt) => pt.gamma * pt.ei * (g_inf - 1.0),
+                })
+                .collect()
+        }
 
         // 132: h₀ = e₀ + p/ρ  (total enthalpy per unit mass)
         ScalarField::StagnationEnthalpy => (0..n)
@@ -495,13 +523,16 @@ pub fn compute_scalar_field(solution: &Plot3DSolution, field: ScalarField) -> Ve
             })
             .collect(),
 
-        // 141: eᵢ/eᵢ_∞ = eᵢ·γ(γ-1)  (eᵢ_∞ = 1/(γ(γ-1)))
-        ScalarField::NormalizedInternalEnergy => (0..n)
-            .map(|i| match Pt::at(i, solution) {
-                None => 0.0,
-                Some(pt) => pt.ei * pt.gamma * (pt.gamma - 1.0),
-            })
-            .collect(),
+        // 141: eᵢ/eᵢ_∞ = eᵢ·γ∞(γ∞-1)  (eᵢ_∞ = 1/(γ∞(γ∞-1)))
+        ScalarField::NormalizedInternalEnergy => {
+            let g_inf = ref_state.gamma;
+            (0..n)
+                .map(|i| match Pt::at(i, solution) {
+                    None => 0.0,
+                    Some(pt) => pt.ei * g_inf * (g_inf - 1.0),
+                })
+                .collect()
+        }
 
         // 142: e₀ = Q5/ρ  (specific stagnation energy per unit mass)
         ScalarField::StagnationEnergy => (0..n)

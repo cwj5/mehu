@@ -698,8 +698,8 @@ pub fn map_legacy_function_number(number: u16) -> (Option<ScalarField>, Vec<Diag
 /// Unified FUNCTION number translator that handles all known ranges.
 ///
 /// Returns:
-/// - `Some(action)` for every known FUNCTION ID (scalar, grid, vector, particle, or special).
-/// - `None` + info diagnostic for known-but-deferred non-scalar IDs.
+/// - `Some(action)` for supported FUNCTION IDs (scalar, grid, vector, particle, or special).
+/// - `Some(action)` + info diagnostic for known-but-deferred non-scalar IDs.
 /// - `None` + warning diagnostic for unknown IDs.
 ///
 /// This is the preferred entry point for the `FUNCTION` command parser.

@@ -294,7 +294,7 @@ Derived quantities used below:
 | 112 | Stagnation pressure | `p (1 + (γ−1)/2 · M²)^(γ/(γ−1))` |
 | 113 | Normalized stagnation pressure | `p₀ / p∞` |
 | 114 | Pressure coefficient | `Cₚ = (p − p∞) / (½ρ∞V∞²)` |
-| 115 | Stagnation pressure coefficient | `Cₚ₀ = (p₀ − p∞) / (½ρ∞V∞²)` |
+| 115 | Stagnation pressure coefficient | `Cₚ₀ = (p₀ − p₀∞) / (½ρ∞V∞²)` |
 | 116 | Pitot pressure | `p₀` (subsonic); Rayleigh pitot formula (supersonic) |
 | 117 | Pitot pressure ratio | `p_pitot / p∞` |
 | 118 | Dynamic pressure | `q = ½ρV²` |
@@ -317,7 +317,7 @@ Derived quantities used below:
 | 130 | Enthalpy | `h = eᵢ + p/ρ` |
 | 131 | Normalized enthalpy | `h / h∞` |
 | 132 | Stagnation enthalpy | `h₀ = h + ½V²` |
-| 133 | Normalized stagnation enthalpy | `h₀ / h∞` |
+| 133 | Normalized stagnation enthalpy | `h₀ / h₀∞` |
 
 #### Energy family (FUNCTION 140–145)
 
@@ -339,7 +339,7 @@ Derived quantities used below:
 | 154 | Mach number | `M = \|V\| / a` |
 | 155 | Speed of sound | `a = √(γ p / ρ)` |
 | 156 | Cross-flow velocity | `V_cf = √(v² + w²)` |
-| 157 | Normalized 2D stream function | `\|V_cf\| / \|V\|` (≈ sin of flow-axis angle) |
+| 157 | Normalized 2D stream function | `ψ̂ ∝ ∫ ρu\,Δy` (normalized 2D stream function; requires grid) |
 | 158 | Velocity divergence | `∇·V` (requires grid; finite-difference on curvilinear mesh) |
 
 #### Momentum / conserved (FUNCTION 160–163)
@@ -354,7 +354,7 @@ Derived quantities used below:
 | # | Name | Equation |
 |---|------|----------|
 | 170 | Entropy | `s = cᵥ ln(p / ρ^γ)` |
-| 171 | Entropy measure s1 | `s₁ = p / ρ^γ` (un-logged form; 1.0 at freestream) |
+| 171 | Entropy measure s1 | `s₁ = γp/ρ^γ − 1` (0 at freestream) |
 
 #### Vorticity / rotation (FUNCTION 180–188)
 
@@ -364,11 +364,11 @@ All vorticity components require grid coordinates (finite-difference curl of vel
 |---|------|----------|
 | 180–182 | ωₓ, ω_y, ω_z | `(∂w/∂y − ∂v/∂z)`, `(∂u/∂z − ∂w/∂x)`, `(∂v/∂x − ∂u/∂y)` |
 | 183 | Vorticity magnitude | `\|ω\|` |
-| 184 | Swirl | `ω · V / \|V\|` (projection of ω onto velocity) |
+| 184 | Swirl | `(ω · V) / (ρ\|V\|²)` (projection of ω onto velocity normalized by momentum) |
 | 185 | Velocity × vorticity magnitude | `\|V × ω\|` |
 | 186 | Helicity density | `V · ω` |
 | 187 | Relative helicity | `(V · ω) / (\|V\| \|ω\|)` |
-| 188 | Filtered relative helicity | relative helicity masked to `\|ω\| > threshold` |
+| 188 | Filtered relative helicity | relative helicity masked to `\|V·ω\| > threshold` |
 
 #### Shock / gradient family (FUNCTION 190–193)
 

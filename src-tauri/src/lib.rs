@@ -2867,6 +2867,84 @@ fn compute_field_values_for_solution_id(
     }
 }
 
+/// Compute the finite min/max of a scalar field without materializing the full
+/// Vec<f32>.  For non-derivative fields the solution arrays are iterated
+/// directly; derivative fields fall back to `compute_field_values_for_solution_id`
+/// which does allocate because the spatial finite-difference pass is already
+/// fully vectorized.
+fn compute_scalar_field_range_streaming(
+    solution_id: &str,
+    field: plot_state::ScalarField,
+) -> Result<(Option<f32>, Option<f32>, usize), String> {
+    use plot_state::ScalarField;
+    use solution::compute_scalar_field;
+
+    // Derivative fields still require full materialization.
+    if is_derivative_scalar_field(field) {
+        let values = compute_field_values_for_solution_id(solution_id, field)?;
+        let n = values.len();
+        let (lo, hi) = values.iter().copied().filter(|v| v.is_finite()).fold(
+            (None::<f32>, None::<f32>),
+            |(lo, hi), v| {
+                (
+                    Some(lo.map_or(v, |m: f32| m.min(v))),
+                    Some(hi.map_or(v, |m: f32| m.max(v))),
+                )
+            },
+        );
+        return Ok((lo, hi, n));
+    }
+
+    // For non-derivative fields, iterate the raw solution arrays to avoid a
+    // full clone / allocation for the common case.
+    let solution = {
+        let cache = SOLUTION_CACHE_V2
+            .lock()
+            .map_err(|_| "Solution cache lock poisoned".to_string())?;
+        let cached = cache
+            .get(solution_id)
+            .ok_or_else(|| format!("Solution not found in cache: {}", solution_id))?;
+        Arc::clone(&cached.solution)
+    };
+
+    // Fast path for raw Q-file arrays — no allocation needed.
+    let raw_iter: Option<Box<dyn Iterator<Item = f32> + '_>> = match field {
+        ScalarField::Density => Some(Box::new(solution.rho.iter().copied())),
+        ScalarField::MomentumX => Some(Box::new(solution.rhou.iter().copied())),
+        ScalarField::MomentumY => Some(Box::new(solution.rhov.iter().copied())),
+        ScalarField::MomentumZ => Some(Box::new(solution.rhow.iter().copied())),
+        ScalarField::Energy => Some(Box::new(solution.rhoe.iter().copied())),
+        _ => None,
+    };
+
+    if let Some(iter) = raw_iter {
+        let n = solution.rho.len();
+        let (lo, hi) =
+            iter.filter(|v| v.is_finite())
+                .fold((None::<f32>, None::<f32>), |(lo, hi), v| {
+                    (
+                        Some(lo.map_or(v, |m: f32| m.min(v))),
+                        Some(hi.map_or(v, |m: f32| m.max(v))),
+                    )
+                });
+        return Ok((lo, hi, n));
+    }
+
+    // All other non-derivative fields: compute and stream without an extra clone.
+    let values = compute_scalar_field(&solution, field);
+    let n = values.len();
+    let (lo, hi) = values.into_iter().filter(|v| v.is_finite()).fold(
+        (None::<f32>, None::<f32>),
+        |(lo, hi), v| {
+            (
+                Some(lo.map_or(v, |m: f32| m.min(v))),
+                Some(hi.map_or(v, |m: f32| m.max(v))),
+            )
+        },
+    );
+    Ok((lo, hi, n))
+}
+
 /// Get the min/max range of a scalar field from a cached solution
 #[allow(non_snake_case)]
 #[tauri::command]
@@ -2877,25 +2955,7 @@ fn get_solution_field_range(solutionId: String, field: String) -> Result<FieldRa
     let field_enum =
         ScalarField::from_str(&field).ok_or_else(|| format!("Unknown scalar field: {}", field))?;
 
-    let values = compute_field_values_for_solution_id(&solutionId, field_enum)?;
-
-    let mut min: Option<f32> = None;
-    let mut max: Option<f32> = None;
-    let grid_points = values.len();
-    for value in values {
-        if !value.is_finite() {
-            continue;
-        }
-
-        min = Some(match min {
-            Some(current) => current.min(value),
-            None => value,
-        });
-        max = Some(match max {
-            Some(current) => current.max(value),
-            None => value,
-        });
-    }
+    let (min, max, grid_points) = compute_scalar_field_range_streaming(&solutionId, field_enum)?;
 
     match (min, max) {
         (Some(min), Some(max)) => {

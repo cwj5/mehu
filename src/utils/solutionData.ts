@@ -169,10 +169,12 @@ export function computeScalarField(solution: Plot3DSolution, field: ScalarField)
     const n = solution.rho.length;
     const result = new Float32Array(n);
 
-    // Freestream reference (PLOT3D non-dimensional: ρ∞=1, c∞=1, p∞=1/γ)
-    const gamma = DEFAULT_GAMMA;
+    // Freestream reference (PLOT3D non-dimensional: ρ∞=1, c∞=1, p∞=1/γ∞)
+    const gammaInfCandidate = (solution.metadata?.gaminf ?? solution.gamma?.[0] ?? DEFAULT_GAMMA) as number;
+    const gammaInf = Number.isFinite(gammaInfCandidate) && gammaInfCandidate > 1 ? gammaInfCandidate : DEFAULT_GAMMA;
+    const gamma = gammaInf;
     const minf: number = (solution.metadata?.fsmach ?? solution.metadata?.refmach ?? 1.0) as number;
-    const pInf = 1.0 / gamma;
+    const pInf = 1.0 / gammaInf;
     const vinfSq = minf * minf;
     const dynInf = vinfSq > 0 ? 0.5 * vinfSq : 1.0;
 
