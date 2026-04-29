@@ -73,7 +73,6 @@ struct Pt {
     u: f32,
     v: f32,
     w: f32,
-    v2: f32,   // |V|²
     e0: f32,   // specific total energy = rhoe/rho
     ei: f32,   // specific internal energy = e0 − ½V²
     p: f32,    // static pressure ≥ 0
@@ -108,7 +107,6 @@ impl Pt {
             u,
             v,
             w,
-            v2,
             e0,
             ei,
             p,
@@ -762,6 +760,26 @@ fn physical_grad_at(
     let (y_xi, y_eta, y_zeta) = cd_at(y, ni, nj, nk, gi, gj, gk);
     let (z_xi, z_eta, z_zeta) = cd_at(z, ni, nj, nk, gi, gj, gk);
 
+    // 2-D fallback: when the grid is planar (nk==1 or all ζ-direction coordinate
+    // differences are zero), the 3×3 Jacobian is singular.  Use the 2×2
+    // in-plane Jacobian instead; the out-of-plane gradient component is 0.
+    let planar = nk <= 1
+        || (x_zeta.abs() < 1e-20
+            && y_zeta.abs() < 1e-20
+            && z_zeta.abs() < 1e-20
+            && z_xi.abs() < 1e-20
+            && z_eta.abs() < 1e-20);
+    if planar {
+        // J_2d = [[x_xi, x_eta], [y_xi, y_eta]]
+        let det2 = x_xi * y_eta - x_eta * y_xi;
+        if det2.abs() < 1e-20 {
+            return (0.0, 0.0, 0.0);
+        }
+        let grad_x = (f_xi * y_eta - f_eta * y_xi) / det2;
+        let grad_y = (f_eta * x_xi - f_xi * x_eta) / det2;
+        return (grad_x, grad_y, 0.0);
+    }
+
     // Jacobian J = [[a,b,c],[d,e,f],[g,h,s]]  (rows x,y,z; cols ξ,η,ζ)
     let (a, b, c) = (x_xi, x_eta, x_zeta);
     let (d, e, f) = (y_xi, y_eta, y_zeta);
@@ -1016,14 +1034,10 @@ fn compute_derivative_field(
 
                 ScalarField::ShockFunctionPressureGradient => (0..n)
                     .map(|i| {
-                        let gm = (gpx[i] * gpx[i] + gpy[i] * gpy[i] + gpz[i] * gpz[i]).sqrt();
-                        if gm > 0.0 {
-                            match Pt::at(i, solution) {
-                                Some(pt) if pt.c > 0.0 => {
-                                    (pt.u * gpx[i] + pt.v * gpy[i] + pt.w * gpz[i]) / (pt.c * gm)
-                                }
-                                _ => 0.0,
-                            }
+                        let p = pressure[i];
+                        if p > 0.0 {
+                            let gm = (gpx[i] * gpx[i] + gpy[i] * gpy[i] + gpz[i] * gpz[i]).sqrt();
+                            gm / p
                         } else {
                             0.0
                         }
@@ -1032,16 +1046,24 @@ fn compute_derivative_field(
 
                 ScalarField::FilteredShockFunction => (0..n)
                     .map(|i| {
-                        let gm = (gpx[i] * gpx[i] + gpy[i] * gpy[i] + gpz[i] * gpz[i]).sqrt();
-                        if gm >= 0.1 {
-                            match Pt::at(i, solution) {
-                                Some(pt) if pt.c > 0.0 => {
-                                    (pt.u * gpx[i] + pt.v * gpy[i] + pt.w * gpz[i]) / (pt.c * gm)
+                        let p = pressure[i];
+                        if p <= 0.0 {
+                            return 0.0;
+                        }
+
+                        match Pt::at(i, solution) {
+                            Some(pt) if pt.c > 0.0 => {
+                                let vmag = (pt.u * pt.u + pt.v * pt.v + pt.w * pt.w).sqrt();
+                                let mach = vmag / pt.c;
+                                if mach > 1.0 {
+                                    let gm = (gpx[i] * gpx[i] + gpy[i] * gpy[i] + gpz[i] * gpz[i])
+                                        .sqrt();
+                                    gm / p
+                                } else {
+                                    0.0
                                 }
-                                _ => 0.0,
                             }
-                        } else {
-                            0.0
+                            _ => 0.0,
                         }
                     })
                     .collect(),

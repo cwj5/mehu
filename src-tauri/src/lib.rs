@@ -2403,12 +2403,28 @@ fn compute_solution_colors_subset_by_id(
         1,
     );
 
+    // Determine the 2D surface dimensions that to_mesh_surface_geometry_decimated uses.
+    // The orientation logic mirrors what that function does: K-plane when nk==1 is absent,
+    // I-plane when ni==1, J-plane when nj==1, otherwise K-min boundary (ni, nj).
+    let ni_sub = subset_grid.dimensions.i as usize;
+    let nj_sub = subset_grid.dimensions.j as usize;
+    let nk_sub = subset_grid.dimensions.k as usize;
+    let (surf_u, surf_v) = if nk_sub == 1 {
+        (ni_sub, nj_sub)
+    } else if ni_sub == 1 {
+        (nj_sub, nk_sub)
+    } else if nj_sub == 1 {
+        (ni_sub, nk_sub)
+    } else {
+        (ni_sub, nj_sub)
+    };
+
     mesh.colors = align_surface_mesh_colors(
         &mut mesh,
         &colors,
         subset_grid.iblank.as_ref(),
-        subset_grid.dimensions.i as usize,
-        subset_grid.dimensions.j as usize,
+        surf_u,
+        surf_v,
         1,
         effective_respect_iblank,
         effective_show_fringe_points,
@@ -2419,8 +2435,8 @@ fn compute_solution_colors_subset_by_id(
         &mut mesh,
         &values,
         subset_grid.iblank.as_ref(),
-        subset_grid.dimensions.i as usize,
-        subset_grid.dimensions.j as usize,
+        surf_u,
+        surf_v,
         1,
         effective_respect_iblank,
         effective_show_fringe_points,
@@ -2431,8 +2447,8 @@ fn compute_solution_colors_subset_by_id(
         &mut mesh,
         &probe_components,
         subset_grid.iblank.as_ref(),
-        subset_grid.dimensions.i as usize,
-        subset_grid.dimensions.j as usize,
+        surf_u,
+        surf_v,
         1,
         effective_respect_iblank,
         effective_show_fringe_points,
@@ -2442,8 +2458,8 @@ fn compute_solution_colors_subset_by_id(
         &mut mesh,
         &probe_ijk,
         subset_grid.iblank.as_ref(),
-        subset_grid.dimensions.i as usize,
-        subset_grid.dimensions.j as usize,
+        surf_u,
+        surf_v,
         1,
         effective_respect_iblank,
         effective_show_fringe_points,
@@ -2756,34 +2772,117 @@ pub struct FieldRange {
     pub max: f32,
 }
 
+fn is_derivative_scalar_field(field: plot_state::ScalarField) -> bool {
+    use plot_state::ScalarField;
+    matches!(
+        field,
+        ScalarField::Normalized2dStreamFunction
+            | ScalarField::VelocityDivergence
+            | ScalarField::VorticityX
+            | ScalarField::VorticityY
+            | ScalarField::VorticityZ
+            | ScalarField::VorticityMagnitude
+            | ScalarField::Swirl
+            | ScalarField::VelocityCrossVorticityMagnitude
+            | ScalarField::HelicityDensity
+            | ScalarField::RelativeHelicity
+            | ScalarField::FilteredRelativeHelicity
+            | ScalarField::ShockFunctionPressureGradient
+            | ScalarField::FilteredShockFunction
+            | ScalarField::PressureGradientMagnitude
+            | ScalarField::DensityGradientMagnitude
+    )
+}
+
+fn compute_field_values_for_solution_id(
+    solution_id: &str,
+    field: plot_state::ScalarField,
+) -> Result<Vec<f32>, String> {
+    use solution::{compute_scalar_field, compute_scalar_field_with_grid};
+
+    let (solution, solution_grid_index) = {
+        let cache = SOLUTION_CACHE_V2
+            .lock()
+            .map_err(|_| "Solution cache lock poisoned".to_string())?;
+        let cached = cache
+            .get(solution_id)
+            .ok_or_else(|| format!("Solution not found in cache: {}", solution_id))?;
+        (Arc::clone(&cached.solution), cached.grid_index)
+    };
+
+    let preferred_grid_id = {
+        let guard = PLOT_STATE
+            .lock()
+            .map_err(|_| "Plot state lock poisoned".to_string())?;
+        guard.dataset.grid_id.clone()
+    };
+
+    let matching_grid = {
+        let cache = GRID_CACHE
+            .lock()
+            .map_err(|_| "Grid cache lock poisoned".to_string())?;
+
+        if let Some(grid_id) = preferred_grid_id.as_ref() {
+            if let Some(cached) = cache.get(grid_id) {
+                if cached.grid_index == solution_grid_index
+                    && cached.grid.dimensions.i == solution.dimensions.i
+                    && cached.grid.dimensions.j == solution.dimensions.j
+                    && cached.grid.dimensions.k == solution.dimensions.k
+                {
+                    Some(Arc::clone(&cached.grid))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+        .or_else(|| {
+            let mut candidate_ids: Vec<String> = cache
+                .values()
+                .filter(|cached| {
+                    cached.grid_index == solution_grid_index
+                        && cached.grid.dimensions.i == solution.dimensions.i
+                        && cached.grid.dimensions.j == solution.dimensions.j
+                        && cached.grid.dimensions.k == solution.dimensions.k
+                })
+                .map(|cached| cached.id.clone())
+                .collect();
+            candidate_ids.sort();
+            candidate_ids
+                .first()
+                .and_then(|id| cache.get(id).map(|cached| Arc::clone(&cached.grid)))
+        })
+    };
+
+    match matching_grid {
+        Some(grid) => Ok(compute_scalar_field_with_grid(&solution, &grid, field)),
+        None if is_derivative_scalar_field(field) => Err(format!(
+            "Field {:?} requires matching grid coordinates, but no compatible grid is cached for solution {}",
+            field, solution_id
+        )),
+        None => Ok(compute_scalar_field(&solution, field)),
+    }
+}
+
 /// Get the min/max range of a scalar field from a cached solution
 #[allow(non_snake_case)]
 #[tauri::command]
 fn get_solution_field_range(solutionId: String, field: String) -> Result<FieldRange, String> {
     use plot_state::ScalarField;
 
-    // Load solution from cache
-    let solution = {
-        let cache = SOLUTION_CACHE_V2
-            .lock()
-            .map_err(|_| "Solution cache lock poisoned".to_string())?;
-        let cached = cache
-            .get(&solutionId)
-            .ok_or_else(|| format!("Solution not found in cache: {}", solutionId))?;
-        Arc::clone(&cached.solution)
-    };
-
     // Parse field
     let field_enum =
         ScalarField::from_str(&field).ok_or_else(|| format!("Unknown scalar field: {}", field))?;
 
-    // Compute field range. Grid not available here; derivative fields return zeros.
-    use solution::compute_scalar_field;
+    let values = compute_field_values_for_solution_id(&solutionId, field_enum)?;
+
     let mut min: Option<f32> = None;
     let mut max: Option<f32> = None;
-
-    let grid_points = solution.rho.len();
-    for value in compute_scalar_field(&solution, field_enum) {
+    let grid_points = values.len();
+    for value in values {
         if !value.is_finite() {
             continue;
         }
@@ -2869,20 +2968,7 @@ fn resolve_contour_levels(
     let field_enum = ScalarField::from_str(&scalarField)
         .ok_or_else(|| format!("Unknown scalar field: {}", scalarField))?;
 
-    // Load solution from cache.
-    let solution = {
-        let cache = SOLUTION_CACHE_V2
-            .lock()
-            .map_err(|_| "Solution cache lock poisoned".to_string())?;
-        let cached = cache
-            .get(&solutionId)
-            .ok_or_else(|| format!("Solution not found in cache: {}", solutionId))?;
-        Arc::clone(&cached.solution)
-    };
-
-    // Compute field range. Grid not available here; derivative fields return zeros.
-    use solution::compute_scalar_field;
-    let field_values = compute_scalar_field(&solution, field_enum);
+    let field_values = compute_field_values_for_solution_id(&solutionId, field_enum)?;
     let mut min_val: Option<f32> = None;
     let mut max_val: Option<f32> = None;
     for value in field_values {

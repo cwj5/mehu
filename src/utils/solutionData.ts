@@ -152,8 +152,8 @@ export const SCALAR_FIELDS: ScalarFieldInfo[] = [
     { field: 'relative_helicity', name: 'Relative Helicity', unit: 'cos φ', description: 'Relative helicity cos(φ) = V·ω/(|V||ω|) (requires grid)' },
     { field: 'filtered_relative_helicity', name: 'Filtered Relative Helicity', unit: '', description: 'Relative helicity where |V·ω| ≥ 0.1V∞²; else 0 (requires grid)' },
     // Shock / gradient family
-    { field: 'shock_function_pressure_gradient', name: 'Shock Function', unit: '', description: 'Mach component in direction of ∇p (requires grid)' },
-    { field: 'filtered_shock_function', name: 'Filtered Shock Function', unit: '', description: 'Shock function where |∇p| ≥ 0.1; else 0 (requires grid)' },
+    { field: 'shock_function_pressure_gradient', name: 'Shock Function', unit: '', description: 'Shock sensor |∇p|/p (requires grid)' },
+    { field: 'filtered_shock_function', name: 'Filtered Shock Function', unit: '', description: 'Shock sensor masked to M > 1; else 0 (requires grid)' },
     { field: 'pressure_gradient_magnitude', name: 'Pressure Gradient |∇p|', unit: '|∇p|', description: 'Pressure gradient magnitude (requires grid)' },
     { field: 'density_gradient_magnitude', name: 'Density Gradient |∇ρ|', unit: '|∇ρ|', description: 'Density gradient magnitude / schlieren (requires grid)' },
 ];

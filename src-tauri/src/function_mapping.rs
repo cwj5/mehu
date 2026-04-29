@@ -16,6 +16,7 @@ use crate::plot_state::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LegacyFunctionStatus {
     Supported,
+    #[allow(dead_code)]
     KnownUnimplemented,
 }
 
