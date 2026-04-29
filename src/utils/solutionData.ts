@@ -159,39 +159,6 @@ export const SCALAR_FIELDS: ScalarFieldInfo[] = [
 ];
 
 /**
- * Compute velocity magnitude from momentum components
- */
-function computeVelocityMagnitude(rho: number, rhou: number, rhov: number, rhow: number): number {
-    if (rho <= 0) return 0;
-
-    const u = rhou / rho;
-    const v = rhov / rho;
-    const w = rhow / rho;
-    return Math.sqrt(u * u + v * v + w * w);
-}
-
-/**
- * Compute pressure from conservative variables
- */
-function computePressure(
-    rho: number,
-    rhou: number,
-    rhov: number,
-    rhow: number,
-    rhoe: number,
-    gamma: number
-): number {
-    if (rho <= 0) return 0;
-
-    const u = rhou / rho;
-    const v = rhov / rho;
-    const w = rhow / rho;
-    const kinetic_energy = 0.5 * rho * (u * u + v * v + w * w);
-    const internal_energy = rhoe - kinetic_energy;
-    return (gamma - 1) * internal_energy;
-}
-
-/**
  * Compute a scalar field from solution data.
  *
  * Derivative-based fields (vorticity, divergence, gradients, helicity,
