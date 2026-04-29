@@ -262,5 +262,168 @@ describe('solutionData', () => {
                 expect(field.description.length).toBeGreaterThan(0);
             });
         });
+
+        it('should include all new scalar fields from the 100-199 range', () => {
+            const fieldNames = SCALAR_FIELDS.map(f => f.field);
+            // Spot-check each major family
+            expect(fieldNames).toContain('mach_number');
+            expect(fieldNames).toContain('stagnation_pressure');
+            expect(fieldNames).toContain('temperature');
+            expect(fieldNames).toContain('enthalpy');
+            expect(fieldNames).toContain('internal_energy');
+            expect(fieldNames).toContain('entropy');
+            expect(fieldNames).toContain('vorticity_magnitude');
+            expect(fieldNames).toContain('pressure_gradient_magnitude');
+        });
+    });
+
+    // ── Equation tests for new scalar fields ──────────────────────────────────
+
+    /** Build a single-point solution with fully specified primitive state. */
+    const pointSolution = (
+        rho: number, u: number, v: number, w: number, p: number, gamma = 1.4,
+        fsmach?: number
+    ): Plot3DSolution => {
+        const v2 = u * u + v * v + w * w;
+        const rhoe = p / (gamma - 1) + 0.5 * rho * v2;
+        return {
+            grid_index: 0,
+            dimensions: { i: 1, j: 1, k: 1 },
+            rho: [rho],
+            rhou: [rho * u],
+            rhov: [rho * v],
+            rhow: [rho * w],
+            rhoe: [rhoe],
+            gamma: [gamma],
+            ...(fsmach !== undefined ? { metadata: { fsmach } } : {}),
+        };
+    };
+
+    describe('equation tests — new scalar fields', () => {
+        it('temperature = p/ρ', () => {
+            const sol = pointSolution(1.2, 0.5, 0.3, 0.0, 0.5);
+            const t = computeScalarField(sol, 'temperature');
+            expect(t[0]).toBeCloseTo(0.5 / 1.2, 5);
+        });
+
+        it('mach_number = |V|/c', () => {
+            const rho = 1.2, u = 0.5, v = 0.3, p = 0.5, gamma = 1.4;
+            const sol = pointSolution(rho, u, v, 0, p, gamma);
+            const mach = computeScalarField(sol, 'mach_number');
+            const vmag = Math.sqrt(u * u + v * v);
+            const c = Math.sqrt(gamma * p / rho);
+            expect(mach[0]).toBeCloseTo(vmag / c, 4);
+        });
+
+        it('speed_of_sound = sqrt(γp/ρ)', () => {
+            const rho = 1.2, u = 0.3, p = 0.5, gamma = 1.4;
+            const sol = pointSolution(rho, u, 0, 0, p, gamma);
+            const c = computeScalarField(sol, 'speed_of_sound');
+            expect(c[0]).toBeCloseTo(Math.sqrt(gamma * p / rho), 4);
+        });
+
+        it('stagnation_pressure uses isentropic formula', () => {
+            const rho = 1.2, u = 0.3, p = 0.5, gamma = 1.4;
+            const sol = pointSolution(rho, u, 0, 0, p, gamma);
+            const p0Field = computeScalarField(sol, 'stagnation_pressure');
+            const c = Math.sqrt(gamma * p / rho);
+            const mach = u / c;
+            const base = 1 + (gamma - 1) / 2 * mach * mach;
+            const expected = p * Math.pow(base, gamma / (gamma - 1));
+            expect(p0Field[0]).toBeCloseTo(expected, 4);
+        });
+
+        it('stagnation_temperature = T*(1 + (γ-1)/2*M²)', () => {
+            const rho = 1.2, u = 0.3, p = 0.5, gamma = 1.4;
+            const sol = pointSolution(rho, u, 0, 0, p, gamma);
+            const t0Field = computeScalarField(sol, 'stagnation_temperature');
+            const c = Math.sqrt(gamma * p / rho);
+            const mach = u / c;
+            const t = p / rho;
+            const expected = t * (1 + (gamma - 1) / 2 * mach * mach);
+            expect(t0Field[0]).toBeCloseTo(expected, 4);
+        });
+
+        it('pressure_coefficient is zero at freestream conditions', () => {
+            const gamma = 1.4, minf = 0.8;
+            const pInf = 1.0 / gamma;
+            const u = minf; // M∞*c∞ = M∞ (c∞=1)
+            const sol = pointSolution(1.0, u, 0, 0, pInf, gamma, minf);
+            const cp = computeScalarField(sol, 'pressure_coefficient');
+            expect(cp[0]).toBeCloseTo(0, 4);
+        });
+
+        it('pitot_pressure equals stagnation_pressure for subsonic flow', () => {
+            const sol = pointSolution(1.2, 0.3, 0, 0, 0.5);
+            const pitot = computeScalarField(sol, 'pitot_pressure');
+            const p0 = computeScalarField(sol, 'stagnation_pressure');
+            expect(pitot[0]).toBeCloseTo(p0[0], 4);
+        });
+
+        it('pitot_pressure is less than isentropic p0 for supersonic flow', () => {
+            // c=1.0 when γ=1.4, ρ=1, p=1/γ; u=1.5 gives M=1.5
+            const sol = pointSolution(1.0, 1.5, 0, 0, 1.0 / 1.4);
+            const pitot = computeScalarField(sol, 'pitot_pressure');
+            const p0 = computeScalarField(sol, 'stagnation_pressure');
+            expect(pitot[0]).toBeLessThan(p0[0]);
+        });
+
+        it('dynamic_pressure = ½ρV²', () => {
+            const rho = 1.2, u = 0.5, v = 0.3;
+            const sol = pointSolution(rho, u, v, 0, 0.5);
+            const q = computeScalarField(sol, 'dynamic_pressure');
+            expect(q[0]).toBeCloseTo(0.5 * rho * (u * u + v * v), 4);
+        });
+
+        it('entropy_measure_s1 is zero at non-dimensional freestream reference', () => {
+            const gamma = 1.4;
+            const sol = pointSolution(1.0, 0.5, 0, 0, 1.0 / gamma, gamma);
+            const s1 = computeScalarField(sol, 'entropy_measure_s1');
+            expect(s1[0]).toBeCloseTo(0, 4);
+        });
+
+        it('internal_energy + kinetic_energy = total_energy (stagnation_energy)', () => {
+            const sol = pointSolution(1.2, 0.5, 0.3, 0, 0.5);
+            const ei = computeScalarField(sol, 'internal_energy');
+            const ke = computeScalarField(sol, 'kinetic_energy');
+            const e0 = computeScalarField(sol, 'stagnation_energy');
+            expect(ei[0] + ke[0]).toBeCloseTo(e0[0], 4);
+        });
+
+        it('cross_flow_velocity = sqrt(v² + w²)', () => {
+            const sol = pointSolution(1.0, 10.0, 0.3, 0.4, 1.0 / 1.4);
+            const cf = computeScalarField(sol, 'cross_flow_velocity');
+            expect(cf[0]).toBeCloseTo(Math.sqrt(0.3 * 0.3 + 0.4 * 0.4), 4);
+        });
+
+        it('log_normalized_density = ln(ρ)', () => {
+            const rho = 1.5;
+            const sol = pointSolution(rho, 0.3, 0, 0, 0.5);
+            const lnRho = computeScalarField(sol, 'log_normalized_density');
+            expect(lnRho[0]).toBeCloseTo(Math.log(rho), 5);
+        });
+
+        it('stagnation_enthalpy = e0 + p/ρ', () => {
+            const rho = 1.2, u = 0.3, p = 0.5, gamma = 1.4;
+            const v2 = u * u;
+            const rhoe = p / (gamma - 1) + 0.5 * rho * v2;
+            const e0 = rhoe / rho;
+            const sol = pointSolution(rho, u, 0, 0, p, gamma);
+            const h0 = computeScalarField(sol, 'stagnation_enthalpy');
+            expect(h0[0]).toBeCloseTo(e0 + p / rho, 4);
+        });
+
+        it('derivative-based fields return zeros without grid', () => {
+            const sol = pointSolution(1.2, 0.5, 0.3, 0, 0.5);
+            const derivFields = [
+                'vorticity_x', 'vorticity_y', 'vorticity_z', 'vorticity_magnitude',
+                'velocity_divergence', 'pressure_gradient_magnitude',
+                'density_gradient_magnitude', 'shock_function_pressure_gradient',
+            ] as const;
+            for (const field of derivFields) {
+                const result = computeScalarField(sol, field);
+                expect(result[0]).toBe(0);
+            }
+        });
     });
 });

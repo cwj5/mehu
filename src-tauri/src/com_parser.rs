@@ -1,4 +1,4 @@
-use crate::function_mapping::map_legacy_function_number;
+use crate::function_mapping::{map_function_number_to_action, map_legacy_function_number};
 use crate::plot_state::{
     cap, spherical_to_cartesian, AxisBounds, AxisView, ContourAttribute, ContourEntry, ContourSpec,
     DatasetRef, Diagnostic, DiagnosticSeverity, FsurfaceSpec, GridSubset, IndexRange,
@@ -269,15 +269,15 @@ fn parse_function(args: &[String], file: &Path, line: u32, out: &mut ParsedScrip
 
     match args[0].parse::<u16>() {
         Ok(number) => {
-            let (mapped, mut diags) = map_legacy_function_number(number);
+            let (action, mut diags) = map_function_number_to_action(number);
             for diag in &mut diags {
                 diag.file = Some(file.to_string_lossy().to_string());
                 diag.line = Some(line);
                 diag.column = Some(1);
             }
             out.diagnostics.extend(diags);
-            if let Some(field) = mapped {
-                out.actions.push(PlotAction::SetScalarField(field));
+            if let Some(action) = action {
+                out.actions.push(action);
             }
         }
         Err(_) => out.diagnostics.push(diagnostic(
@@ -1779,17 +1779,23 @@ mod tests {
     }
 
     #[test]
-    fn function_known_unimplemented_warns_and_soft_fails() {
+    fn function_previously_unimplemented_now_produces_action() {
+        // FUNCTION 154 (Mach number) was previously KnownUnimplemented.
+        // It must now produce a SetScalarField action and no warnings.
         let dir = tempfile::tempdir().expect("tempdir");
         let file = dir.path().join("two.com");
         fs::write(&file, "FUNCTION 154\n").expect("write script");
 
         let parsed = parse_com_file(&file).expect("parse script");
-        assert!(parsed.actions.is_empty());
-        assert_eq!(parsed.diagnostics.len(), 1);
-        assert!(parsed.diagnostics[0]
-            .message
-            .contains("recognized but not implemented"));
+        assert_eq!(parsed.actions.len(), 1);
+        assert_eq!(
+            parsed.actions[0],
+            PlotAction::SetScalarField(ScalarField::MachNumber)
+        );
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "FUNCTION 154 should produce no warnings now that it is Supported"
+        );
     }
 
     #[test]
@@ -2221,7 +2227,8 @@ mod tests {
         assert!(parsed.diagnostics.iter().any(|d| d
             .message
             .contains("Legacy FSURFACE /SCALE_FACTOR is not implemented")));
-        assert!(parsed
+        // FUNCTION 154 (MachNumber) is now Supported — no unimplemented warning.
+        assert!(!parsed
             .diagnostics
             .iter()
             .any(|d| d.message.contains("recognized but not implemented")));
@@ -2229,7 +2236,7 @@ mod tests {
         match &parsed.actions[0] {
             PlotAction::SetFsurface(Some(spec)) => {
                 assert!((spec.value - 0.5).abs() < 1e-9);
-                assert_eq!(spec.scalar_field, ScalarField::Pressure);
+                assert_eq!(spec.scalar_field, ScalarField::MachNumber);
             }
             action => panic!("expected SetFsurface action, got {:?}", action),
         }

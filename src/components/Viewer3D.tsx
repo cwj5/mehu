@@ -1230,7 +1230,9 @@ export default function Viewer3D({
             const wantsSnap = event.shiftKey || event.key === 'P';
             const nextMode: ProbeMode = wantsSnap ? 'snap' : 'interpolated';
             probeLog(`probe key pressed: key=${event.key} shift=${event.shiftKey ? '1' : '0'} nextMode=${nextMode}`);
-            void ensureProbePopup();
+            if (!probeWindowReadyRef.current) {
+                void ensureProbePopup();
+            }
             setProbeMode(nextMode);
             setProbeSampleRequestToken((prev) => prev + 1);
         };

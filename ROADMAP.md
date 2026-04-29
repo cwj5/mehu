@@ -185,16 +185,23 @@ This document outlines the future development work needed to create a full-featu
 
 ### 3.1 Function Categories
 Research and implement PLOT3D's 74 built-in functions:
-- [ ] Document all 74 functions from PLOT3D manual
-- [ ] Categorize functions by type:
+- [x] Document all 74 functions from PLOT3D manual
+- [x] Categorize functions by type:
   - [ ] Coordinate transformations
-  - [ ] Flow variables (pressure, velocity, Mach number)
-  - [ ] Derivatives and gradients
-  - [ ] Thermodynamic properties
-  - [ ] Vorticity and turbulence metrics
+  - [x] Flow variables (pressure, velocity, Mach number)
+  - [x] Derivatives and gradients
+  - [x] Thermodynamic properties
+  - [x] Vorticity and turbulence metrics
   - [ ] Geometric calculations
-- [ ] Implement function evaluation system in Rust
-- [ ] Create UI for function selection and application
+- [x] Implement function evaluation system in Rust
+- [x] Create UI for function selection and application
+- [x] Grid-diagnostic functions catalogued (FUNCTION 0–99): walls, grids, IBLANK holes, orphan points, tet/crossing checks
+- [x] Vector field functions catalogued (FUNCTION 200–299): velocity, vorticity, momentum, perturbation velocity, V×ω, pressure/density gradients
+- [x] Particle-trace functions catalogued (FUNCTION 300–399): particle traces, vortex lines
+- [x] Special overlay functions catalogued (FUNCTION 400+): shock locations by pressure gradient (plain + filtered)
+- [ ] Vector field rendering (arrow glyphs / streamlines)
+- [ ] Particle trace rendering
+- [ ] Special overlay rendering (shock surfaces)
 - [ ] Support custom user-defined functions
 
 ### 3.2 Data Processing

@@ -1801,7 +1801,7 @@ impl Plot3DGrid {
         show_fringe_points: bool,
         iblank_filter_mode: crate::IblankFilterMode,
     ) -> Result<MeshGeometry, String> {
-        use crate::solution::compute_scalar_field;
+        use crate::solution::compute_scalar_field_with_grid;
 
         let i_dim = self.dimensions.i as usize;
         let j_dim = self.dimensions.j as usize;
@@ -1823,8 +1823,9 @@ impl Plot3DGrid {
             });
         }
 
-        // Compute scalar field values for all points in the 3D volume
-        let scalar_values = compute_scalar_field(solution, scalar_field);
+        // Compute scalar field values for all points in the 3D volume.
+        // Derivative fields (e.g. vorticity) require grid metrics.
+        let scalar_values = compute_scalar_field_with_grid(solution, self, scalar_field);
 
         let mut vertices = Vec::new();
         let mut triangles = Vec::new();
@@ -2042,13 +2043,14 @@ impl Plot3DGrid {
         show_fringe_points: bool,
         iblank_filter_mode: crate::IblankFilterMode,
     ) -> Result<Vec<f32>, String> {
-        use crate::solution::compute_scalar_field;
+        use crate::solution::compute_scalar_field_with_grid;
 
         // First, create a slice
         let sliced_grid = self.slice_grid(plane, index as u32)?;
 
-        // Compute scalar values for the full 3D volume
-        let scalar_values = compute_scalar_field(solution, scalar_field);
+        // Compute scalar values for the full 3D volume.
+        // Derivative fields (e.g. vorticity) require grid metrics.
+        let scalar_values = compute_scalar_field_with_grid(solution, self, scalar_field);
 
         // Map slice vertices to original indices to get their scalar values
         let i_dim = self.dimensions.i as usize;

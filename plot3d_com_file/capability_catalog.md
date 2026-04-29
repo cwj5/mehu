@@ -21,7 +21,13 @@ Allowed status values:
 1. `READ`
    - Load grid/solution/function data from command context.
 2. `FUNCTION`
-   - Select scalar/vector function by legacy function number (translated to canonical model).
+   - Select function by legacy number, translated to canonical typed model across all ranges:
+     - 0–99: grid-diagnostic / geometry modes (`GridFunction` — walls, grids, IBLANK holes, orphan points, crossing/tet checks).
+     - 100–199: scalar field selection (`ScalarField` — all 48+ variants fully implemented).
+     - 200–299: vector field selection (`VectorField` — velocity, vorticity, momentum, perturbation velocity, V×ω, pressure/density gradients; rendering deferred).
+     - 300–399: particle/stream-trace selection (`ParticleFunction` — particle traces, vortex lines; rendering deferred).
+     - 400+: special overlay selection (`SpecialFunction` — shock by pressure gradient, filtered variant; rendering deferred).
+   - All recognized IDs produce deterministic `PlotState` mutations and diagnostics; unknown IDs within each range produce warnings.
 3. `VIEW`
    - Select axis pairing / view orientation.
 4. `VPOINT`
