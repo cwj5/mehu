@@ -1,0 +1,9 @@
+READ/mg/bl/x=x.test/q=q.test
+@plot3dini
+@geoml
+@symm
+@cp
+p
+@mach
+p
+q

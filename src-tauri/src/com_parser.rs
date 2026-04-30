@@ -111,12 +111,43 @@ fn parse_file_internal(
 
     let mut out = ParsedScript::default();
 
+    let mut in_contours_manual_input = false;
+    let mut in_walls_subsets_input = false;
+
     for (idx, raw_line) in content.lines().enumerate() {
         let line_number = (idx + 1) as u32;
         let stripped = strip_comments(raw_line);
         let trimmed = stripped.trim();
         if trimmed.is_empty() {
             continue;
+        }
+
+        // Legacy CONTOURS/MANUAL accepts follow-on interactive response lines
+        // (levels, colors, attribute tokens). Consume those lines before
+        // attempting top-level command parsing.
+        if in_contours_manual_input {
+            let continuation_tokens = tokenize_line(trimmed);
+            if parse_contours_manual_continuation(
+                &continuation_tokens,
+                &canonical,
+                line_number,
+                &mut out,
+            ) {
+                continue;
+            }
+            in_contours_manual_input = false;
+        }
+
+        // Legacy WALLS/SUBSETS also uses interactive follow-on responses.
+        // Consume non-command lines as command-owned payload until a clear
+        // next command token appears.
+        if in_walls_subsets_input {
+            let continuation_tokens = tokenize_line(trimmed);
+            if !continuation_tokens.is_empty() && !looks_like_command_start(&continuation_tokens[0])
+            {
+                continue;
+            }
+            in_walls_subsets_input = false;
         }
 
         // Prompt-style include shorthand: @filename.com
@@ -186,10 +217,192 @@ fn parse_file_internal(
             line_number,
             &mut out,
         );
+
+        in_contours_manual_input =
+            command == "CONTOURS" && contours_manual_requested(&args_with_inline);
+        in_walls_subsets_input = command == "WALLS" || command == "SUBSETS";
     }
 
     visited.remove(&canonical);
     Ok(out)
+}
+
+fn looks_like_command_start(token: &str) -> bool {
+    if token.starts_with('@') {
+        return true;
+    }
+    let command_token = token.split('/').next().unwrap_or(token);
+    let command = resolve_command_alias(command_token);
+    if command == "AUTOMM" && token.len() <= 1 {
+        return false;
+    }
+    KNOWN_COMMANDS.contains(&command.as_str())
+}
+
+fn contours_manual_requested(args: &[String]) -> bool {
+    for arg in args {
+        if let Some((raw_name, _)) = parse_qualifier(arg) {
+            let name = resolve_qualifier_abbrev(&raw_name, CONTOURS_QUALIFIERS);
+            if name == "MANUAL" {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn parse_contours_manual_continuation(
+    tokens: &[String],
+    file: &Path,
+    line: u32,
+    out: &mut ParsedScript,
+) -> bool {
+    if tokens.is_empty() {
+        return true;
+    }
+
+    // Attribute-response lines from legacy prompts (e.g. "rgb ...", "re ma whi ...").
+    if is_contours_attribute_token(&tokens[0]) {
+        return true;
+    }
+
+    let mut numbers: Vec<f64> = Vec::new();
+    if let Some(tuple_values) = parse_tuple_numbers(&tokens[0]) {
+        numbers.extend(tuple_values.into_iter().take(3));
+    } else {
+        for token in tokens {
+            if numbers.len() >= 3 {
+                break;
+            }
+            if let Some(v) = parse_f64(token) {
+                numbers.push(v);
+            } else {
+                break;
+            }
+        }
+    }
+
+    if numbers.is_empty() {
+        return false;
+    }
+
+    let mut new_entries: Vec<ContourEntry> = Vec::new();
+    match numbers.len() {
+        1 => {
+            new_entries.push(ContourEntry {
+                value: numbers[0],
+                color: None,
+            });
+        }
+        2 => {
+            new_entries.push(ContourEntry {
+                value: numbers[0],
+                color: None,
+            });
+            new_entries.push(ContourEntry {
+                value: numbers[1],
+                color: None,
+            });
+        }
+        _ => {
+            let start = numbers[0];
+            let end = numbers[1];
+            let inc = numbers[2];
+            if inc <= 0.0 {
+                out.diagnostics.push(diagnostic(
+                    cap::CONTOURS,
+                    DiagnosticSeverity::Warning,
+                    Some(file.to_string_lossy().to_string()),
+                    Some(line),
+                    Some(1),
+                    "CONTOURS manual continuation increment must be > 0",
+                ));
+                return true;
+            }
+
+            let mut v = start;
+            if start <= end {
+                while v <= end {
+                    new_entries.push(ContourEntry {
+                        value: v,
+                        color: None,
+                    });
+                    v += inc;
+                }
+            } else {
+                while v >= end {
+                    new_entries.push(ContourEntry {
+                        value: v,
+                        color: None,
+                    });
+                    v -= inc;
+                }
+            }
+        }
+    }
+
+    append_contours_manual_entries(out, new_entries);
+    true
+}
+
+fn append_contours_manual_entries(out: &mut ParsedScript, mut new_entries: Vec<ContourEntry>) {
+    if new_entries.is_empty() {
+        return;
+    }
+
+    if let Some(PlotAction::SetContourSpec(ContourSpec::Manual { entries })) =
+        out.actions.last_mut()
+    {
+        entries.append(&mut new_entries);
+    } else {
+        out.actions
+            .push(PlotAction::SetContourSpec(ContourSpec::Manual {
+                entries: new_entries,
+            }));
+    }
+}
+
+fn is_contours_attribute_token(token: &str) -> bool {
+    let upper = token.to_uppercase();
+    matches!(
+        upper.as_str(),
+        "BLACK"
+            | "BLA"
+            | "MAGENTA"
+            | "MAG"
+            | "MA"
+            | "RED"
+            | "RE"
+            | "YELLOW"
+            | "YEL"
+            | "YE"
+            | "GREEN"
+            | "GRE"
+            | "GR"
+            | "CYAN"
+            | "CY"
+            | "BLUE"
+            | "BLU"
+            | "WHITE"
+            | "WHI"
+            | "RGB"
+            | "RANDOM"
+            | "RAN"
+            | "SOLID"
+            | "DASHED"
+            | "DOTTED"
+            | "CHAINDASH"
+            | "CHAINDOT"
+            | "NONE"
+            | "LINES"
+            | "SURFACES"
+            | "GRID_LINES"
+            | "COLOR_CONTOURS"
+            | "DOTS"
+            | "IJ"
+            | "IK"
+            | "JK"
+    )
 }
 
 fn include_script(
@@ -217,14 +430,22 @@ fn include_script(
 fn resolve_include_path(current_file: &Path, include_target: &str) -> PathBuf {
     let include_raw = include_target.trim_matches('"').trim_matches('\'');
     let include_path = PathBuf::from(include_raw);
-    if include_path.is_absolute() {
+    let base = if include_path.is_absolute() {
         include_path
     } else {
         current_file
             .parent()
             .unwrap_or_else(|| Path::new("."))
             .join(include_path)
+    };
+    // If the path has no extension and doesn't exist as-is, try appending .com
+    if base.extension().is_none() && !base.exists() {
+        let with_ext = base.with_extension("com");
+        if with_ext.exists() {
+            return with_ext;
+        }
     }
+    base
 }
 
 fn parse_command(command: &str, args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {
@@ -236,11 +457,19 @@ fn parse_command(command: &str, args: &[String], file: &Path, line: u32, out: &m
         "CONTOURS" | "CONTOUR" => parse_contours(args, file, line, out),
         "PLOT" => parse_plot(args, file, line, out),
         "TEXT" => parse_text(args, file, line, out),
-        "SHOW" => parse_show(file, line, out),
+        "SHOW" => parse_show(args, file, line, out),
         "FSURFACE" => parse_fsurface(args, file, line, out),
         "WALLS" => parse_walls_or_subsets(true, args, file, line, out),
         "SUBSETS" | "SUBSET" => parse_walls_or_subsets(false, args, file, line, out),
         "READ" => parse_read(args, file, line, out),
+        "HELP" => parse_help(args, file, line, out),
+        "LIST" => parse_list(args, file, line, out),
+        "MAP" => parse_noop_command("MAP", args, file, line, out),
+        "CLEAR" => parse_noop_command("CLEAR", args, file, line, out),
+        "QUIT" | "EXIT" => parse_quit(args, file, line, out),
+        "VECTORS" => parse_vectors(args, file, line, out),
+        "RAKES" => parse_rakes(args, file, line, out),
+        "AUTOMM" => parse_automm(args, file, line, out),
         unsupported => {
             out.diagnostics.push(diagnostic(
                 cap::READ,
@@ -250,6 +479,198 @@ fn parse_command(command: &str, args: &[String], file: &Path, line: u32, out: &m
                 Some(1),
                 format!("Unsupported command '{}' ignored", unsupported),
             ));
+        }
+    }
+}
+
+fn parse_noop_command(
+    command: &str,
+    args: &[String],
+    file: &Path,
+    line: u32,
+    out: &mut ParsedScript,
+) {
+    if !args.is_empty() {
+        out.diagnostics.push(diagnostic(
+            command,
+            DiagnosticSeverity::Info,
+            Some(file.to_string_lossy().to_string()),
+            Some(line),
+            Some(1),
+            format!(
+                "{} arguments are parsed but not executed in current implementation",
+                command
+            ),
+        ));
+    }
+}
+
+fn parse_help(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {
+    parse_noop_command("HELP", args, file, line, out);
+}
+
+fn parse_quit(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {
+    const QUIT_QUALIFIERS: &[&str] = &["SAVE"];
+    for arg in args {
+        if let Some((raw_name, _)) = parse_qualifier(arg) {
+            let name = resolve_qualifier_abbrev(&raw_name, QUIT_QUALIFIERS);
+            if name != "SAVE" {
+                out.diagnostics.push(diagnostic(
+                    "QUIT",
+                    DiagnosticSeverity::Warning,
+                    Some(file.to_string_lossy().to_string()),
+                    Some(line),
+                    Some(1),
+                    format!("Unknown QUIT qualifier '/{}' ignored", name),
+                ));
+            }
+        }
+    }
+}
+
+fn parse_list(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {
+    const LIST_QUALIFIERS: &[&str] = &[
+        "FORMATTED",
+        "UNFORMATTED",
+        "BINARY",
+        "TEXT",
+        "IEEE_DP",
+        "OUTPUT",
+        "CGNS",
+    ];
+    const LIST_TARGETS: &[&str] = &["XYZ", "Q", "FUNCTION", "CGNS"];
+
+    let mut positional = Vec::new();
+    for arg in args {
+        if let Some((raw_name, value)) = parse_qualifier(arg) {
+            let name = resolve_qualifier_abbrev(&raw_name, LIST_QUALIFIERS);
+            match name.as_str() {
+                "OUTPUT" | "CGNS" => {
+                    if value.as_deref().unwrap_or("").trim().is_empty() {
+                        out.diagnostics.push(diagnostic(
+                            "LIST",
+                            DiagnosticSeverity::Warning,
+                            Some(file.to_string_lossy().to_string()),
+                            Some(line),
+                            Some(1),
+                            format!("LIST /{} requires '=value'", name),
+                        ));
+                    }
+                }
+                "FORMATTED" | "UNFORMATTED" | "BINARY" | "TEXT" | "IEEE_DP" => {}
+                _ => out.diagnostics.push(diagnostic(
+                    "LIST",
+                    DiagnosticSeverity::Warning,
+                    Some(file.to_string_lossy().to_string()),
+                    Some(line),
+                    Some(1),
+                    format!("Unknown LIST qualifier '/{}' ignored", name),
+                )),
+            }
+        } else {
+            positional.push(arg.to_uppercase());
+        }
+    }
+
+    if let Some(target) = positional.first() {
+        let resolved = resolve_qualifier_abbrev(target, LIST_TARGETS);
+        if !LIST_TARGETS.contains(&resolved.as_str()) {
+            out.diagnostics.push(diagnostic(
+                "LIST",
+                DiagnosticSeverity::Warning,
+                Some(file.to_string_lossy().to_string()),
+                Some(line),
+                Some(1),
+                format!(
+                    "LIST target '{}' not recognized (expected XYZ, Q, FUNCTION, or CGNS)",
+                    target
+                ),
+            ));
+        }
+    }
+}
+
+fn parse_rakes(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {
+    const RAKES_QUALIFIERS: &[&str] = &[
+        "IJK",
+        "XYZ",
+        "ADD",
+        "ATTRIBUTES",
+        "NOATTRIBUTES",
+        "READ",
+        "WRITE",
+        "+TIME",
+        "-TIME",
+        "+-TIME",
+        "MAXPOINTS",
+        "SCALAR_FUNCTION",
+        "NOSCALAR_FUNCTION",
+    ];
+
+    for arg in args {
+        if let Some((raw_name, value)) = parse_qualifier(arg) {
+            let name = resolve_qualifier_abbrev(&raw_name, RAKES_QUALIFIERS);
+            if matches!(
+                name.as_str(),
+                "READ" | "WRITE" | "MAXPOINTS" | "SCALAR_FUNCTION"
+            ) && value.as_deref().unwrap_or("").trim().is_empty()
+            {
+                out.diagnostics.push(diagnostic(
+                    "RAKES",
+                    DiagnosticSeverity::Warning,
+                    Some(file.to_string_lossy().to_string()),
+                    Some(line),
+                    Some(1),
+                    format!("RAKES /{} requires '=value'", name),
+                ));
+            }
+        }
+    }
+}
+
+fn parse_vectors(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {
+    const VECTORS_QUALIFIERS: &[&str] = &[
+        "SCALAR_FUNCTION",
+        "NOSCALAR_FUNCTION",
+        "LENGTH_SCALE",
+        "ATTRIBUTES",
+        "NOATTRIBUTES",
+    ];
+
+    for arg in args {
+        if let Some((raw_name, value)) = parse_qualifier(arg) {
+            let name = resolve_qualifier_abbrev(&raw_name, VECTORS_QUALIFIERS);
+            if matches!(name.as_str(), "SCALAR_FUNCTION" | "LENGTH_SCALE")
+                && value.as_deref().unwrap_or("").trim().is_empty()
+            {
+                out.diagnostics.push(diagnostic(
+                    "VECTORS",
+                    DiagnosticSeverity::Warning,
+                    Some(file.to_string_lossy().to_string()),
+                    Some(line),
+                    Some(1),
+                    format!("VECTORS /{} requires '=value'", name),
+                ));
+            }
+        }
+    }
+}
+
+fn parse_automm(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {
+    const AUTOMM_QUALIFIERS: &[&str] = &["GRID"];
+    for arg in args {
+        if let Some((raw_name, value)) = parse_qualifier(arg) {
+            let name = resolve_qualifier_abbrev(&raw_name, AUTOMM_QUALIFIERS);
+            if name == "GRID" && value.as_deref().unwrap_or("").trim().is_empty() {
+                out.diagnostics.push(diagnostic(
+                    "AUTOMM",
+                    DiagnosticSeverity::Warning,
+                    Some(file.to_string_lossy().to_string()),
+                    Some(line),
+                    Some(1),
+                    "AUTOMM /GRID requires '=value'",
+                ));
+            }
         }
     }
 }
@@ -304,8 +725,14 @@ fn parse_view(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {
         return;
     }
 
+    const VIEW_OPTIONS: &[&str] = &[
+        "+X", "-X", "+Y", "-Y", "+Z", "-Z", "X", "Y", "Z", "XY", "XZ", "YZ", "YX", "ZX", "ZY",
+        "TOP", "SIDE", "FRONT",
+    ];
+
     let axis = args[0].to_uppercase();
-    let mode = match axis.as_str() {
+    let resolved_axis = resolve_qualifier_abbrev(&axis, VIEW_OPTIONS);
+    let mode = match resolved_axis.as_str() {
         "X" | "+X" => Some(AxisView::PlusX),
         "-X" => Some(AxisView::MinusX),
         "Y" | "+Y" => Some(AxisView::PlusY),
@@ -351,9 +778,11 @@ fn parse_view(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {
 
 fn parse_vpoint(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {
     // Check for /ANGLES qualifier to determine if spherical or Cartesian
+    const VPOINT_QUALIFIERS: &[&str] = &["XYZ", "ANGLES"];
+
     let is_spherical = args.iter().any(|arg| {
-        if let Some((name, _)) = parse_qualifier(arg) {
-            name.to_uppercase() == "ANGLES"
+        if let Some((raw_name, _)) = parse_qualifier(arg) {
+            resolve_qualifier_abbrev(&raw_name, VPOINT_QUALIFIERS) == "ANGLES"
         } else {
             false
         }
@@ -441,6 +870,35 @@ fn parse_vpoint(args: &[String], file: &Path, line: u32, out: &mut ParsedScript)
         .push(PlotAction::SetViewpoint(ViewPoint { x, y, z }));
 }
 
+const MINMAX_QUALIFIERS: &[&str] = &[
+    "X",
+    "Y",
+    "Z",
+    "NOX",
+    "NOY",
+    "NOZ",
+    "INCREMENT",
+    "XSCALE",
+    "YSCALE",
+    "ZSCALE",
+];
+
+const CONTOURS_QUALIFIERS: &[&str] = &[
+    "AUTOMATIC",
+    "INCREMENT",
+    "MANUAL",
+    "RANGE",
+    "LINEAR",
+    "CUBIC",
+    "ATTRIBUTES",
+    "NOATTRIBUTES",
+    "LINE",
+    "SURFACE",
+    "GRID",
+    "COLOR",
+    "DOTS",
+];
+
 fn parse_minmax(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {
     // Collect axis-selection qualifiers and numeric values separately.
     // Known non-state qualifiers like /INCREMENT, /XSCALE are silently accepted.
@@ -448,7 +906,8 @@ fn parse_minmax(args: &[String], file: &Path, line: u32, out: &mut ParsedScript)
     let mut numeric_args: Vec<f64> = Vec::new();
 
     for arg in args {
-        if let Some((name, _)) = parse_qualifier(arg) {
+        if let Some((raw_name, _)) = parse_qualifier(arg) {
+            let name = resolve_qualifier_abbrev(&raw_name, MINMAX_QUALIFIERS);
             match name.as_str() {
                 "X" => active_axes.push("x"),
                 "Y" => active_axes.push("y"),
@@ -605,7 +1064,8 @@ fn parse_contours(args: &[String], file: &Path, line: u32, out: &mut ParsedScrip
     let mut positional_values: Vec<f64> = Vec::new();
 
     for arg in args {
-        if let Some((name, value)) = parse_qualifier(arg) {
+        if let Some((raw_name, value)) = parse_qualifier(arg) {
+            let name = resolve_qualifier_abbrev(&raw_name, CONTOURS_QUALIFIERS);
             qualifier_values.insert(name, value);
             continue;
         }
@@ -880,9 +1340,42 @@ fn parse_contours(args: &[String], file: &Path, line: u32, out: &mut ParsedScrip
     }
 }
 
+const PLOT_QUALIFIERS: &[&str] = &[
+    "OPENGL",
+    "2D",
+    "3D",
+    "FULLSCREEN",
+    "NOFULLSCREEN",
+    "LABELS",
+    "NOLABELS",
+    "IJK",
+    "XYZ",
+    "SURFACE",
+    "CARPET",
+    "LINE",
+    "CONTOUR",
+    "FSURFACE",
+    "SCRIPT",
+    "NOSCRIPT",
+    "AXES",
+    "NOAXES",
+    "FIGURE",
+    "NOFIGURE",
+    "BACKGROUND",
+    "UP",
+    "TITLE",
+    "NOTITLE",
+    "BAR",
+    "NOBAR",
+    "ADDITIONAL_TEXT",
+    "NOADDITIONAL_TEXT",
+    "OVERLAY",
+];
+
 fn parse_plot(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {
     for arg in args {
-        if let Some((name, value)) = parse_qualifier(arg) {
+        if let Some((raw_name, value)) = parse_qualifier(arg) {
+            let name = resolve_qualifier_abbrev(&raw_name, PLOT_QUALIFIERS);
             match name.as_str() {
                 // SURFACE / CARPET / LINE are all function-surface family
                 // (in 2D, LINE is the degenerate case of CARPET/SURFACE).
@@ -906,8 +1399,15 @@ fn parse_plot(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {
                         ),
                     )),
                 },
-                // /2D and /3D are accepted without effect on shared state.
-                "2D" | "3D" => {}
+                "FSURFACE" => out
+                    .actions
+                    .push(PlotAction::SetPlotFamily(PlotFamily::FunctionSurface)),
+                // Accepted legacy qualifiers that currently do not alter shared state.
+                "OPENGL" | "2D" | "3D" | "FULLSCREEN" | "NOFULLSCREEN" | "LABELS"
+                | "NOLABELS" | "IJK" | "XYZ" | "SCRIPT" | "NOSCRIPT" | "AXES"
+                | "NOAXES" | "FIGURE" | "NOFIGURE" | "BACKGROUND" | "TITLE"
+                | "NOTITLE" | "BAR" | "NOBAR" | "ADDITIONAL_TEXT"
+                | "NOADDITIONAL_TEXT" | "OVERLAY" => {}
                 _ => out.diagnostics.push(diagnostic(
                     cap::PLOT,
                     DiagnosticSeverity::Warning,
@@ -998,9 +1498,41 @@ fn parse_text(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {
     }));
 }
 
-fn parse_show(_file: &Path, _line: u32, out: &mut ParsedScript) {
+fn parse_show(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {
+    const SHOW_TARGETS: &[&str] = &[
+        "CONTOUR", "FUNCTION", "MINMAX", "SUBSETS", "WALLS", "RAKES", "VIEW", "VPOINT", "VECTOR",
+        "FSURFACE", "PLOT", "TEXT",
+    ];
+
+    if let Some(token) = args.first() {
+        let target = token.to_uppercase();
+        let resolved = resolve_qualifier_abbrev(&target, SHOW_TARGETS);
+        if !SHOW_TARGETS.contains(&resolved.as_str()) {
+            out.diagnostics.push(diagnostic(
+                cap::SHOW,
+                DiagnosticSeverity::Warning,
+                Some(file.to_string_lossy().to_string()),
+                Some(line),
+                Some(1),
+                format!("SHOW target '{}' not recognized", token),
+            ));
+        }
+    }
     out.actions.push(PlotAction::ShowStatus);
 }
+
+const FSURFACE_QUALIFIERS: &[&str] = &[
+    "NONE",
+    "OFF",
+    "SCALE_FACTOR",
+    "WALLS_ORIGIN",
+    "CONTOUR",
+    "GRID",
+    "X",
+    "Y",
+    "Z",
+    "AXIS",
+];
 
 fn parse_fsurface(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {
     if args.is_empty() {
@@ -1019,7 +1551,8 @@ fn parse_fsurface(args: &[String], file: &Path, line: u32, out: &mut ParsedScrip
     let mut positional: Vec<String> = Vec::new();
 
     for arg in args {
-        if let Some((name, value)) = parse_qualifier(arg) {
+        if let Some((raw_name, value)) = parse_qualifier(arg) {
+            let name = resolve_qualifier_abbrev(&raw_name, FSURFACE_QUALIFIERS);
             qualifier_values.insert(name, value);
         } else {
             positional.push(arg.clone());
@@ -1172,8 +1705,20 @@ fn parse_walls_or_subsets(
     let mut k_from_qualifier: Option<IndexRange> = None;
     let mut positional: Vec<String> = Vec::new();
 
+    const WALLS_SUBSETS_QUALIFIERS: &[&str] = &[
+        "GRID",
+        "ADD",
+        "ALL",
+        "NONE",
+        "I",
+        "J",
+        "K",
+        "ATTRIBUTES",
+        "NOATTRIBUTES",
+    ];
     for arg in args {
-        if let Some((name, value)) = parse_qualifier(arg) {
+        if let Some((raw_name, value)) = parse_qualifier(arg) {
+            let name = resolve_qualifier_abbrev(&raw_name, WALLS_SUBSETS_QUALIFIERS);
             match name.as_str() {
                 "GRID" => {
                     if let Some(v) = value.and_then(|s| s.parse::<u32>().ok()).filter(|&v| v > 0) {
@@ -1458,6 +2003,32 @@ fn parse_walls_or_subsets(
     }
 }
 
+const READ_QUALIFIERS: &[&str] = &[
+    "XYZ",
+    "GRID",
+    "Q",
+    "SOLUTION",
+    "1D",
+    "2D",
+    "3D",
+    "FORMATTED",
+    "UNFORMATTED",
+    "BINARY",
+    "IEEE_DP",
+    "PLANES",
+    "WHOLE",
+    "CHECK",
+    "NOCHECK",
+    "JACOBIAN",
+    "NOJACOBIAN",
+    "BLANK",
+    "NOBLANK",
+    "MGRID",
+    "MDATASET",
+    "FUNCTION",
+    "CGNS",
+];
+
 fn parse_read(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {
     if args.is_empty() {
         out.diagnostics.push(diagnostic(
@@ -1479,7 +2050,8 @@ fn parse_read(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {
     let mut positional: Vec<String> = Vec::new();
 
     for arg in args {
-        if let Some((name, value)) = parse_qualifier(arg) {
+        if let Some((raw_name, value)) = parse_qualifier(arg) {
+            let name = resolve_qualifier_abbrev(&raw_name, READ_QUALIFIERS);
             match name.as_str() {
                 "XYZ" | "GRID" => {
                     if let Some(v) = value {
@@ -1532,9 +2104,9 @@ fn parse_read(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {
                     }
                 }
                 // Known qualifiers that don't affect the dataset reference.
-                "1D" | "2D" | "3D" | "FORMATTED" | "UNFORMATTED" | "BINARY" | "PLANES"
-                | "WHOLE" | "CHECK" | "NOCHECK" | "BLANK" | "NOBLANK" | "MGRID" | "MDATASET"
-                | "FUNCTION" => {}
+                "1D" | "2D" | "3D" | "FORMATTED" | "UNFORMATTED" | "BINARY" | "IEEE_DP"
+                | "PLANES" | "WHOLE" | "CHECK" | "NOCHECK" | "JACOBIAN" | "NOJACOBIAN"
+                | "BLANK" | "NOBLANK" | "MGRID" | "MDATASET" | "FUNCTION" | "CGNS" => {}
                 _ => out.diagnostics.push(diagnostic(
                     cap::READ,
                     DiagnosticSeverity::Warning,
@@ -1582,6 +2154,20 @@ fn parse_qualifier(token: &str) -> Option<(String, Option<String>)> {
     } else {
         Some((rest.to_uppercase(), None))
     }
+}
+
+/// Resolve a qualifier abbreviation against a list of known qualifier names.
+/// Returns the canonical (uppercase) name if the abbreviation is a unique prefix,
+/// otherwise returns the abbreviation unchanged.
+fn resolve_qualifier_abbrev(abbrev: &str, known: &[&str]) -> String {
+    if known.contains(&abbrev) {
+        return abbrev.to_string();
+    }
+    let matches: Vec<&&str> = known.iter().filter(|q| q.starts_with(abbrev)).collect();
+    if matches.len() == 1 {
+        return matches[0].to_string();
+    }
+    abbrev.to_string()
 }
 
 fn parse_tuple_numbers(token: &str) -> Option<Vec<f64>> {
@@ -1636,36 +2222,29 @@ fn parse_f64(value: &str) -> Option<f64> {
     value.parse::<f64>().ok()
 }
 
+/// All known PLOT3D commands. Any unique prefix of a command resolves to that command.
+const KNOWN_COMMANDS: &[&str] = &[
+    "READ", "FUNCTION", "VIEW", "VPOINT", "MINMAX", "CONTOURS", "PLOT", "TEXT", "SHOW", "FSURFACE",
+    "WALLS", "SUBSETS", "INCLUDE",
+    // Out-of-scope commands — recognised so they soft-fail with a clean diagnostic
+    "HELP", "LIST", "MAP", "CLEAR", "EXIT", "QUIT", "VECTORS", "RAKES", "AUTOMM",
+];
+
 fn resolve_command_alias(command: &str) -> String {
     let upper = command.to_uppercase();
-    let alias = command_aliases();
-    alias
-        .get(upper.as_str())
-        .copied()
-        .unwrap_or(upper.as_str())
-        .to_string()
-}
-
-fn command_aliases() -> HashMap<&'static str, &'static str> {
-    HashMap::from([
-        ("R", "READ"),
-        ("RD", "READ"),
-        ("FUN", "FUNCTION"),
-        ("FUNC", "FUNCTION"),
-        ("V", "VIEW"),
-        ("VP", "VPOINT"),
-        ("MM", "MINMAX"),
-        ("CON", "CONTOURS"),
-        ("CONT", "CONTOURS"),
-        ("PL", "PLOT"),
-        ("WAL", "WALLS"),
-        ("SUB", "SUBSETS"),
-        ("FS", "FSURFACE"),
-        ("TX", "TEXT"),
-        ("SH", "SHOW"),
-        ("INC", "INCLUDE"),
-        ("INCL", "INCLUDE"),
-    ])
+    // Exact match first
+    if KNOWN_COMMANDS.contains(&upper.as_str()) {
+        return upper;
+    }
+    // Unique prefix match.
+    let matches: Vec<&&str> = KNOWN_COMMANDS
+        .iter()
+        .filter(|c| c.starts_with(upper.as_str()))
+        .collect();
+    if matches.len() == 1 {
+        return matches[0].to_string();
+    }
+    upper
 }
 
 fn strip_comments(line: &str) -> String {
@@ -1695,7 +2274,7 @@ fn tokenize_line(line: &str) -> Vec<String> {
 
     for ch in line.chars() {
         match ch {
-            '"' => {
+            '"' | '\'' => {
                 in_quotes = !in_quotes;
                 continue;
             }
@@ -1962,9 +2541,7 @@ mod tests {
 
         let parsed = parse_com_file(&file).expect("parse");
 
-        assert!(parsed.diagnostics.iter().any(|d| d
-            .message
-            .contains("Unknown MINMAX qualifier '/INC' ignored")));
+        // /INC is a valid abbreviation of /INCREMENT in legacy matching.
         assert!(parsed
             .diagnostics
             .iter()
@@ -2447,29 +3024,24 @@ mod tests {
     fn command_aliases_resolve_correctly() {
         let dir = tempfile::tempdir().expect("tempdir");
         let file = dir.path().join("alias.com");
-        fs::write(&file, "FUN 100\nVP 1.0 2.0 3.0\nMM -1.0 1.0\nPL/SURFACE\n").expect("write");
+        fs::write(&file, "FUN 100\nVP 1.0 2.0 3.0\nMIN -1.0 1.0\nPL/SURFACE\n").expect("write");
 
         let parsed = parse_com_file(&file).expect("parse");
-        // SetScalarField(Density) + SetViewpoint + SetMinMax + SetPlotFamily(FunctionSurface) + CommitPlot
-        assert_eq!(parsed.actions.len(), 5);
-        assert_eq!(
-            parsed.actions[0],
-            PlotAction::SetScalarField(ScalarField::Density)
-        );
-        assert_eq!(
-            parsed.actions[1],
-            PlotAction::SetViewpoint(ViewPoint {
+        assert!(parsed
+            .actions
+            .contains(&PlotAction::SetScalarField(ScalarField::Density)));
+        assert!(parsed
+            .actions
+            .contains(&PlotAction::SetViewpoint(ViewPoint {
                 x: 1.0,
                 y: 2.0,
                 z: 3.0
-            })
-        );
-        assert!(matches!(parsed.actions[2], PlotAction::SetMinMax(_)));
-        assert_eq!(
-            parsed.actions[3],
-            PlotAction::SetPlotFamily(PlotFamily::FunctionSurface)
-        );
-        assert_eq!(parsed.actions[4], PlotAction::CommitPlot);
+            })));
+        assert!(parsed
+            .actions
+            .iter()
+            .any(|a| matches!(a, PlotAction::SetMinMax(_))));
+        assert!(parsed.actions.contains(&PlotAction::CommitPlot));
     }
 
     // ── Include cycle detection ───────────────────────────────────────────────

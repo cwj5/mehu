@@ -29,6 +29,7 @@ coverage/
 *.sln
 *.sw?
 plot3d.hlp
+plot3d_com_file/commands.F
 
 # Tauri
 src-tauri/target/
@@ -40,3 +41,7 @@ headless-export/target/
 headless-export/fixtures/regression/out/*.png
 headless-export/fixtures/regression/out/
 headless-export/fixtures/regression/*.png
+
+# Test data
+x.test
+q.test
