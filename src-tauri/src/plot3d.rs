@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
-use std::io::{self, BufRead, BufReader, Read};
+use std::io::{self, BufReader, Read};
 use std::path::Path;
 
 use crate::logger;
@@ -2602,18 +2602,98 @@ pub fn read_plot3d_grid_with_metadata<P: AsRef<Path>>(
 
 /// Read PLOT3D grid file in ASCII format
 pub fn read_plot3d_grid_ascii<P: AsRef<Path>>(path: P) -> io::Result<Vec<Plot3DGrid>> {
-    let file = File::open(path)?;
-    let reader = BufReader::new(file);
-    let mut lines = reader.lines();
+    let content = std::fs::read_to_string(path)?;
+    let tokens: Vec<&str> = content.split_whitespace().collect();
+
+    if tokens.is_empty() {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "Empty file"));
+    }
+
+    let mut cursor = 0usize;
+
+    let parse_i32 = |tokens: &[&str], cursor: &mut usize, field: &str| -> io::Result<i32> {
+        let token = tokens.get(*cursor).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Unexpected EOF while reading {}", field),
+            )
+        })?;
+        *cursor += 1;
+        token.parse::<i32>().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Cannot parse {}", field),
+            )
+        })
+    };
+
+    let parse_u32 = |tokens: &[&str], cursor: &mut usize, field: &str| -> io::Result<u32> {
+        let token = tokens.get(*cursor).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Unexpected EOF while reading {}", field),
+            )
+        })?;
+        *cursor += 1;
+        token.parse::<u32>().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Cannot parse {}", field),
+            )
+        })
+    };
+
+    let parse_f32 = |tokens: &[&str], cursor: &mut usize, field: &str| -> io::Result<f32> {
+        let token = tokens.get(*cursor).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Unexpected EOF while reading {}", field),
+            )
+        })?;
+        *cursor += 1;
+        token.parse::<f32>().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Cannot parse {}", field),
+            )
+        })
+    };
+
+    let parse_iblank_token = |token: &str| -> io::Result<i32> {
+        if let Ok(v) = token.parse::<i32>() {
+            return Ok(v);
+        }
+
+        if let Ok(vf) = token.parse::<f32>() {
+            let rounded = vf.round();
+            if (vf - rounded).abs() < 1.0e-6 {
+                return Ok(rounded as i32);
+            }
+        }
+
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Cannot parse IBLANK value: {}", token),
+        ))
+    };
+
+    let try_parse_iblank_block =
+        |tokens: &[&str], cursor: usize, total_points: usize| -> Option<Vec<i32>> {
+            if cursor + total_points > tokens.len() {
+                return None;
+            }
+
+            let mut iblank = Vec::with_capacity(total_points);
+            for idx in 0..total_points {
+                let v = parse_iblank_token(tokens[cursor + idx]).ok()?;
+                iblank.push(v);
+            }
+
+            Some(iblank)
+        };
 
     // Read number of grids
-    let first_line = lines
-        .next()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Empty file"))??;
-    let num_grids: i32 = first_line
-        .trim()
-        .parse()
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Cannot parse number of grids"))?;
+    let num_grids = parse_i32(&tokens, &mut cursor, "number of grids")?;
 
     if num_grids <= 0 || num_grids > 1000 {
         return Err(io::Error::new(
@@ -2626,35 +2706,31 @@ pub fn read_plot3d_grid_ascii<P: AsRef<Path>>(path: P) -> io::Result<Vec<Plot3DG
 
     // Read dimensions for all grids
     let mut dimensions_list = Vec::with_capacity(num_grids as usize);
-    for _ in 0..num_grids {
-        let dims_line = lines.next().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "Missing dimension line")
-        })??;
-        let dims: Vec<u32> = dims_line
-            .split_whitespace()
-            .map(|s| s.parse::<u32>())
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Cannot parse dimensions"))?;
+    for grid_index in 0..num_grids {
+        let i = parse_u32(
+            &tokens,
+            &mut cursor,
+            &format!("grid {} I dimension", grid_index + 1),
+        )?;
+        let j = parse_u32(
+            &tokens,
+            &mut cursor,
+            &format!("grid {} J dimension", grid_index + 1),
+        )?;
+        let k = parse_u32(
+            &tokens,
+            &mut cursor,
+            &format!("grid {} K dimension", grid_index + 1),
+        )?;
 
-        if dims.len() != 3 {
+        if i == 0 || j == 0 || k == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "Expected 3 dimensions (I, J, K)",
+                format!("Invalid dimensions: {}x{}x{}", i, j, k),
             ));
         }
 
-        if dims[0] == 0 || dims[1] == 0 || dims[2] == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("Invalid dimensions: {}x{}x{}", dims[0], dims[1], dims[2]),
-            ));
-        }
-
-        dimensions_list.push(GridDimensions {
-            i: dims[0],
-            j: dims[1],
-            k: dims[2],
-        });
+        dimensions_list.push(GridDimensions { i, j, k });
     }
 
     // Read coordinate data for each grid
@@ -2664,41 +2740,14 @@ pub fn read_plot3d_grid_ascii<P: AsRef<Path>>(path: P) -> io::Result<Vec<Plot3DG
         let mut y_coords = Vec::with_capacity(total_points);
         let mut z_coords = Vec::with_capacity(total_points);
 
-        // Read coordinates (typically one per line or multiple per line)
-        let mut values_read = 0;
-        let mut current_array = 0; // 0 = x, 1 = y, 2 = z
-
-        for line in lines.by_ref() {
-            let line = line?;
-            let values: Vec<f32> = line
-                .split_whitespace()
-                .map(|s| s.parse::<f32>())
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|_| {
-                    io::Error::new(io::ErrorKind::InvalidData, "Cannot parse coordinate value")
-                })?;
-
-            for value in values {
-                match current_array {
-                    0 => x_coords.push(value),
-                    1 => y_coords.push(value),
-                    2 => z_coords.push(value),
-                    _ => unreachable!(),
-                }
-                values_read += 1;
-
-                if values_read == total_points {
-                    current_array += 1;
-                    values_read = 0;
-                    if current_array == 3 {
-                        break;
-                    }
-                }
-            }
-
-            if current_array == 3 {
-                break;
-            }
+        for _ in 0..total_points {
+            x_coords.push(parse_f32(&tokens, &mut cursor, "X coordinate")?);
+        }
+        for _ in 0..total_points {
+            y_coords.push(parse_f32(&tokens, &mut cursor, "Y coordinate")?);
+        }
+        for _ in 0..total_points {
+            z_coords.push(parse_f32(&tokens, &mut cursor, "Z coordinate")?);
         }
 
         if x_coords.len() != total_points
@@ -2717,13 +2766,59 @@ pub fn read_plot3d_grid_ascii<P: AsRef<Path>>(path: P) -> io::Result<Vec<Plot3DG
             ));
         }
 
+        // Optional interleaved ASCII IBLANK for this grid.
+        let iblank = try_parse_iblank_block(&tokens, cursor, total_points);
+        if iblank.is_some() {
+            cursor += total_points;
+        }
+
         grids.push(Plot3DGrid {
             dimensions: dims,
             x_coords,
             y_coords,
             z_coords,
-            iblank: None, // ASCII format typically doesn't include iblank
+            iblank,
         });
+    }
+
+    // Optional trailing ASCII IBLANK blocks for grids still missing IBLANK.
+    // This supports files where IBLANK arrays are present after all XYZ arrays.
+    if cursor < tokens.len() {
+        let pending_indices: Vec<usize> = grids
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, g)| if g.iblank.is_none() { Some(idx) } else { None })
+            .collect();
+
+        if !pending_indices.is_empty() {
+            let start_cursor = cursor;
+            let mut assigned: Vec<usize> = Vec::new();
+
+            for idx in pending_indices {
+                let total_points = grids[idx].total_points();
+                if let Some(iblank) = try_parse_iblank_block(&tokens, cursor, total_points) {
+                    cursor += total_points;
+                    grids[idx].iblank = Some(iblank);
+                    assigned.push(idx);
+                } else {
+                    cursor = start_cursor;
+                    for assigned_idx in assigned {
+                        grids[assigned_idx].iblank = None;
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    if cursor != tokens.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "Trailing data after reading ASCII PLOT3D grid file: {} unconsumed value(s)",
+                tokens.len() - cursor
+            ),
+        ));
     }
 
     Ok(grids)
@@ -2934,18 +3029,65 @@ pub fn read_plot3d_solution<P: AsRef<Path>>(path: P) -> io::Result<Vec<Plot3DSol
 
 /// Read PLOT3D solution file in ASCII format
 pub fn read_plot3d_solution_ascii<P: AsRef<Path>>(path: P) -> io::Result<Vec<Plot3DSolution>> {
-    let file = File::open(path)?;
-    let reader = BufReader::new(file);
-    let mut lines = reader.lines();
+    let content = std::fs::read_to_string(path)?;
+    let tokens: Vec<&str> = content.split_whitespace().collect();
+
+    if tokens.is_empty() {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "Empty file"));
+    }
+
+    let mut cursor = 0usize;
+
+    let parse_i32 = |tokens: &[&str], cursor: &mut usize, field: &str| -> io::Result<i32> {
+        let token = tokens.get(*cursor).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Unexpected EOF while reading {}", field),
+            )
+        })?;
+        *cursor += 1;
+        token.parse::<i32>().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Cannot parse {}", field),
+            )
+        })
+    };
+
+    let parse_u32 = |tokens: &[&str], cursor: &mut usize, field: &str| -> io::Result<u32> {
+        let token = tokens.get(*cursor).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Unexpected EOF while reading {}", field),
+            )
+        })?;
+        *cursor += 1;
+        token.parse::<u32>().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Cannot parse {}", field),
+            )
+        })
+    };
+
+    let parse_f32 = |tokens: &[&str], cursor: &mut usize, field: &str| -> io::Result<f32> {
+        let token = tokens.get(*cursor).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Unexpected EOF while reading {}", field),
+            )
+        })?;
+        *cursor += 1;
+        token.parse::<f32>().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Cannot parse {}", field),
+            )
+        })
+    };
 
     // Read number of grids
-    let first_line = lines
-        .next()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Empty file"))??;
-    let num_grids: i32 = first_line
-        .trim()
-        .parse()
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Cannot parse number of grids"))?;
+    let num_grids = parse_i32(&tokens, &mut cursor, "number of grids")?;
 
     if num_grids <= 0 || num_grids > 1000 {
         return Err(io::Error::new(
@@ -2958,142 +3100,67 @@ pub fn read_plot3d_solution_ascii<P: AsRef<Path>>(path: P) -> io::Result<Vec<Plo
 
     // Read dimensions for all grids
     let mut dimensions_list = Vec::with_capacity(num_grids as usize);
-    for _ in 0..num_grids {
-        let dims_line = lines.next().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "Missing dimension line")
-        })??;
-        let dims: Vec<u32> = dims_line
-            .split_whitespace()
-            .map(|s| s.parse::<u32>())
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Cannot parse dimensions"))?;
+    for grid_index in 0..num_grids {
+        let i = parse_u32(
+            &tokens,
+            &mut cursor,
+            &format!("grid {} I dimension", grid_index + 1),
+        )?;
+        let j = parse_u32(
+            &tokens,
+            &mut cursor,
+            &format!("grid {} J dimension", grid_index + 1),
+        )?;
+        let k = parse_u32(
+            &tokens,
+            &mut cursor,
+            &format!("grid {} K dimension", grid_index + 1),
+        )?;
 
-        if dims.len() != 3 {
+        if i == 0 || j == 0 || k == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "Expected 3 dimensions (I, J, K)",
+                format!("Invalid dimensions: {}x{}x{}", i, j, k),
             ));
         }
 
-        dimensions_list.push(GridDimensions {
-            i: dims[0],
-            j: dims[1],
-            k: dims[2],
-        });
+        dimensions_list.push(GridDimensions { i, j, k });
     }
 
     // Read solution data for each grid
     for (grid_index, dims) in dimensions_list.into_iter().enumerate() {
         let total_points = (dims.i as usize) * (dims.j as usize) * (dims.k as usize);
 
-        // First, read metadata values (variable number depending on file format)
-        // Try to read metadata fields: REFMACH, ALPHA, REY, TIME, GAMINF, BETA, TINF, IGAM, HTINF, HT1, HT2, RGAS[...], FSMACH, TVREF, DTVREF
-        // For ASCII files, we need to parse until we find the solution data
-        // Minimum metadata is 4 values (REFMACH, ALPHA, REY, TIME)
-        // We'll read values greedily and then determine which are metadata vs solution data
-
-        let mut all_values: Vec<f32> = Vec::new();
-
-        // Read values until we have enough for metadata + solution data
-        // We need: metadata (at least 4 floats) + 5 variable arrays * total_points
-        let min_metadata_count = 4;
-        let min_solution_count = 5 * total_points;
-        let min_total = min_metadata_count + min_solution_count;
-
-        for line in lines.by_ref() {
-            let line = line?;
-            let values: Vec<f32> = line
-                .split_whitespace()
-                .map(|s| s.parse::<f32>())
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Cannot parse value"))?;
-
-            all_values.extend(values);
-
-            if all_values.len() >= min_total {
-                break;
-            }
-        }
-
-        if all_values.len() < min_total {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "Incomplete solution data for grid {}: expected at least {} values, got {}",
-                    grid_index,
-                    min_total,
-                    all_values.len()
-                ),
-            ));
-        }
-
-        // Split into metadata and solution data
-        // We'll try to parse metadata first, reading as many fields as available
-        // but leaving at least 5*total_points for solution data
-        let max_metadata_idx = all_values.len() - min_solution_count;
-
-        // Convert metadata values to buffer format for parse_metadata function
+        // ASCII Q convention in this codebase: short per-grid header
+        // (REFMACH, ALPHA, REY, TIME) followed by 5 conservative arrays.
         let mut metadata_buf = Vec::new();
-        for i in 0..max_metadata_idx {
-            metadata_buf.extend_from_slice(&all_values[i].to_le_bytes());
+        for _ in 0..4 {
+            let value = parse_f32(&tokens, &mut cursor, "Q metadata value")?;
+            metadata_buf.extend_from_slice(&value.to_le_bytes());
         }
         let metadata = parse_metadata(&metadata_buf, ByteOrder::LittleEndian);
-
-        // Remaining values are solution data
-        let solution_data = &all_values[max_metadata_idx..];
 
         let mut rho = Vec::with_capacity(total_points);
         let mut rhou = Vec::with_capacity(total_points);
         let mut rhov = Vec::with_capacity(total_points);
         let mut rhow = Vec::with_capacity(total_points);
         let mut rhoe = Vec::with_capacity(total_points);
-        let mut gamma = Vec::with_capacity(total_points);
 
-        // Distribute values across the 5+ variables
-        for (idx, &value) in solution_data.iter().enumerate() {
-            let var_index = idx / total_points;
-            let point_index = idx % total_points;
-
-            match var_index {
-                0 => {
-                    if point_index >= rho.len() {
-                        rho.push(value);
-                    }
-                }
-                1 => {
-                    if point_index >= rhou.len() {
-                        rhou.push(value);
-                    }
-                }
-                2 => {
-                    if point_index >= rhov.len() {
-                        rhov.push(value);
-                    }
-                }
-                3 => {
-                    if point_index >= rhow.len() {
-                        rhow.push(value);
-                    }
-                }
-                4 => {
-                    if point_index >= rhoe.len() {
-                        rhoe.push(value);
-                    }
-                }
-                5 => {
-                    if point_index >= gamma.len() {
-                        gamma.push(value);
-                    }
-                }
-                _ => break, // Additional variables beyond gamma
-            }
+        for _ in 0..total_points {
+            rho.push(parse_f32(&tokens, &mut cursor, "rho value")?);
         }
-
-        let gamma_opt = if gamma.len() == total_points {
-            Some(gamma)
-        } else {
-            None
-        };
+        for _ in 0..total_points {
+            rhou.push(parse_f32(&tokens, &mut cursor, "rhou value")?);
+        }
+        for _ in 0..total_points {
+            rhov.push(parse_f32(&tokens, &mut cursor, "rhov value")?);
+        }
+        for _ in 0..total_points {
+            rhow.push(parse_f32(&tokens, &mut cursor, "rhow value")?);
+        }
+        for _ in 0..total_points {
+            rhoe.push(parse_f32(&tokens, &mut cursor, "rhoe value")?);
+        }
 
         // Validate we got the right amount of data
         if rho.len() != total_points
@@ -3116,9 +3183,19 @@ pub fn read_plot3d_solution_ascii<P: AsRef<Path>>(path: P) -> io::Result<Vec<Plo
             rhov,
             rhow,
             rhoe,
-            gamma: gamma_opt,
+            gamma: None,
             metadata: Some(metadata),
         });
+    }
+
+    if cursor != tokens.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "Trailing data after reading ASCII PLOT3D solution file: {} unconsumed value(s)",
+                tokens.len() - cursor
+            ),
+        ));
     }
 
     // Set metadata for logging in the command handler
@@ -4009,6 +4086,71 @@ mod tests {
     }
 
     #[test]
+    fn test_read_plot3d_grid_ascii_trailing_data_fails() -> io::Result<()> {
+        let mut temp_file = NamedTempFile::new()?;
+        writeln!(temp_file, "1")?;
+        writeln!(temp_file, "1 1 1")?;
+        writeln!(temp_file, "0.0")?; // X
+        writeln!(temp_file, "1.0")?; // Y
+        writeln!(temp_file, "2.0")?; // Z
+        writeln!(temp_file, "1")?; // optional IBLANK token
+        writeln!(temp_file, "999.0")?; // true trailing token
+        temp_file.flush()?;
+
+        let result = read_plot3d_grid_ascii(temp_file.path());
+        assert!(result.is_err());
+        let err = result.err().unwrap().to_string();
+        assert!(err.contains("Trailing data"), "Unexpected error: {}", err);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_read_plot3d_grid_ascii_with_iblank() -> io::Result<()> {
+        let mut temp_file = NamedTempFile::new()?;
+        writeln!(temp_file, "1")?;
+        writeln!(temp_file, "2 1 1")?; // 2 points
+        writeln!(temp_file, "0.0 1.0")?; // X
+        writeln!(temp_file, "0.0 0.0")?; // Y
+        writeln!(temp_file, "0.0 0.0")?; // Z
+        writeln!(temp_file, "1 0")?; // IBLANK
+        temp_file.flush()?;
+
+        let result = read_plot3d_grid_ascii(temp_file.path());
+        assert!(
+            result.is_ok(),
+            "Failed to read grid with IBLANK: {:?}",
+            result.err()
+        );
+        let grids = result.unwrap();
+        assert_eq!(grids.len(), 1);
+        assert!(grids[0].iblank.is_some());
+        assert_eq!(grids[0].iblank.as_ref().unwrap(), &vec![1, 0]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_read_plot3d_grid_ascii_with_iblank_and_extra_data_fails() -> io::Result<()> {
+        let mut temp_file = NamedTempFile::new()?;
+        writeln!(temp_file, "1")?;
+        writeln!(temp_file, "1 1 1")?;
+        writeln!(temp_file, "0.0")?; // X
+        writeln!(temp_file, "0.0")?; // Y
+        writeln!(temp_file, "0.0")?; // Z
+        writeln!(temp_file, "1")?; // IBLANK
+        writeln!(temp_file, "777")?; // trailing token after iblank
+        temp_file.flush()?;
+
+        let result = read_plot3d_grid_ascii(temp_file.path());
+        assert!(result.is_err());
+        let err = result.err().unwrap().to_string();
+        assert!(err.contains("Trailing data"), "Unexpected error: {}", err);
+
+        Ok(())
+    }
+
+    #[test]
     fn test_read_plot3d_solution_ascii_simple() -> io::Result<()> {
         let mut temp_file = NamedTempFile::new()?;
         writeln!(temp_file, "1")?; // 1 grid
@@ -4047,6 +4189,70 @@ mod tests {
         let meta = solutions[0].metadata.as_ref().unwrap();
         assert_eq!(meta.refmach, Some(1.2));
         assert_eq!(meta.alpha, Some(5.0));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_read_plot3d_solution_ascii_trailing_data_fails() -> io::Result<()> {
+        let mut temp_file = NamedTempFile::new()?;
+        writeln!(temp_file, "1")?;
+        writeln!(temp_file, "1 1 1")?;
+        writeln!(temp_file, "1.0 0.0 1000000.0 0.0")?; // short metadata header
+        writeln!(temp_file, "1.0")?; // rho
+        writeln!(temp_file, "2.0")?; // rhou
+        writeln!(temp_file, "3.0")?; // rhov
+        writeln!(temp_file, "4.0")?; // rhow
+        writeln!(temp_file, "5.0")?; // rhoe
+        writeln!(temp_file, "999.0")?; // trailing token
+        temp_file.flush()?;
+
+        let result = read_plot3d_solution_ascii(temp_file.path());
+        assert!(result.is_err());
+        let err = result.err().unwrap().to_string();
+        assert!(err.contains("Trailing data"), "Unexpected error: {}", err);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_read_plot3d_solution_ascii_multiblock_back_planes() -> io::Result<()> {
+        let mut temp_file = NamedTempFile::new()?;
+        writeln!(temp_file, "2")?; // 2 grids
+        writeln!(temp_file, "2 1 2")?; // grid 1: 4 points (includes back plane)
+        writeln!(temp_file, "1 2 2")?; // grid 2: 4 points (includes back plane)
+
+        // Grid 1 metadata (short header)
+        writeln!(temp_file, "1.0 2.0 3.0 4.0")?;
+        writeln!(temp_file, "1.0 2.0 3.0 4.0")?; // rho
+        writeln!(temp_file, "5.0 6.0 7.0 8.0")?; // rhou
+        writeln!(temp_file, "9.0 10.0 11.0 12.0")?; // rhov
+        writeln!(temp_file, "13.0 14.0 15.0 16.0")?; // rhow
+        writeln!(temp_file, "17.0 18.0 19.0 20.0")?; // rhoe
+
+        // Grid 2 metadata (short header)
+        writeln!(temp_file, "10.0 20.0 30.0 40.0")?;
+        writeln!(temp_file, "21.0 22.0 23.0 24.0")?; // rho
+        writeln!(temp_file, "25.0 26.0 27.0 28.0")?; // rhou
+        writeln!(temp_file, "29.0 30.0 31.0 32.0")?; // rhov
+        writeln!(temp_file, "33.0 34.0 35.0 36.0")?; // rhow
+        writeln!(temp_file, "37.0 38.0 39.0 40.0")?; // rhoe
+
+        temp_file.flush()?;
+
+        let result = read_plot3d_solution_ascii(temp_file.path());
+        assert!(
+            result.is_ok(),
+            "Failed to read ASCII multiblock solution: {:?}",
+            result.err()
+        );
+
+        let solutions = result.unwrap();
+        assert_eq!(solutions.len(), 2);
+        assert_eq!(solutions[0].total_points(), 4);
+        assert_eq!(solutions[1].total_points(), 4);
+        assert_eq!(solutions[0].rho[0], 1.0);
+        assert_eq!(solutions[1].rhoe[3], 40.0);
 
         Ok(())
     }
@@ -5171,10 +5377,9 @@ mod tests {
         let mut temp_file = NamedTempFile::new()?;
         temp_file.write_all(b"1\n")?; // num_grids
         temp_file.write_all(b"2 1 1\n")?; // i j k
-        temp_file.write_all(b"5 0\n")?; // NQ NQC
 
-        // Metadata line (5 floats)
-        temp_file.write_all(b"0.0 0.0 0.0 0.0 0.0\n")?;
+        // Metadata line (short header: 4 floats)
+        temp_file.write_all(b"0.0 0.0 0.0 0.0\n")?;
 
         // Q data (5 variables * 2 points = 10 values)
         for i in 0..10 {
@@ -5198,6 +5403,51 @@ mod tests {
         assert_eq!(meta.format, "ASCII");
         assert_eq!(meta.precision, "f32");
         assert_eq!(meta.byte_order, "N/A");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_read_plot3d_grid_ascii_demo_wbt_file() -> io::Result<()> {
+        let path =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../demo/wbt/grid.fmt");
+
+        if !path.exists() {
+            eprintln!(
+                "Skipping demo grid test; file not found: {}",
+                path.display()
+            );
+            return Ok(());
+        }
+
+        let grids = read_plot3d_grid_ascii(&path)?;
+        assert_eq!(grids.len(), 4);
+        assert_eq!(grids[0].dimensions.i, 74);
+        assert_eq!(grids[0].dimensions.j, 25);
+        assert_eq!(grids[0].dimensions.k, 2);
+        assert!(grids.iter().all(|g| g.iblank.is_some()));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_read_plot3d_solution_ascii_demo_wbt_file() -> io::Result<()> {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../demo/wbt/q.fmt");
+
+        if !path.exists() {
+            eprintln!(
+                "Skipping demo solution test; file not found: {}",
+                path.display()
+            );
+            return Ok(());
+        }
+
+        let solutions = read_plot3d_solution_ascii(&path)?;
+        assert_eq!(solutions.len(), 4);
+        assert_eq!(solutions[0].dimensions.i, 74);
+        assert_eq!(solutions[0].dimensions.j, 25);
+        assert_eq!(solutions[0].dimensions.k, 2);
+        assert!(solutions.iter().all(|s| s.gamma.is_none()));
 
         Ok(())
     }

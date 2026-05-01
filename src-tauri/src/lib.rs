@@ -1298,12 +1298,34 @@ fn load_plot3d_function(path: String) -> Result<Vec<Plot3DFunction>, String> {
 /// Load PLOT3D grid file (caches grids and returns metadata)
 #[tauri::command]
 fn load_plot3d_file_cached(path: String) -> Result<Vec<GridMetadata>, String> {
-    // Load grids using existing reader
-    let (grids, file_metadata) = read_plot3d_grid_with_metadata(&path).map_err(|e| {
-        let error_msg = format!("Error loading PLOT3D file: {}", e);
-        log_error(&error_msg);
-        error_msg
-    })?;
+    // Load grids with binary-first auto-fallback to ASCII.
+    let (grids, byte_order, precision, has_iblank) = match read_plot3d_grid_with_metadata(&path) {
+        Ok((grids, file_metadata)) => (
+            grids,
+            file_metadata.byte_order,
+            file_metadata.precision,
+            file_metadata.has_iblank,
+        ),
+        Err(binary_err) => match read_plot3d_grid_ascii(&path) {
+            Ok(grids) => {
+                let has_iblank = grids.iter().any(|g| g.iblank.is_some());
+                (
+                    grids,
+                    "N/A (ASCII)".to_string(),
+                    "f32".to_string(),
+                    has_iblank,
+                )
+            }
+            Err(ascii_err) => {
+                let error_msg = format!(
+                    "Error loading PLOT3D file. Binary: {}. ASCII: {}",
+                    binary_err, ascii_err
+                );
+                log_error(&error_msg);
+                return Err(error_msg);
+            }
+        },
+    };
 
     let file_name = Path::new(&path)
         .file_name()
@@ -1311,24 +1333,27 @@ fn load_plot3d_file_cached(path: String) -> Result<Vec<GridMetadata>, String> {
         .unwrap_or("unknown")
         .to_string();
 
-    let dims_str = file_metadata
-        .grid_dimensions
+    let dims_str = grids
         .iter()
         .enumerate()
-        .map(|(idx, d)| format!("Grid {} ({}×{}×{})", idx + 1, d.i, d.j, d.k))
+        .map(|(idx, g)| {
+            format!(
+                "Grid {} ({}×{}×{})",
+                idx + 1,
+                g.dimensions.i,
+                g.dimensions.j,
+                g.dimensions.k
+            )
+        })
         .collect::<Vec<_>>()
         .join(", ");
 
     log_info(&format!(
         "Loaded grid file {} (endianness: {}, precision: {}, iblank: {})",
         path,
-        file_metadata.byte_order,
-        file_metadata.precision,
-        if file_metadata.has_iblank {
-            "yes"
-        } else {
-            "no"
-        }
+        byte_order,
+        precision,
+        if has_iblank { "yes" } else { "no" }
     ));
     log_info(&format!("Grids: {}", dims_str));
 
