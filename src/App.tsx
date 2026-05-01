@@ -3066,6 +3066,7 @@ const App = () => {
               showWireframe={showWireframe}
               shadingMode={shadingMode}
               sliceEnabled={sliceEnabled}
+              walls={backendPlotState?.walls ?? []}
               subsets={backendPlotState?.subsets ?? []}
               arbitrarySlices={arbitrarySlices}
               plotFamily={plotFamilyState}

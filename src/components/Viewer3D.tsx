@@ -139,6 +139,7 @@ interface Viewer3DProps {
     showWireframe?: boolean;
     shadingMode?: 'none' | 'smooth';
     sliceEnabled?: boolean;
+    walls?: BackendGridSubset[];
     subsets?: BackendGridSubset[];
     arbitrarySlices?: ArbitrarySlice[];
     plotFamily?: 'contour' | 'function_surface';
@@ -1079,6 +1080,7 @@ export default function Viewer3D({
     showWireframe = true,
     shadingMode = 'none',
     sliceEnabled = false,
+    walls = [],
     subsets = [],
     arbitrarySlices = [],
     plotFamily = 'contour',
@@ -1354,6 +1356,19 @@ export default function Viewer3D({
         [subsets]
     );
 
+    const wallsContentKey = useMemo(
+        () => (walls || [])
+            .map((w) => {
+                const i = w.i_range ? `${w.i_range.start}:${w.i_range.end ?? ''}` : '-';
+                const j = w.j_range ? `${w.j_range.start}:${w.j_range.end ?? ''}` : '-';
+                const k = w.k_range ? `${w.k_range.start}:${w.k_range.end ?? ''}` : '-';
+                return `${w.grid}|${i}|${j}|${k}`;
+            })
+            .sort()
+            .join(';'),
+        [walls]
+    );
+
     const contourSpecKey = useMemo(() => JSON.stringify(contourSpec), [contourSpec]);
 
     const contourArbitrarySlicesKey = useMemo(
@@ -1379,6 +1394,28 @@ export default function Viewer3D({
         }
         return byGrid;
     }, [grids, subsetsContentKey]);
+
+    const wallsByGridId = useMemo(() => {
+        const byGrid: Record<string, BackendGridSubset[]> = {};
+        for (const wall of walls) {
+            const grid = grids.find((g) => g.gridIndex + 1 === wall.grid);
+            if (!grid) {
+                continue;
+            }
+            if (!byGrid[grid.id]) {
+                byGrid[grid.id] = [];
+            }
+            byGrid[grid.id].push(wall);
+        }
+        return byGrid;
+    }, [grids, wallsContentKey]);
+
+    const effectiveRangesByGridId = useMemo(() => {
+        if (sliceEnabled) {
+            return subsetsByGridId;
+        }
+        return wallsByGridId;
+    }, [sliceEnabled, subsetsByGridId, wallsByGridId]);
 
     const subsetSlicesByGridId = useMemo(() => {
         const byGrid: Record<string, GridSlice[]> = {};
@@ -1452,7 +1489,7 @@ export default function Viewer3D({
 
         const currentColorKey = `${scalarField}|${colorScheme}|${colorMapMin ?? ''}|${colorMapMax ?? ''}`;
         // Only include APPLIED slices in the slice key to avoid reprocessing while editing
-        const sliceKey = `${sliceEnabled}|${ignoreIblank}|${showFringePoints}|${iblankFilterMode}|${subsetsContentKey}|${appliedSlicesKey}`;
+        const sliceKey = `${sliceEnabled}|${ignoreIblank}|${showFringePoints}|${iblankFilterMode}|${subsetsContentKey}|${wallsContentKey}|${appliedSlicesKey}`;
         const shouldRecolor = lastColorKeyRef.current !== currentColorKey;
         const shouldReslice = lastSliceKeyRef.current !== sliceKey;
 
@@ -1463,25 +1500,26 @@ export default function Viewer3D({
             message: `[Viewer3D] Slice key check: shouldReslice=${shouldReslice}`
         });
 
-        const gridsWithSubsets = grids.filter((grid) => (subsetsByGridId[grid.id]?.length ?? 0) > 0);
+        const gridsWithRanges = grids.filter((grid) => (effectiveRangesByGridId[grid.id]?.length ?? 0) > 0);
+        const hasEffectiveRanges = gridsWithRanges.length > 0;
         const hasAppliedArbitrarySlices = (arbitrarySlices || []).some(s => s.applied);
 
-        if (sliceEnabled) {
+        if (sliceEnabled || hasEffectiveRanges) {
             // If there are no backend subsets, fall back to full-grid rendering.
-            if (gridsWithSubsets.length === 0 && !hasAppliedArbitrarySlices) {
+            if (gridsWithRanges.length === 0 && !hasAppliedArbitrarySlices) {
                 void invoke('frontend_log', {
-                    message: '[Viewer3D] No backend subsets available; using full-grid fallback rendering'
+                    message: '[Viewer3D] No effective ranges available; using full-grid fallback rendering'
                 });
             }
 
             // Clean up subset meshes for grids without active subsets.
-            if (gridsWithSubsets.length > 0) {
-                const gridsWithoutSubsets = grids.filter((grid) => (subsetsByGridId[grid.id]?.length ?? 0) === 0);
-                const hasStaleMeshes = gridsWithoutSubsets.some((grid) => meshById[grid.id]);
+            if (gridsWithRanges.length > 0) {
+                const gridsWithoutRanges = grids.filter((grid) => (effectiveRangesByGridId[grid.id]?.length ?? 0) === 0);
+                const hasStaleMeshes = gridsWithoutRanges.some((grid) => meshById[grid.id]);
                 if (hasStaleMeshes) {
                     setMeshById((prev) => {
                         const next = { ...prev };
-                        gridsWithoutSubsets.forEach((grid) => {
+                        gridsWithoutRanges.forEach((grid) => {
                             delete next[grid.id];
                         });
                         return next;
@@ -1517,7 +1555,7 @@ export default function Viewer3D({
 
         // targetGrids: grids that need subset processing
         // For arbitrary slices, we always process ALL grids regardless of subsets
-        const targetGrids = sliceEnabled && gridsWithSubsets.length > 0 ? gridsWithSubsets : grids;
+        const targetGrids = hasEffectiveRanges ? gridsWithRanges : grids;
 
         // Determine which grids need to be regenerated
         // 1. On color/field change: regenerate all grids to avoid stale colors
@@ -1739,13 +1777,14 @@ export default function Viewer3D({
                     const gridStart = performance.now();
                     let mesh: MeshGeometry;
 
-                    // Apply all backend subsets for this grid when slicing is enabled.
-                    const gridSubsets = subsetsByGridId[gridItem.id] || [];
-                    if (sliceEnabled && gridSubsets.length > 0) {
+                    // Apply effective backend ranges. GUI slice mode uses SUBSETS;
+                    // non-slice script mode falls back to WALLS.
+                    const gridRanges = effectiveRangesByGridId[gridItem.id] || [];
+                    if (gridRanges.length > 0) {
                         try {
-                            // Generate meshes for each subset and merge them for display.
+                            // Generate meshes for each range and merge them for display.
                             const subsetMeshes = await Promise.all(
-                                gridSubsets.map(async (subset, subsetIndex) => {
+                                gridRanges.map(async (subset, subsetIndex) => {
                                     const norm = (range?: BackendIndexRange | null, dim?: number) => {
                                         if (!range || !dim || dim <= 0) {
                                             return { start: undefined as number | undefined, end: undefined as number | undefined };
@@ -2081,7 +2120,10 @@ export default function Viewer3D({
         onActualRangeChange,
         sliceEnabled,
         subsetsContentKey,
+        wallsContentKey,
         subsetsByGridId,
+        wallsByGridId,
+        effectiveRangesByGridId,
         appliedSlicesKey,
     ]);
     const visibleGrids = useMemo(

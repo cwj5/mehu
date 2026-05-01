@@ -54,7 +54,7 @@
             "id": "WALLS",
             "status": "supported",
             "ticket": "TKT-008",
-            "notes": "Range-based WALLS model and GUI controls are implemented with shared PlotState integration."
+            "notes": "Range-based WALLS model and GUI controls are implemented with shared PlotState integration. 2026-05-01: Viewer range application now passes backend WALLS to Viewer3D and applies WALLS ranges as effective geometry limits when GUI slicing is off, preserving script-driven wall-only rendering semantics."
         },
         {
             "id": "SUBSETS",
