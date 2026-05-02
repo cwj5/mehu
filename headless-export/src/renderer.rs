@@ -16,27 +16,694 @@
 use image::{Rgba, RgbaImage};
 
 use crate::colormap;
+use crate::plot3d::Plot3DGrid;
 use crate::plot_state::{
     AxisView, ContourAttribute, ContourSpec, GridSubset, IndexRange, PlotFamily, PlotState,
-    PlotUpAxis, ViewPoint,
+    PlotUpAxis, ViewPoint, WallColor,
 };
 use crate::script_executor::SolutionSnapshot;
 
 fn draw_wall_overlays(
-    _img: &mut RgbaImage,
-    _uvs: &[(f32, f32)],
-    _slab_w: usize,
-    _slab_h: usize,
+    img: &mut RgbaImage,
+    uvs: &[(f32, f32)],
+    slab_w: usize,
+    slab_h: usize,
     state: &PlotState,
-    _margin: u32,
+    margin: u32,
     warnings: &mut Vec<String>,
 ) {
-    if !state.walls.is_empty() {
+    if state.walls.is_empty() || slab_w == 0 || slab_h == 0 || uvs.is_empty() {
+        return;
+    }
+
+    let (min_u, max_u, min_v, max_v) = bbox(uvs);
+    let range_u = (max_u - min_u).max(1e-20);
+    let range_v = (max_v - min_v).max(1e-20);
+    let draw_w = img.width().saturating_sub(2 * margin) as f32;
+    let draw_h = img.height().saturating_sub(2 * margin) as f32;
+    if draw_w <= 0.0 || draw_h <= 0.0 {
+        return;
+    }
+
+    let uv_to_screen = |u: f32, v: f32| -> (i32, i32) {
+        let x = margin as f32 + (u - min_u) / range_u * draw_w;
+        let y = margin as f32 + (v - min_v) / range_v * draw_h;
+        (x.round() as i32, y.round() as i32)
+    };
+
+    let wall_color = Rgba([240, 240, 240, 255]);
+    let mut skipped_non_primary_grid = false;
+
+    for wall in &state.walls {
+        // Headless snapshot currently holds one resolved grid. Keep parity deterministic by
+        // drawing only walls for grid 1 (or unspecified default behavior).
+        if wall.grid > 1 {
+            skipped_non_primary_grid = true;
+            continue;
+        }
+
+        let Some(((u_start, u_end), (v_start, v_end))) =
+            wall_ranges_for_view(wall, state, slab_w, slab_h, warnings)
+        else {
+            continue;
+        };
+
+        let top_left = uvs[u_start + v_start * slab_w];
+        let top_right = uvs[u_end + v_start * slab_w];
+        let bottom_left = uvs[u_start + v_end * slab_w];
+        let bottom_right = uvs[u_end + v_end * slab_w];
+
+        let (x0, y0) = uv_to_screen(top_left.0, top_left.1);
+        let (x1, y1) = uv_to_screen(top_right.0, top_right.1);
+        let (x2, y2) = uv_to_screen(bottom_right.0, bottom_right.1);
+        let (x3, y3) = uv_to_screen(bottom_left.0, bottom_left.1);
+
+        draw_line(img, x0, y0, x1, y1, wall_color);
+        draw_line(img, x1, y1, x2, y2, wall_color);
+        draw_line(img, x2, y2, x3, y3, wall_color);
+        draw_line(img, x3, y3, x0, y0, wall_color);
+    }
+
+    if skipped_non_primary_grid {
         warnings.push(
-            "Renderer: WALLS overlay unavailable in current headless build; skipping wall lines"
+            "Renderer: WALLS entries for grid > 1 are skipped in single-grid snapshot mode"
                 .to_string(),
         );
     }
+}
+
+fn wall_ranges_for_view(
+    wall: &GridSubset,
+    state: &PlotState,
+    slab_w: usize,
+    slab_h: usize,
+    warnings: &mut Vec<String>,
+) -> Option<((usize, usize), (usize, usize))> {
+    let map_range = |range: &Option<IndexRange>, dim: usize| -> Option<(usize, usize)> {
+        if dim == 0 {
+            return None;
+        }
+        let resolved = resolve_index_range(range.as_ref(), dim)?;
+        Some((resolved.0.saturating_sub(1), resolved.1.saturating_sub(1)))
+    };
+
+    match state.axis_view {
+        AxisView::PlusZ | AxisView::MinusZ | AxisView::PlaneXY | AxisView::PlaneYX => {
+            let u = map_range(&wall.i_range, slab_w)?;
+            let v = map_range(&wall.j_range, slab_h)?;
+            Some((u, v))
+        }
+        AxisView::PlusX | AxisView::MinusX | AxisView::PlaneYZ | AxisView::PlaneZY => {
+            let u = map_range(&wall.j_range, slab_w)?;
+            let v = map_range(&wall.k_range, slab_h)?;
+            Some((u, v))
+        }
+        AxisView::PlusY | AxisView::MinusY | AxisView::PlaneXZ | AxisView::PlaneZX => {
+            let u = map_range(&wall.i_range, slab_w)?;
+            let v = map_range(&wall.k_range, slab_h)?;
+            Some((u, v))
+        }
+        AxisView::Custom => wall_ranges_for_custom_view(wall, state, slab_w, slab_h, warnings),
+    }
+}
+
+fn wall_ranges_for_custom_view(
+    wall: &GridSubset,
+    state: &PlotState,
+    slab_w: usize,
+    slab_h: usize,
+    warnings: &mut Vec<String>,
+) -> Option<((usize, usize), (usize, usize))> {
+    let viewpoint = state.viewpoint.as_ref()?;
+    let mut local_warnings = Vec::new();
+    let look = camera_basis_from_viewpoint_default(viewpoint).2;
+    let abs_x = look.0.abs();
+    let abs_y = look.1.abs();
+    let abs_z = look.2.abs();
+
+    if abs_x < 0.85 && abs_y < 0.85 && abs_z < 0.85 {
+        warnings.push(
+            "Renderer: WALLS overlay for custom VPOINT uses dominant-axis outer-face approximation"
+                .to_string(),
+        );
+    }
+
+    let map_range = |range: &Option<IndexRange>, dim: usize| -> Option<(usize, usize)> {
+        if dim == 0 {
+            return None;
+        }
+        let resolved = resolve_index_range(range.as_ref(), dim)?;
+        Some((resolved.0.saturating_sub(1), resolved.1.saturating_sub(1)))
+    };
+
+    let result = if abs_x >= abs_y && abs_x >= abs_z {
+        let u = map_range(&wall.j_range, slab_w)?;
+        let v = map_range(&wall.k_range, slab_h)?;
+        Some((u, v))
+    } else if abs_y >= abs_x && abs_y >= abs_z {
+        let u = map_range(&wall.i_range, slab_w)?;
+        let v = map_range(&wall.k_range, slab_h)?;
+        Some((u, v))
+    } else {
+        let u = map_range(&wall.i_range, slab_w)?;
+        let v = map_range(&wall.j_range, slab_h)?;
+        Some((u, v))
+    };
+
+    warnings.append(&mut local_warnings);
+    result
+}
+
+fn resolve_index_range(range: Option<&IndexRange>, dim: usize) -> Option<(usize, usize)> {
+    let resolve = |n: i32| -> i32 {
+        if n < 0 {
+            dim as i32 + n + 1
+        } else {
+            n
+        }
+    };
+
+    let Some(range) = range else {
+        return Some((1, dim));
+    };
+
+    let start_raw = resolve(range.start);
+    let end_raw = resolve(range.end.unwrap_or(dim as i32));
+    let start = start_raw.clamp(1, dim as i32) as usize;
+    let end = end_raw.clamp(1, dim as i32) as usize;
+    Some(if start <= end {
+        (start, end)
+    } else {
+        (end, start)
+    })
+}
+
+fn wall_style_rgba(wall: &GridSubset) -> Rgba<u8> {
+    match wall.style.color.as_ref() {
+        Some(WallColor::White) => Rgba([240, 240, 240, 255]),
+        Some(WallColor::Red) => Rgba([255, 48, 48, 255]),
+        Some(WallColor::Green) => Rgba([0, 255, 0, 255]),
+        Some(WallColor::Blue) => Rgba([64, 128, 255, 255]),
+        Some(WallColor::Cyan) => Rgba([64, 224, 224, 255]),
+        Some(WallColor::Magenta) => Rgba([255, 64, 224, 255]),
+        Some(WallColor::Yellow) => Rgba([255, 255, 64, 255]),
+        Some(WallColor::Black) => Rgba([48, 48, 48, 255]),
+        Some(WallColor::Rgb { r, g, b }) => Rgba([*r, *g, *b, 255]),
+        None => Rgba([240, 240, 240, 255]),
+    }
+}
+
+pub fn render_multigrid_walls(
+    img: &mut RgbaImage,
+    grids: &[Plot3DGrid],
+    state: &PlotState,
+    render_warnings: &mut Vec<String>,
+) {
+    for pixel in img.pixels_mut() {
+        *pixel = Rgba([0, 0, 0, 255]);
+    }
+
+    let margin = 20u32;
+    let camera = camera_basis_for_state(state, render_warnings);
+    let mut segments: Vec<((f32, f32), (f32, f32), Rgba<u8>)> = Vec::new();
+    let mut points: Vec<(f32, f32)> = Vec::new();
+    let mut skipped_missing_grid = false;
+
+    for wall in &state.walls {
+        let segment_color = wall_style_rgba(wall);
+        let Some(grid) = wall
+            .grid
+            .checked_sub(1)
+            .and_then(|idx| grids.get(idx as usize))
+        else {
+            skipped_missing_grid = true;
+            continue;
+        };
+
+        let ni = grid.dimensions.i as usize;
+        let nj = grid.dimensions.j as usize;
+        let nk = grid.dimensions.k as usize;
+
+        let Some(i_range) = resolve_index_range(wall.i_range.as_ref(), ni) else {
+            continue;
+        };
+        let Some(j_range) = resolve_index_range(wall.j_range.as_ref(), nj) else {
+            continue;
+        };
+        let Some(k_range) = resolve_index_range(wall.k_range.as_ref(), nk) else {
+            continue;
+        };
+
+        let i_fixed = i_range.0 == i_range.1;
+        let j_fixed = j_range.0 == j_range.1;
+        let k_fixed = k_range.0 == k_range.1;
+
+        let add_segment = |segments: &mut Vec<((f32, f32), (f32, f32), Rgba<u8>)>,
+                           points: &mut Vec<(f32, f32)>,
+                           a: (f32, f32, f32),
+                           b: (f32, f32, f32),
+                           color: Rgba<u8>| {
+            let mut pa = project_point(a, camera);
+            let mut pb = project_point(b, camera);
+            if is_swapped_plane_view(state.axis_view) {
+                pa = (pa.1, pa.0, pa.2);
+                pb = (pb.1, pb.0, pb.2);
+            }
+            let a2 = (pa.0, pa.1);
+            let b2 = (pb.0, pb.1);
+            points.push(a2);
+            points.push(b2);
+            segments.push((a2, b2, color));
+        };
+
+        let world_point = |i1: usize, j1: usize, k1: usize| -> (f32, f32, f32) {
+            let i0 = i1.saturating_sub(1);
+            let j0 = j1.saturating_sub(1);
+            let k0 = k1.saturating_sub(1);
+            let idx = i0 + j0 * ni + k0 * ni * nj;
+            (grid.x_coords[idx], grid.y_coords[idx], grid.z_coords[idx])
+        };
+
+        if i_fixed {
+            let i = i_range.0;
+            for j in j_range.0..=j_range.1 {
+                for k in k_range.0..k_range.1 {
+                    add_segment(
+                        &mut segments,
+                        &mut points,
+                        world_point(i, j, k),
+                        world_point(i, j, k + 1),
+                        segment_color,
+                    );
+                }
+            }
+            for k in k_range.0..=k_range.1 {
+                for j in j_range.0..j_range.1 {
+                    add_segment(
+                        &mut segments,
+                        &mut points,
+                        world_point(i, j, k),
+                        world_point(i, j + 1, k),
+                        segment_color,
+                    );
+                }
+            }
+        } else if j_fixed {
+            let j = j_range.0;
+            for i in i_range.0..=i_range.1 {
+                for k in k_range.0..k_range.1 {
+                    add_segment(
+                        &mut segments,
+                        &mut points,
+                        world_point(i, j, k),
+                        world_point(i, j, k + 1),
+                        segment_color,
+                    );
+                }
+            }
+            for k in k_range.0..=k_range.1 {
+                for i in i_range.0..i_range.1 {
+                    add_segment(
+                        &mut segments,
+                        &mut points,
+                        world_point(i, j, k),
+                        world_point(i + 1, j, k),
+                        segment_color,
+                    );
+                }
+            }
+        } else if k_fixed {
+            let k = k_range.0;
+            for i in i_range.0..=i_range.1 {
+                for j in j_range.0..j_range.1 {
+                    add_segment(
+                        &mut segments,
+                        &mut points,
+                        world_point(i, j, k),
+                        world_point(i, j + 1, k),
+                        segment_color,
+                    );
+                }
+            }
+            for j in j_range.0..=j_range.1 {
+                for i in i_range.0..i_range.1 {
+                    add_segment(
+                        &mut segments,
+                        &mut points,
+                        world_point(i, j, k),
+                        world_point(i + 1, j, k),
+                        segment_color,
+                    );
+                }
+            }
+        } else {
+            skipped_missing_grid = true;
+        }
+    }
+
+    if points.is_empty() {
+        render_warnings.push(
+            "Renderer: multigrid wall scene produced no drawable segments".to_string(),
+        );
+        draw_frame_border(img);
+        return;
+    }
+
+    let (min_u, max_u, min_v, max_v) = bbox(&points);
+    let range_u = (max_u - min_u).max(1e-20);
+    let range_v = (max_v - min_v).max(1e-20);
+    let draw_w = img.width().saturating_sub(2 * margin) as f32;
+    let draw_h = img.height().saturating_sub(2 * margin) as f32;
+    if draw_w <= 0.0 || draw_h <= 0.0 {
+        return;
+    }
+
+    let uv_to_screen = |u: f32, v: f32| -> (i32, i32) {
+        let x = margin as f32 + (u - min_u) / range_u * draw_w;
+        let y = margin as f32 + (v - min_v) / range_v * draw_h;
+        (x.round() as i32, y.round() as i32)
+    };
+
+    for ((u0, v0), (u1, v1), color) in segments {
+        let (x0, y0) = uv_to_screen(u0, v0);
+        let (x1, y1) = uv_to_screen(u1, v1);
+        draw_line(img, x0, y0, x1, y1, color);
+    }
+
+    if skipped_missing_grid {
+        render_warnings.push(
+            "Renderer: some multigrid wall entries could not be resolved exactly".to_string(),
+        );
+    }
+
+    draw_frame_border(img);
+}
+
+/// Render scalar-field contours/surfaces on a set of subset patches spread across
+/// multiple PLOT3D grids.
+///
+/// * `grids` – geometry of every grid in the PLOT3D file (0-indexed).
+/// * `scalars_per_grid` – pre-computed scalar values for every grid; must be
+///   parallel to `grids`.  Values that could not be computed may be omitted
+///   (shorter slice) — those grids are silently skipped.
+/// * `field_min` / `field_max` – the global scalar range to use for coloring.
+pub fn render_multigrid_subsets(
+    img: &mut RgbaImage,
+    grids: &[Plot3DGrid],
+    scalars_per_grid: &[Vec<f32>],
+    field_min: f32,
+    field_max: f32,
+    state: &PlotState,
+    render_warnings: &mut Vec<String>,
+) {
+    for pixel in img.pixels_mut() {
+        *pixel = Rgba([0, 0, 0, 255]);
+    }
+
+    let margin = 20u32;
+    let img_w = img.width();
+    let img_h = img.height();
+    let draw_w = img_w.saturating_sub(2 * margin) as f32;
+    let draw_h = img_h.saturating_sub(2 * margin) as f32;
+    if draw_w <= 0.0 || draw_h <= 0.0 {
+        draw_frame_border(img);
+        return;
+    }
+
+    let camera = camera_basis_for_state(state, render_warnings);
+    let swap = is_swapped_plane_view(state.axis_view);
+
+    // Each patch holds: projected (u, v, depth), scalar, slab_u, slab_v.
+    // slab layout: index = u + v * slab_u
+    struct Patch {
+        proj: Vec<(f32, f32, f32)>,
+        scalars: Vec<f32>,
+        slab_u: usize,
+        slab_v: usize,
+    }
+
+    let mut patches: Vec<Patch> = Vec::new();
+    let mut all_uv: Vec<(f32, f32)> = Vec::new();
+
+    for subset in &state.subsets {
+        let grid_idx = (subset.grid as usize).saturating_sub(1);
+        let Some(grid) = grids.get(grid_idx) else {
+            continue;
+        };
+        let Some(scalars) = scalars_per_grid.get(grid_idx) else {
+            continue;
+        };
+
+        let ni = grid.dimensions.i as usize;
+        let nj = grid.dimensions.j as usize;
+        let nk = grid.dimensions.k as usize;
+
+        let Some(i_range) = resolve_index_range(subset.i_range.as_ref(), ni) else {
+            continue;
+        };
+        let Some(j_range) = resolve_index_range(subset.j_range.as_ref(), nj) else {
+            continue;
+        };
+        let Some(k_range) = resolve_index_range(subset.k_range.as_ref(), nk) else {
+            continue;
+        };
+
+        let i_count = i_range.1 - i_range.0 + 1;
+        let j_count = j_range.1 - j_range.0 + 1;
+        let k_count = k_range.1 - k_range.0 + 1;
+
+        let i_fixed = i_count == 1;
+        let j_fixed = j_count == 1;
+        let k_fixed = k_count == 1;
+
+        // Build a flat map from (u, v) → linear grid index.
+        // Prefer j_fixed > k_fixed > i_fixed; fall back to outer-K face for
+        // volume subsets.
+        let (slab_u, slab_v, idx_map): (usize, usize, Vec<usize>) = if j_fixed {
+            let j0 = j_range.0 - 1;
+            let i0 = i_range.0 - 1;
+            let k0 = k_range.0 - 1;
+            let su = i_count;
+            let sv = k_count;
+            let map = (0..sv)
+                .flat_map(|v| (0..su).map(move |u| (i0 + u) + j0 * ni + (k0 + v) * ni * nj))
+                .collect();
+            (su, sv, map)
+        } else if k_fixed {
+            let k0 = k_range.0 - 1;
+            let i0 = i_range.0 - 1;
+            let j0 = j_range.0 - 1;
+            let su = i_count;
+            let sv = j_count;
+            let map = (0..sv)
+                .flat_map(|v| (0..su).map(move |u| (i0 + u) + (j0 + v) * ni + k0 * ni * nj))
+                .collect();
+            (su, sv, map)
+        } else if i_fixed {
+            let i0 = i_range.0 - 1;
+            let j0 = j_range.0 - 1;
+            let k0 = k_range.0 - 1;
+            let su = j_count;
+            let sv = k_count;
+            let map = (0..sv)
+                .flat_map(|v| (0..su).map(move |u| i0 + (j0 + u) * ni + (k0 + v) * ni * nj))
+                .collect();
+            (su, sv, map)
+        } else {
+            // Volume subset — expose the low-K face as a representative surface.
+            let k0 = k_range.0 - 1;
+            let i0 = i_range.0 - 1;
+            let j0 = j_range.0 - 1;
+            let su = i_count;
+            let sv = j_count;
+            let map = (0..sv)
+                .flat_map(|v| (0..su).map(move |u| (i0 + u) + (j0 + v) * ni + k0 * ni * nj))
+                .collect();
+            (su, sv, map)
+        };
+
+        if slab_u < 2 || slab_v < 2 {
+            continue;
+        }
+        if idx_map.iter().any(|&i| i >= grid.x_coords.len()) {
+            render_warnings.push(format!(
+                "Renderer: subset grid={} has out-of-bounds indices; skipping",
+                subset.grid
+            ));
+            continue;
+        }
+
+        let mut proj = Vec::with_capacity(slab_u * slab_v);
+        let mut sc = Vec::with_capacity(slab_u * slab_v);
+        for &wi in &idx_map {
+            let wp = (grid.x_coords[wi], grid.y_coords[wi], grid.z_coords[wi]);
+            let mut p = project_point(wp, camera);
+            if swap {
+                p = (p.1, p.0, p.2);
+            }
+            all_uv.push((p.0, p.1));
+            proj.push(p);
+            sc.push(scalars[wi]);
+        }
+        patches.push(Patch {
+            proj,
+            scalars: sc,
+            slab_u,
+            slab_v,
+        });
+    }
+
+    if patches.is_empty() || all_uv.is_empty() {
+        render_warnings.push(
+            "Renderer: no renderable subset patches found for multigrid subset render".to_string(),
+        );
+        draw_frame_border(img);
+        return;
+    }
+
+    let (min_u, max_u, min_v, max_v) = bbox(&all_uv);
+    let range_u = (max_u - min_u).max(1e-20);
+    let range_v = (max_v - min_v).max(1e-20);
+    let field_range = (field_max - field_min).max(1e-20);
+
+    let uv_to_screen = |u: f32, v: f32| -> (f32, f32) {
+        (
+            margin as f32 + (u - min_u) / range_u * draw_w,
+            margin as f32 + (v - min_v) / range_v * draw_h,
+        )
+    };
+
+    // ── Pass 1: filled triangle rasterisation ──────────────────────────────
+    let do_fill = !matches!(state.contour_attribute, ContourAttribute::Line);
+    if do_fill {
+        let mut zbuf = vec![f32::INFINITY; (img_w * img_h) as usize];
+        for patch in &patches {
+            let su = patch.slab_u;
+            let sv = patch.slab_v;
+            for vv in 0..(sv - 1) {
+                for uu in 0..(su - 1) {
+                    let i00 = uu + vv * su;
+                    let i10 = (uu + 1) + vv * su;
+                    let i01 = uu + (vv + 1) * su;
+                    let i11 = (uu + 1) + (vv + 1) * su;
+
+                    let mk_v = |i: usize| -> SurfaceVertex {
+                        let (sx, sy) = uv_to_screen(patch.proj[i].0, patch.proj[i].1);
+                        SurfaceVertex {
+                            x: sx,
+                            y: sy,
+                            depth: patch.proj[i].2,
+                            scalar: patch.scalars[i],
+                        }
+                    };
+
+                    rasterize_triangle_z(
+                        img,
+                        &mut zbuf,
+                        mk_v(i00),
+                        mk_v(i10),
+                        mk_v(i11),
+                        &state.contour_attribute,
+                        field_min,
+                        field_max,
+                        1.0,
+                    );
+                    rasterize_triangle_z(
+                        img,
+                        &mut zbuf,
+                        mk_v(i00),
+                        mk_v(i11),
+                        mk_v(i01),
+                        &state.contour_attribute,
+                        field_min,
+                        field_max,
+                        1.0,
+                    );
+                }
+            }
+        }
+    }
+
+    // ── Pass 2: iso-contour lines ──────────────────────────────────────────
+    if !matches!(state.contour_spec, ContourSpec::None) {
+        let levels = resolve_contour_levels(&state.contour_spec, field_min, field_max);
+        let field_range_inv = 1.0 / field_range;
+
+        for patch in &patches {
+            let su = patch.slab_u;
+            let sv = patch.slab_v;
+
+            for &level in &levels {
+                let level_t = ((level - field_min) * field_range_inv).clamp(0.0, 1.0);
+                let line_color = iso_line_color(&state.contour_attribute, level_t);
+
+                for vv in 0..(sv - 1) {
+                    for uu in 0..(su - 1) {
+                        let i00 = uu + vv * su;
+                        let i10 = (uu + 1) + vv * su;
+                        let i01 = uu + (vv + 1) * su;
+                        let i11 = (uu + 1) + (vv + 1) * su;
+
+                        let d00 = patch.scalars[i00] - level;
+                        let d10 = patch.scalars[i10] - level;
+                        let d01 = patch.scalars[i01] - level;
+                        let d11 = patch.scalars[i11] - level;
+
+                        // UV positions of the four quad corners
+                        let (u00, v00) = (patch.proj[i00].0, patch.proj[i00].1);
+                        let (u10, v10) = (patch.proj[i10].0, patch.proj[i10].1);
+                        let (u01, v01) = (patch.proj[i01].0, patch.proj[i01].1);
+                        let (u11, v11) = (patch.proj[i11].0, patch.proj[i11].1);
+
+                        // Linear interpolation along an edge to find the crossing UV.
+                        let lerp_edge = |da: f32,
+                                         ua: f32,
+                                         va: f32,
+                                         db: f32,
+                                         ub: f32,
+                                         vb: f32|
+                         -> Option<(f32, f32)> {
+                            if da.signum() == db.signum() {
+                                None
+                            } else {
+                                let t = da / (da - db);
+                                Some((ua + t * (ub - ua), va + t * (vb - va)))
+                            }
+                        };
+
+                        // Four quad edges: bottom, right, top, left
+                        let crossings: Vec<(f32, f32)> = [
+                            lerp_edge(d00, u00, v00, d10, u10, v10),
+                            lerp_edge(d10, u10, v10, d11, u11, v11),
+                            lerp_edge(d01, u01, v01, d11, u11, v11),
+                            lerp_edge(d00, u00, v00, d01, u01, v01),
+                        ]
+                        .into_iter()
+                        .flatten()
+                        .collect();
+
+                        // Draw first segment (and saddle second segment if present)
+                        for pair in crossings.chunks(2) {
+                            if pair.len() == 2 {
+                                let (x0, y0) = uv_to_screen(pair[0].0, pair[0].1);
+                                let (x1, y1) = uv_to_screen(pair[1].0, pair[1].1);
+                                draw_line(
+                                    img,
+                                    x0.round() as i32,
+                                    y0.round() as i32,
+                                    x1.round() as i32,
+                                    y1.round() as i32,
+                                    line_color,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    draw_frame_border(img);
 }
 
 // ─── Public entry point ──────────────────────────────────────────────────────
@@ -1317,141 +1984,140 @@ fn draw_iso_features(
     let range_v = (max_v - min_v).max(1e-20);
     let field_range = (field_max - field_min).max(1e-20);
 
-
-fn draw_wall_overlays(
-    img: &mut RgbaImage,
-    uvs: &[(f32, f32)],
-    slab_w: usize,
-    slab_h: usize,
-    state: &PlotState,
-    margin: u32,
-    warnings: &mut Vec<String>,
-) {
-    if state.walls.is_empty() || slab_w == 0 || slab_h == 0 || uvs.is_empty() {
-        return;
-    }
-
-    if matches!(state.axis_view, AxisView::Custom) {
-        warnings.push(
-            "Renderer: WALLS overlay for Custom VPOINT is not implemented; skipping wall lines"
-                .to_string(),
-        );
-        return;
-    }
-
-    let (min_u, max_u, min_v, max_v) = bbox(uvs);
-    let range_u = (max_u - min_u).max(1e-20);
-    let range_v = (max_v - min_v).max(1e-20);
-    let draw_w = img.width().saturating_sub(2 * margin) as f32;
-    let draw_h = img.height().saturating_sub(2 * margin) as f32;
-    if draw_w <= 0.0 || draw_h <= 0.0 {
-        return;
-    }
-
-    let uv_to_screen = |u: f32, v: f32| -> (i32, i32) {
-        let x = margin as f32 + (u - min_u) / range_u * draw_w;
-        let y = margin as f32 + (v - min_v) / range_v * draw_h;
-        (x.round() as i32, y.round() as i32)
-    };
-
-    let wall_color = Rgba([240, 240, 240, 255]);
-    let mut skipped_non_primary_grid = false;
-
-    for wall in &state.walls {
-        // Headless snapshot currently holds one resolved grid. Keep parity deterministic by
-        // drawing only walls for grid 1 (or unspecified default behavior).
-        if wall.grid > 1 {
-            skipped_non_primary_grid = true;
-            continue;
+    fn draw_wall_overlays(
+        img: &mut RgbaImage,
+        uvs: &[(f32, f32)],
+        slab_w: usize,
+        slab_h: usize,
+        state: &PlotState,
+        margin: u32,
+        warnings: &mut Vec<String>,
+    ) {
+        if state.walls.is_empty() || slab_w == 0 || slab_h == 0 || uvs.is_empty() {
+            return;
         }
 
-        let Some(((u_start, u_end), (v_start, v_end))) =
-            wall_ranges_for_view(wall, state.axis_view, slab_w, slab_h)
-        else {
-            continue;
+        if matches!(state.axis_view, AxisView::Custom) {
+            warnings.push(
+                "Renderer: WALLS overlay for Custom VPOINT is not implemented; skipping wall lines"
+                    .to_string(),
+            );
+            return;
+        }
+
+        let (min_u, max_u, min_v, max_v) = bbox(uvs);
+        let range_u = (max_u - min_u).max(1e-20);
+        let range_v = (max_v - min_v).max(1e-20);
+        let draw_w = img.width().saturating_sub(2 * margin) as f32;
+        let draw_h = img.height().saturating_sub(2 * margin) as f32;
+        if draw_w <= 0.0 || draw_h <= 0.0 {
+            return;
+        }
+
+        let uv_to_screen = |u: f32, v: f32| -> (i32, i32) {
+            let x = margin as f32 + (u - min_u) / range_u * draw_w;
+            let y = margin as f32 + (v - min_v) / range_v * draw_h;
+            (x.round() as i32, y.round() as i32)
         };
 
-        let top_left = uvs[u_start + v_start * slab_w];
-        let top_right = uvs[u_end + v_start * slab_w];
-        let bottom_left = uvs[u_start + v_end * slab_w];
-        let bottom_right = uvs[u_end + v_end * slab_w];
+        let wall_color = Rgba([240, 240, 240, 255]);
+        let mut skipped_non_primary_grid = false;
 
-        let (x0, y0) = uv_to_screen(top_left.0, top_left.1);
-        let (x1, y1) = uv_to_screen(top_right.0, top_right.1);
-        let (x2, y2) = uv_to_screen(bottom_right.0, bottom_right.1);
-        let (x3, y3) = uv_to_screen(bottom_left.0, bottom_left.1);
+        for wall in &state.walls {
+            // Headless snapshot currently holds one resolved grid. Keep parity deterministic by
+            // drawing only walls for grid 1 (or unspecified default behavior).
+            if wall.grid > 1 {
+                skipped_non_primary_grid = true;
+                continue;
+            }
 
-        draw_line(img, x0, y0, x1, y1, wall_color);
-        draw_line(img, x1, y1, x2, y2, wall_color);
-        draw_line(img, x2, y2, x3, y3, wall_color);
-        draw_line(img, x3, y3, x0, y0, wall_color);
+            let Some(((u_start, u_end), (v_start, v_end))) =
+                wall_ranges_for_view(wall, state.axis_view, slab_w, slab_h)
+            else {
+                continue;
+            };
+
+            let top_left = uvs[u_start + v_start * slab_w];
+            let top_right = uvs[u_end + v_start * slab_w];
+            let bottom_left = uvs[u_start + v_end * slab_w];
+            let bottom_right = uvs[u_end + v_end * slab_w];
+
+            let (x0, y0) = uv_to_screen(top_left.0, top_left.1);
+            let (x1, y1) = uv_to_screen(top_right.0, top_right.1);
+            let (x2, y2) = uv_to_screen(bottom_right.0, bottom_right.1);
+            let (x3, y3) = uv_to_screen(bottom_left.0, bottom_left.1);
+
+            draw_line(img, x0, y0, x1, y1, wall_color);
+            draw_line(img, x1, y1, x2, y2, wall_color);
+            draw_line(img, x2, y2, x3, y3, wall_color);
+            draw_line(img, x3, y3, x0, y0, wall_color);
+        }
+
+        if skipped_non_primary_grid {
+            warnings.push(
+                "Renderer: WALLS entries for grid > 1 are skipped in single-grid snapshot mode"
+                    .to_string(),
+            );
+        }
     }
 
-    if skipped_non_primary_grid {
-        warnings.push(
-            "Renderer: WALLS entries for grid > 1 are skipped in single-grid snapshot mode"
-                .to_string(),
-        );
+    fn wall_ranges_for_view(
+        wall: &GridSubset,
+        view: AxisView,
+        slab_w: usize,
+        slab_h: usize,
+    ) -> Option<((usize, usize), (usize, usize))> {
+        let map_range = |range: &Option<IndexRange>, dim: usize| -> Option<(usize, usize)> {
+            if dim == 0 {
+                return None;
+            }
+            let resolved = resolve_index_range(range.as_ref(), dim)?;
+            Some((resolved.0.saturating_sub(1), resolved.1.saturating_sub(1)))
+        };
+
+        match view {
+            AxisView::PlusZ | AxisView::MinusZ | AxisView::PlaneXY | AxisView::PlaneYX => {
+                let u = map_range(&wall.i_range, slab_w)?;
+                let v = map_range(&wall.j_range, slab_h)?;
+                Some((u, v))
+            }
+            AxisView::PlusX | AxisView::MinusX | AxisView::PlaneYZ | AxisView::PlaneZY => {
+                let u = map_range(&wall.j_range, slab_w)?;
+                let v = map_range(&wall.k_range, slab_h)?;
+                Some((u, v))
+            }
+            AxisView::PlusY | AxisView::MinusY | AxisView::PlaneXZ | AxisView::PlaneZX => {
+                let u = map_range(&wall.i_range, slab_w)?;
+                let v = map_range(&wall.k_range, slab_h)?;
+                Some((u, v))
+            }
+            AxisView::Custom => None,
+        }
     }
-}
 
-fn wall_ranges_for_view(
-    wall: &GridSubset,
-    view: AxisView,
-    slab_w: usize,
-    slab_h: usize,
-) -> Option<((usize, usize), (usize, usize))> {
-    let map_range = |range: &Option<IndexRange>, dim: usize| -> Option<(usize, usize)> {
-        if dim == 0 {
-            return None;
-        }
-        let resolved = resolve_index_range(range.as_ref(), dim)?;
-        Some((resolved.0.saturating_sub(1), resolved.1.saturating_sub(1)))
-    };
+    fn resolve_index_range(range: Option<&IndexRange>, dim: usize) -> Option<(usize, usize)> {
+        let resolve = |n: i32| -> i32 {
+            if n < 0 {
+                dim as i32 + n + 1
+            } else {
+                n
+            }
+        };
 
-    match view {
-        AxisView::PlusZ | AxisView::MinusZ | AxisView::PlaneXY | AxisView::PlaneYX => {
-            let u = map_range(&wall.i_range, slab_w)?;
-            let v = map_range(&wall.j_range, slab_h)?;
-            Some((u, v))
-        }
-        AxisView::PlusX | AxisView::MinusX | AxisView::PlaneYZ | AxisView::PlaneZY => {
-            let u = map_range(&wall.j_range, slab_w)?;
-            let v = map_range(&wall.k_range, slab_h)?;
-            Some((u, v))
-        }
-        AxisView::PlusY | AxisView::MinusY | AxisView::PlaneXZ | AxisView::PlaneZX => {
-            let u = map_range(&wall.i_range, slab_w)?;
-            let v = map_range(&wall.k_range, slab_h)?;
-            Some((u, v))
-        }
-        AxisView::Custom => None,
-    }
-}
+        let Some(range) = range else {
+            return Some((1, dim));
+        };
 
-fn resolve_index_range(range: Option<&IndexRange>, dim: usize) -> Option<(usize, usize)> {
-    let resolve = |n: i32| -> i32 {
-        if n < 0 {
-            dim as i32 + n + 1
+        let start_raw = resolve(range.start);
+        let end_raw = resolve(range.end.unwrap_or(dim as i32));
+        let start = start_raw.clamp(1, dim as i32) as usize;
+        let end = end_raw.clamp(1, dim as i32) as usize;
+        Some(if start <= end {
+            (start, end)
         } else {
-            n
-        }
-    };
-
-    let Some(range) = range else {
-        return Some((1, dim));
-    };
-
-    let start_raw = resolve(range.start);
-    let end_raw = resolve(range.end.unwrap_or(dim as i32));
-    let start = start_raw.clamp(1, dim as i32) as usize;
-    let end = end_raw.clamp(1, dim as i32) as usize;
-    Some(if start <= end {
-        (start, end)
-    } else {
-        (end, start)
-    })
-}
+            (end, start)
+        })
+    }
     let draw_w = img_w.saturating_sub(2 * margin) as f32;
     let draw_h = img_h.saturating_sub(2 * margin) as f32;
     if draw_w <= 0.0 || draw_h <= 0.0 {
@@ -1544,7 +2210,11 @@ fn resolve_index_range(range: Option<&IndexRange>, dim: usize) -> Option<(usize,
 /// Color for an iso-line given its normalized position within the scalar range.
 fn iso_line_color(attr: &ContourAttribute, level_t: f32) -> Rgba<u8> {
     match attr {
-        ContourAttribute::Line => Rgba([255, 255, 255, 255]),
+        ContourAttribute::Line => {
+            // Colour each iso-line by its scalar value, same as the reference renderer.
+            let [r, g, b] = colormap::apply(level_t);
+            Rgba([r, g, b, 255])
+        }
         ContourAttribute::Surface => {
             let [r, g, b] = colormap::turbo(level_t);
             Rgba([r, g, b, 255])

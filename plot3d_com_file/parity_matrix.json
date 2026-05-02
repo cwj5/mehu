@@ -1,6 +1,6 @@
 {
     "schemaVersion": 1,
-    "lastUpdated": "2026-05-01",
+    "lastUpdated": "2026-05-02",
     "parityStates": [
         "supported",
         "script-only",
@@ -42,7 +42,7 @@
             "id": "CONTOURS",
             "status": "supported",
             "ticket": "TKT-007",
-            "notes": "Absolute multi-level contour model (AUTOMATIC/INCREMENT/MANUAL) is implemented with deterministic renderer semantics; Phase B hardening added malformed tuple-arity coverage plus /INCREMENT precedence/default-fallback tests, with parser diagnostic consistency checks across contour modes and continued parser regression maintenance. Legacy terminology alignment (2026-04-02) updated user-facing CONTOURS wording, PR2 added explicit parser diagnostics for legacy /LINEAR and /CUBIC qualifier handling, and PR6 follow-up added explicit no-effect diagnostics for /RANGE and /(NO)ATTRIBUTES qualifiers. 2026-04-23: added ColorLegend contour level tick overlay (resolve_contour_levels IPC extended with field_min/field_max); added AUTOMATIC/INCREMENT/MANUAL headless regression fixtures; fixed marching squares zero-vertex edge case in renderer; restored missing App.tsx grid-dimension helper used by subset/walls labels (stability fix, no capability-scope change)."
+            "notes": "Absolute multi-level contour model (AUTOMATIC/INCREMENT/MANUAL) is implemented with deterministic renderer semantics; Phase B hardening added malformed tuple-arity coverage plus /INCREMENT precedence/default-fallback tests, with parser diagnostic consistency checks across contour modes and continued parser regression maintenance. Legacy terminology alignment (2026-04-02) updated user-facing CONTOURS wording, PR2 added explicit parser diagnostics for legacy /LINEAR and /CUBIC qualifier handling, and PR6 follow-up added explicit no-effect diagnostics for /RANGE and /(NO)ATTRIBUTES qualifiers. 2026-04-23: added ColorLegend contour level tick overlay (resolve_contour_levels IPC extended with field_min/field_max); added AUTOMATIC/INCREMENT/MANUAL headless regression fixtures; fixed marching squares zero-vertex edge case in renderer; restored missing App.tsx grid-dimension helper used by subset/walls labels (stability fix, no capability-scope change). 2026-05-02: parser now recognises LINES/COLOR/SURFACE/GRID/DOTS as positional args on CONTOURS lines (no /prefix required); added in_contours_attr_expected + in_contours_attr_payload continuation states for multi-line interactive-prompt form; is_contours_attribute_token extended to cover LINE/SURFACE/GRID/COLOR without trailing S."
         },
         {
             "id": "PLOT",
@@ -54,13 +54,13 @@
             "id": "WALLS",
             "status": "supported",
             "ticket": "TKT-008",
-            "notes": "Range-based WALLS model and GUI controls are implemented with shared PlotState integration. 2026-05-01: Viewer range application now passes backend WALLS to Viewer3D and applies WALLS ranges as effective geometry limits when GUI slicing is off, preserving script-driven wall-only rendering semantics."
+            "notes": "Range-based WALLS model and GUI controls are implemented with shared PlotState integration. 2026-05-01: Viewer range application now passes backend WALLS to Viewer3D and applies WALLS ranges as effective geometry limits when GUI slicing is off, preserving script-driven wall-only rendering semantics. 2026-05-02: GridSubset extended with WallStyle (WallColor, WallRenderMode); headless renderer uses per-wall color from WallStyle; multi-grid wall-only render path reads all grids."
         },
         {
             "id": "SUBSETS",
             "status": "supported",
             "ticket": "TKT-008",
-            "notes": "Range-based SUBSETS model and GUI controls are implemented with shared PlotState integration."
+            "notes": "Range-based SUBSETS model and GUI controls are implemented with shared PlotState integration. 2026-05-02: headless export now renders multi-grid subset scalar surfaces using read_all_q_for_grids + render_multigrid_subsets; triangle fill with z-buffer and marching-squares iso-contour overlay are both implemented; global scalar range computed across all grids."
         },
         {
             "id": "FSURFACE",

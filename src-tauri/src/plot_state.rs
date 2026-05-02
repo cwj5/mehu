@@ -415,6 +415,37 @@ pub struct IndexRange {
     pub end: Option<i32>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WallRenderMode {
+    Line,
+    Shaded,
+    HiddenLines,
+    Points,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WallColor {
+    White,
+    Red,
+    Green,
+    Blue,
+    Cyan,
+    Magenta,
+    Yellow,
+    Black,
+    Rgb { r: u8, g: u8, b: u8 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct WallStyle {
+    #[serde(default)]
+    pub mode: Option<WallRenderMode>,
+    #[serde(default)]
+    pub color: Option<WallColor>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GridSubset {
     /// 1-based grid number this subset applies to.
@@ -424,6 +455,8 @@ pub struct GridSubset {
     pub i_range: Option<IndexRange>,
     pub j_range: Option<IndexRange>,
     pub k_range: Option<IndexRange>,
+    #[serde(default)]
+    pub style: WallStyle,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -1364,6 +1397,7 @@ mod tests {
             }),
             j_range: None,
             k_range: None,
+            style: WallStyle::default(),
         }];
         let (new_state, diags) = apply_action(state, PlotAction::SetWalls(walls.clone()));
         assert_eq!(new_state.walls, walls);
@@ -1382,6 +1416,7 @@ mod tests {
                 end: None,
             }),
             k_range: None,
+            style: WallStyle::default(),
         }];
         let (new_state, diags) = apply_action(state, PlotAction::SetSubsets(subsets.clone()));
         assert_eq!(new_state.subsets, subsets);
@@ -1400,6 +1435,7 @@ mod tests {
             }),
             j_range: None,
             k_range: None,
+            style: WallStyle::default(),
         }];
 
         let additions = vec![GridSubset {
@@ -1411,6 +1447,7 @@ mod tests {
                 end: Some(5),
             }),
             k_range: None,
+            style: WallStyle::default(),
         }];
 
         let (new_state, diags) = apply_action(state, PlotAction::AddSubsets(additions.clone()));

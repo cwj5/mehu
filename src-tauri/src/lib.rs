@@ -3920,6 +3920,7 @@ fn resolve_subset_negatives(
             i_range: subset.i_range.map(|r| resolve_index_range(&r, dims.i)),
             j_range: subset.j_range.map(|r| resolve_index_range(&r, dims.j)),
             k_range: subset.k_range.map(|r| resolve_index_range(&r, dims.k)),
+            style: subset.style,
         }
     } else {
         subset

@@ -29,7 +29,7 @@ mod colormap;
 mod p3d_reader;
 mod renderer;
 
-use plot_state::{ContourAttribute, ContourSpec, PlotFamily, PlotState};
+use plot_state::{ContourAttribute, ContourSpec, PlotFamily, PlotState, ScalarField};
 use script_executor::{RenderIntent, SolutionSnapshot};
 
 /// IBLANK filter mode shim required by shared `plot3d` module APIs.
@@ -213,7 +213,7 @@ fn run_single(cmd: &Path, out: &Path, width: u32, height: u32) -> Result<(), Str
             })?;
         }
 
-        let image = render_intent_image(intent, width, height);
+        let image = render_intent_image_for_cmd(intent, width, height, Some(cmd_dir));
         image
             .save_with_format(out_path, ImageFormat::Png)
             .map_err(|e| format!("Failed to write PNG {}: {e}", out_path.display()))?;
@@ -233,7 +233,10 @@ fn run_batch(
     height: u32,
 ) -> Result<(), String> {
     if !input_dir.exists() {
-        return Err(format!("Batch input directory not found: {}", input_dir.display()));
+        return Err(format!(
+            "Batch input directory not found: {}",
+            input_dir.display()
+        ));
     }
 
     let cmd_files = collect_batch_inputs(input_dir, pattern)?;
@@ -296,7 +299,7 @@ fn run_batch(
                 })?;
             }
 
-            let image = render_intent_image(intent, width, height);
+            let image = render_intent_image_for_cmd(intent, width, height, Some(cmd_dir));
             image
                 .save_with_format(out_path, ImageFormat::Png)
                 .map_err(|e| format!("Failed to write PNG {}: {e}", out_path.display()))?;
@@ -403,7 +406,60 @@ fn derive_output_paths(base: &Path, count: usize) -> Vec<PathBuf> {
 }
 
 fn render_intent_image(intent: &RenderIntent, width: u32, height: u32) -> RgbaImage {
+    render_intent_image_for_cmd(intent, width, height, None)
+}
+
+fn render_intent_image_for_cmd(
+    intent: &RenderIntent,
+    width: u32,
+    height: u32,
+    cmd_dir: Option<&Path>,
+) -> RgbaImage {
     let mut img = RgbaImage::new(width, height);
+
+    if intent.state.scalar_field == ScalarField::None && !intent.state.walls.is_empty() {
+        if let Some(base_dir) = cmd_dir {
+            if let Some(grids) = try_load_multigrid_scene(base_dir, &intent.state) {
+                let mut render_warnings: Vec<String> = Vec::new();
+                renderer::render_multigrid_walls(
+                    &mut img,
+                    &grids,
+                    &intent.state,
+                    &mut render_warnings,
+                );
+                for w in render_warnings {
+                    eprintln!("[Warning] renderer: {w}");
+                }
+                return img;
+            }
+        }
+    }
+
+    // Multi-subset scalar surface: when the script specifies SUBSETS with a
+    // non-None scalar field, load all grids + solutions and render each subset
+    // patch with the scalar colormap.
+    if !intent.state.subsets.is_empty() && intent.state.scalar_field != ScalarField::None {
+        if let Some(base_dir) = cmd_dir {
+            if let Some((grids, scalars_per_grid, fmin, fmax)) =
+                try_load_all_grids_with_scalars(base_dir, &intent.state)
+            {
+                let mut render_warnings: Vec<String> = Vec::new();
+                renderer::render_multigrid_subsets(
+                    &mut img,
+                    &grids,
+                    &scalars_per_grid,
+                    fmin,
+                    fmax,
+                    &intent.state,
+                    &mut render_warnings,
+                );
+                for w in render_warnings {
+                    eprintln!("[Warning] renderer: {w}");
+                }
+                return img;
+            }
+        }
+    }
 
     if let Some(ref snapshot) = intent.snapshot {
         // Real data available — use the projection-based renderer.
@@ -472,10 +528,24 @@ fn try_load_snapshot(cmd_dir: &Path, state: &PlotState) -> Option<SolutionSnapsh
     let grid_path_raw = state.dataset.grid_id.as_deref()?;
     let sol_path_raw = state.dataset.solution_id.as_deref()?;
 
-    let grid_path = resolve_path(cmd_dir, grid_path_raw);
-    let sol_path = resolve_path(cmd_dir, sol_path_raw);
+    let grid_path = resolve_data_path(cmd_dir, grid_path_raw, &["fmt"]);
+    let sol_path = resolve_data_path(cmd_dir, sol_path_raw, &["fmt"]);
 
     if !grid_path.exists() || !sol_path.exists() {
+        if !grid_path.exists() {
+            eprintln!(
+                "[Warning] Could not resolve grid dataset path '{}' relative to {}",
+                grid_path_raw,
+                cmd_dir.display()
+            );
+        }
+        if !sol_path.exists() {
+            eprintln!(
+                "[Warning] Could not resolve solution dataset path '{}' relative to {}",
+                sol_path_raw,
+                cmd_dir.display()
+            );
+        }
         return None;
     }
 
@@ -503,6 +573,108 @@ fn try_load_snapshot(cmd_dir: &Path, state: &PlotState) -> Option<SolutionSnapsh
     })
 }
 
+fn try_load_multigrid_scene(cmd_dir: &Path, state: &PlotState) -> Option<Vec<plot3d::Plot3DGrid>> {
+    let grid_path_raw = state.dataset.grid_id.as_deref()?;
+    let grid_path = resolve_data_path(cmd_dir, grid_path_raw, &["fmt"]);
+    if !grid_path.exists() {
+        eprintln!(
+            "[Warning] Could not resolve grid dataset path '{}' relative to {}",
+            grid_path_raw,
+            cmd_dir.display()
+        );
+        return None;
+    }
+
+    match plot3d::read_plot3d_grid(&grid_path) {
+        Ok(grids) => Some(grids),
+        Err(binary_err) => plot3d::read_plot3d_grid_ascii(&grid_path)
+            .map_err(|ascii_err| {
+                eprintln!(
+                    "[Warning] Could not read multigrid scene {}: binary parse failed ({binary_err}), ASCII parse failed ({ascii_err})",
+                    grid_path.display()
+                )
+            })
+            .ok(),
+    }
+}
+
+/// Load all grids and their corresponding solution data, compute scalar values
+/// for each grid, and return the geometry, per-grid scalar arrays, and the
+/// global (field_min, field_max) range.
+///
+/// Returns `None` when grid/Q paths cannot be resolved or the files cannot be
+/// parsed.
+fn try_load_all_grids_with_scalars(
+    cmd_dir: &Path,
+    state: &PlotState,
+) -> Option<(Vec<plot3d::Plot3DGrid>, Vec<Vec<f32>>, f32, f32)> {
+    let grid_path_raw = state.dataset.grid_id.as_deref()?;
+    let sol_path_raw = state.dataset.solution_id.as_deref()?;
+
+    let grid_path = resolve_data_path(cmd_dir, grid_path_raw, &["fmt"]);
+    let sol_path = resolve_data_path(cmd_dir, sol_path_raw, &["fmt"]);
+
+    if !grid_path.exists() || !sol_path.exists() {
+        if !grid_path.exists() {
+            eprintln!(
+                "[Warning] Could not resolve grid path '{}' for multi-subset render",
+                grid_path_raw
+            );
+        }
+        if !sol_path.exists() {
+            eprintln!(
+                "[Warning] Could not resolve solution path '{}' for multi-subset render",
+                sol_path_raw
+            );
+        }
+        return None;
+    }
+
+    let grids = match plot3d::read_plot3d_grid(&grid_path) {
+        Ok(v) => v,
+        Err(binary_err) => plot3d::read_plot3d_grid_ascii(&grid_path)
+            .map_err(|ascii_err| {
+                eprintln!(
+                    "[Warning] Could not read grid {}: binary ({binary_err}), ASCII ({ascii_err})",
+                    grid_path.display()
+                )
+            })
+            .ok()?,
+    };
+
+    let q_per_grid = p3d_reader::read_all_q_for_grids(&sol_path, &grids)
+        .map_err(|e| {
+            eprintln!(
+                "[Warning] Could not read Q file {} for multi-subset render: {e}",
+                sol_path.display()
+            )
+        })
+        .ok()?;
+
+    let mut scalars_per_grid: Vec<Vec<f32>> = Vec::with_capacity(grids.len());
+    let mut global_min = f32::INFINITY;
+    let mut global_max = f32::NEG_INFINITY;
+
+    for q in &q_per_grid {
+        let (sc, fmin, fmax) = p3d_reader::compute_scalar(q, &state.scalar_field);
+        global_min = global_min.min(fmin);
+        global_max = global_max.max(fmax);
+        scalars_per_grid.push(sc);
+    }
+
+    // Pad with empty vecs for grids that had no solution (shouldn't normally happen).
+    while scalars_per_grid.len() < grids.len() {
+        scalars_per_grid.push(Vec::new());
+    }
+
+    if global_min > global_max {
+        global_min = 0.0;
+        global_max = 1.0;
+    }
+
+    Some((grids, scalars_per_grid, global_min, global_max))
+}
+
 /// Resolve a path relative to `base_dir` unless it is already absolute.
 fn resolve_path(base_dir: &Path, raw: &str) -> PathBuf {
     let p = PathBuf::from(raw);
@@ -511,6 +683,22 @@ fn resolve_path(base_dir: &Path, raw: &str) -> PathBuf {
     } else {
         base_dir.join(p)
     }
+}
+
+fn resolve_data_path(base_dir: &Path, raw: &str, fallback_extensions: &[&str]) -> PathBuf {
+    let path = resolve_path(base_dir, raw);
+    if path.exists() || path.extension().is_some() {
+        return path;
+    }
+
+    for extension in fallback_extensions {
+        let candidate = path.with_extension(extension);
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+
+    path
 }
 
 // ─── Placeholder drawing helpers (kept for fallback renderer) ─────────────────

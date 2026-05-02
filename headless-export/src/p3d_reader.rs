@@ -128,6 +128,57 @@ fn finite_range(values: &[f32]) -> (f32, f32) {
     }
 }
 
+/// Read ALL grids' solution data, returning one `QData` per grid.
+///
+/// The `grids` slice is used only for dimension validation; if the Q file has
+/// fewer grids than the grid file the extra geometry grids are simply not
+/// accompanied by solution data and those entries are omitted from the result.
+pub fn read_all_q_for_grids(
+    path: &Path,
+    grids: &[crate::plot3d::Plot3DGrid],
+) -> io::Result<Vec<QData>> {
+    let solutions = match crate::plot3d::read_plot3d_solution(path) {
+        Ok(v) => v,
+        Err(binary_err) => crate::plot3d::read_plot3d_solution_ascii(path).map_err(|ae| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "Failed to parse Q as binary ({binary_err}) or ASCII ({ae})"
+                ),
+            )
+        })?,
+    };
+
+    let mut result = Vec::new();
+    for (idx, sol) in solutions.into_iter().enumerate() {
+        let expected = grids
+            .get(idx)
+            .map(|g| {
+                g.dimensions.i as usize * g.dimensions.j as usize * g.dimensions.k as usize
+            })
+            .unwrap_or(0);
+        let got = sol.rho.len();
+        if expected > 0 && got != expected {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "Q/grid dimension mismatch for solution grid {}: expected {expected} points, got {got}",
+                    idx + 1
+                ),
+            ));
+        }
+        result.push(QData {
+            rho: sol.rho,
+            rhou: sol.rhou,
+            rhov: sol.rhov,
+            rhow: sol.rhow,
+            rhoe: sol.rhoe,
+            gamma: sol.gamma,
+        });
+    }
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

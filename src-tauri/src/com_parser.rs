@@ -3,6 +3,7 @@ use crate::plot_state::{
     cap, spherical_to_cartesian, AxisBounds, AxisView, ContourAttribute, ContourEntry, ContourSpec,
     DatasetRef, Diagnostic, DiagnosticSeverity, FsurfaceSpec, GridSubset, IndexRange,
     MinMaxOverride, PlotAction, PlotFamily, PlotText, PlotUpAxis, ScalarField, ViewPoint,
+    WallColor, WallRenderMode, WallStyle,
 };
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -12,6 +13,29 @@ use std::path::{Path, PathBuf};
 pub struct ParsedScript {
     pub actions: Vec<PlotAction>,
     pub diagnostics: Vec<Diagnostic>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum LegacyWallsSubsetsAxisStage {
+    I,
+    J,
+    K,
+    Style,
+}
+
+#[derive(Debug, Clone)]
+struct LegacyWallsSubsetsState {
+    walls: bool,
+    grid: u32,
+    stage: LegacyWallsSubsetsAxisStage,
+    pending_i: Option<IndexRange>,
+    pending_j: Option<IndexRange>,
+    axis_tokens: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct LegacyTextState {
+    lines: Vec<String>,
 }
 
 pub fn parse_com_file(path: &Path) -> Result<ParsedScript, String> {
@@ -112,10 +136,42 @@ fn parse_file_internal(
     let mut out = ParsedScript::default();
 
     let mut in_contours_manual_input = false;
-    let mut in_walls_subsets_input = false;
+    let mut in_contours_attr_expected = false;
+    let mut in_contours_attr_payload = false; // consuming post-attribute thickness/colour tokens
+    let mut walls_subsets_state: Option<LegacyWallsSubsetsState> = None;
+    let mut text_state: Option<LegacyTextState> = None;
 
     for (idx, raw_line) in content.lines().enumerate() {
         let line_number = (idx + 1) as u32;
+        let raw_trimmed = raw_line.trim();
+
+        if let Some(state) = text_state.as_mut() {
+            if raw_trimmed.is_empty() {
+                flush_text_state(state, &mut out);
+                text_state = None;
+                continue;
+            }
+
+            if looks_like_command_start(raw_trimmed) {
+                flush_text_state(state, &mut out);
+                text_state = None;
+            } else {
+                state.lines.push(raw_trimmed.to_string());
+                if state.lines.len() >= 2 {
+                    flush_text_state(state, &mut out);
+                    text_state = None;
+                }
+                continue;
+            }
+        }
+
+        if let Some(state) = walls_subsets_state.as_mut() {
+            if raw_trimmed.is_empty() {
+                parse_walls_subsets_continuation(state, &[], &canonical, line_number, &mut out);
+                continue;
+            }
+        }
+
         let stripped = strip_comments(raw_line);
         let trimmed = stripped.trim();
         if trimmed.is_empty() {
@@ -138,16 +194,84 @@ fn parse_file_internal(
             in_contours_manual_input = false;
         }
 
-        // Legacy WALLS/SUBSETS also uses interactive follow-on responses.
-        // Consume non-command lines as command-owned payload until a clear
-        // next command token appears.
-        if in_walls_subsets_input {
+        // After a bare `CONTOURS N` without an inline attribute, the next
+        // interactive prompt response is the attribute keyword (LINES / COLOR /
+        // SURFACE / GRID / DOTS).  Consume it and any following numeric tokens
+        // (line thickness, background colour components) that belong to the
+        // same prompt before resuming normal command parsing.
+        if in_contours_attr_expected {
             let continuation_tokens = tokenize_line(trimmed);
-            if !continuation_tokens.is_empty() && !looks_like_command_start(&continuation_tokens[0])
+            if continuation_tokens.is_empty() {
+                continue; // blank line inside prompt region
+            }
+            let upper = continuation_tokens[0].to_uppercase();
+            // If it looks like an attribute keyword, emit the action.
+            let attr = match upper.as_str() {
+                "LINE" | "LINES" => Some(PlotAction::SetContourAttribute(ContourAttribute::Line)),
+                "SURFACE" | "SURFACES" => {
+                    Some(PlotAction::SetContourAttribute(ContourAttribute::Surface))
+                }
+                "GRID" | "GRID_LINES" => {
+                    Some(PlotAction::SetContourAttribute(ContourAttribute::Grid))
+                }
+                "COLOR" | "COLOR_CONTOURS" => Some(PlotAction::SetContourAttribute(
+                    ContourAttribute::ColorContours,
+                )),
+                "DOTS" => Some(PlotAction::SetContourAttribute(ContourAttribute::Dots)),
+                _ => None,
+            };
+            if let Some(action) = attr {
+                out.actions.push(action);
+                in_contours_attr_expected = false;
+                in_contours_attr_payload = true; // skip thickness / bg-colour lines
+                continue;
+            }
+            // Numeric lines after the attribute (thickness, colour tuples) — skip.
+            if continuation_tokens
+                .iter()
+                .all(|t| t.parse::<f64>().is_ok() || t == "0")
             {
                 continue;
             }
-            in_walls_subsets_input = false;
+            // Anything else terminates the prompt region; fall through to parse it.
+            in_contours_attr_expected = false;
+        }
+
+        // After consuming a CONTOURS attribute keyword (LINES/COLOR/etc), skip
+        // the line-thickness digit and optional background-colour RGB triple that
+        // may follow in the legacy interactive prompt.
+        if in_contours_attr_payload {
+            let continuation_tokens = tokenize_line(trimmed);
+            if continuation_tokens.is_empty() {
+                continue; // blank separator
+            }
+            // Purely numeric line → thickness or colour component → skip.
+            if continuation_tokens.iter().all(|t| t.parse::<f64>().is_ok()) {
+                continue;
+            }
+            // Anything non-numeric terminates the payload region.
+            in_contours_attr_payload = false;
+        }
+
+        // Legacy WALLS/SUBSETS also uses interactive follow-on responses.
+        // Consume non-command lines as command-owned payload until a clear
+        // next command token appears.
+        if let Some(state) = walls_subsets_state.as_mut() {
+            let continuation_tokens = tokenize_line(trimmed);
+            if !continuation_tokens.is_empty()
+                && (!looks_like_command_start(&continuation_tokens[0])
+                    || walls_subsets_token_belongs_to_prompt(state, &continuation_tokens))
+            {
+                parse_walls_subsets_continuation(
+                    state,
+                    &continuation_tokens,
+                    &canonical,
+                    line_number,
+                    &mut out,
+                );
+                continue;
+            }
+            walls_subsets_state = None;
         }
 
         // Prompt-style include shorthand: @filename.com
@@ -210,6 +334,26 @@ fn parse_file_internal(
             continue;
         }
 
+        if (command == "WALLS" || command == "SUBSETS")
+            && walls_subsets_is_interactive_request(&args_with_inline)
+        {
+            let (grid, _add_mode) = extract_walls_subsets_interactive_context(&args_with_inline);
+            walls_subsets_state = Some(LegacyWallsSubsetsState {
+                walls: command == "WALLS",
+                grid,
+                stage: LegacyWallsSubsetsAxisStage::I,
+                pending_i: None,
+                pending_j: None,
+                axis_tokens: Vec::new(),
+            });
+            continue;
+        }
+
+        if command == "TEXT" && args_with_inline.is_empty() {
+            text_state = Some(LegacyTextState::default());
+            continue;
+        }
+
         parse_command(
             &command,
             &args_with_inline,
@@ -220,11 +364,372 @@ fn parse_file_internal(
 
         in_contours_manual_input =
             command == "CONTOURS" && contours_manual_requested(&args_with_inline);
-        in_walls_subsets_input = command == "WALLS" || command == "SUBSETS";
+        // If CONTOURS was invoked with just a count (no inline attribute qualifier),
+        // prime the attribute-response continuation so the next non-blank line is
+        // treated as the interactive prompt reply.
+        in_contours_attr_expected = command == "CONTOURS"
+            && !in_contours_manual_input
+            && contours_attr_input_needed(&args_with_inline);
+        in_contours_attr_payload = false;
+        walls_subsets_state = None;
     }
 
     visited.remove(&canonical);
     Ok(out)
+}
+
+fn flush_text_state(state: &mut LegacyTextState, out: &mut ParsedScript) {
+    if state.lines.is_empty() {
+        return;
+    }
+
+    out.actions.push(PlotAction::AddTextAnnotation(PlotText {
+        content: state.lines.join("\n"),
+        x: 0.05,
+        y: 0.95,
+    }));
+    state.lines.clear();
+}
+
+fn walls_subsets_is_interactive_request(args: &[String]) -> bool {
+    const WALLS_SUBSETS_QUALIFIERS: &[&str] = &[
+        "GRID",
+        "ADD",
+        "ALL",
+        "NONE",
+        "I",
+        "J",
+        "K",
+        "ATTRIBUTES",
+        "NOATTRIBUTES",
+    ];
+
+    let mut positional: Vec<String> = Vec::new();
+    let mut has_all = false;
+    let mut has_none = false;
+    let mut has_axis_qualifier = false;
+    let mut has_any_qualifier = false;
+
+    for arg in args {
+        if let Some((raw_name, _value)) = parse_qualifier(arg) {
+            has_any_qualifier = true;
+            let name = resolve_qualifier_abbrev(&raw_name, WALLS_SUBSETS_QUALIFIERS);
+            match name.as_str() {
+                "ALL" => has_all = true,
+                "NONE" => has_none = true,
+                "I" | "J" | "K" => has_axis_qualifier = true,
+                _ => {}
+            }
+            continue;
+        }
+        positional.push(arg.clone());
+    }
+
+    if has_all || has_none || has_axis_qualifier {
+        return false;
+    }
+
+    // Interactive mode is the legacy prompt form where command line carries
+    // only grid selection (or nothing) and follows with I/J/K responses.
+    if has_any_qualifier {
+        positional.len() <= 1
+    } else {
+        positional.is_empty()
+    }
+}
+
+fn extract_walls_subsets_interactive_context(args: &[String]) -> (u32, bool) {
+    const WALLS_SUBSETS_QUALIFIERS: &[&str] = &[
+        "GRID",
+        "ADD",
+        "ALL",
+        "NONE",
+        "I",
+        "J",
+        "K",
+        "ATTRIBUTES",
+        "NOATTRIBUTES",
+    ];
+
+    let mut grid = 1u32;
+    let mut add_mode = false;
+    let mut positional: Vec<String> = Vec::new();
+
+    for arg in args {
+        if let Some((raw_name, value)) = parse_qualifier(arg) {
+            let name = resolve_qualifier_abbrev(&raw_name, WALLS_SUBSETS_QUALIFIERS);
+            match name.as_str() {
+                "GRID" => {
+                    if let Some(v) = value.and_then(|s| s.parse::<u32>().ok()).filter(|&v| v > 0) {
+                        grid = v;
+                    }
+                }
+                "ADD" => {
+                    add_mode = true;
+                }
+                _ => {}
+            }
+            continue;
+        }
+        positional.push(arg.clone());
+    }
+
+    if let Some(v) = positional
+        .first()
+        .and_then(|s| s.parse::<u32>().ok())
+        .filter(|&v| v > 0)
+    {
+        grid = v;
+    }
+
+    (grid, add_mode)
+}
+
+fn parse_walls_subsets_continuation(
+    state: &mut LegacyWallsSubsetsState,
+    tokens: &[String],
+    file: &Path,
+    line: u32,
+    out: &mut ParsedScript,
+) {
+    match state.stage {
+        LegacyWallsSubsetsAxisStage::I => {
+            if tokens.is_empty() {
+                if let Some(range) = parse_walls_subsets_prompt_range(&state.axis_tokens) {
+                    state.pending_i = Some(range);
+                    state.stage = LegacyWallsSubsetsAxisStage::J;
+                }
+                state.axis_tokens.clear();
+            } else {
+                state.axis_tokens.extend(tokens.iter().cloned());
+            }
+        }
+        LegacyWallsSubsetsAxisStage::J => {
+            if tokens.is_empty() {
+                if let Some(range) = parse_walls_subsets_prompt_range(&state.axis_tokens) {
+                    state.pending_j = Some(range);
+                    state.stage = LegacyWallsSubsetsAxisStage::K;
+                }
+                state.axis_tokens.clear();
+            } else {
+                state.axis_tokens.extend(tokens.iter().cloned());
+            }
+        }
+        LegacyWallsSubsetsAxisStage::K => {
+            if tokens.is_empty() {
+                if let Some(k_range) = parse_walls_subsets_prompt_range(&state.axis_tokens) {
+                    let subset = GridSubset {
+                        grid: state.grid,
+                        gui_managed: false,
+                        i_range: state.pending_i.clone(),
+                        j_range: state.pending_j.clone(),
+                        k_range: Some(k_range),
+                        style: WallStyle::default(),
+                    };
+
+                    if state.walls {
+                        out.actions.push(PlotAction::AddWalls(vec![subset]));
+                    } else {
+                        out.actions.push(PlotAction::AddSubsets(vec![subset]));
+                    }
+
+                    state.pending_i = None;
+                    state.pending_j = None;
+                    state.stage = LegacyWallsSubsetsAxisStage::Style;
+                }
+                state.axis_tokens.clear();
+            } else {
+                state.axis_tokens.extend(tokens.iter().cloned());
+            }
+        }
+        LegacyWallsSubsetsAxisStage::Style => {
+            if tokens.is_empty() {
+                return;
+            }
+            if looks_like_walls_subsets_prompt_range_start(tokens) {
+                state.axis_tokens.clear();
+                state.axis_tokens.extend(tokens.iter().cloned());
+                state.pending_i = None;
+                state.pending_j = None;
+                state.stage = LegacyWallsSubsetsAxisStage::I;
+            } else if let Some(first) = tokens.first() {
+                let token = first.to_uppercase();
+                if token == "0" {
+                    // Material tuple lines like "0 0 0" are style payload.
+                    return;
+                }
+                if !apply_walls_subsets_style_payload(out, state.walls, tokens) {
+                    out.diagnostics.push(diagnostic(
+                        if state.walls {
+                            cap::WALLS
+                        } else {
+                            cap::SUBSETS
+                        },
+                        DiagnosticSeverity::Info,
+                        Some(file.to_string_lossy().to_string()),
+                        Some(line),
+                        Some(1),
+                        "Ignoring unrecognized legacy WALLS/SUBSETS interactive style payload line",
+                    ));
+                }
+            }
+        }
+    }
+}
+
+fn apply_walls_subsets_style_payload(
+    out: &mut ParsedScript,
+    walls: bool,
+    tokens: &[String],
+) -> bool {
+    let Some(subset) = out
+        .actions
+        .iter_mut()
+        .rev()
+        .find_map(|action| match action {
+            PlotAction::AddWalls(items) if walls => items.last_mut(),
+            PlotAction::AddSubsets(items) if !walls => items.last_mut(),
+            _ => None,
+        })
+    else {
+        return false;
+    };
+
+    let token = tokens[0].to_uppercase();
+    match token.as_str() {
+        "LINE" | "L" => subset.style.mode = Some(WallRenderMode::Line),
+        "SHADED" | "SH" => subset.style.mode = Some(WallRenderMode::Shaded),
+        "HIDDEN_LINES" => subset.style.mode = Some(WallRenderMode::HiddenLines),
+        "POINTS" => subset.style.mode = Some(WallRenderMode::Points),
+        "WHITE" => subset.style.color = Some(WallColor::White),
+        "RED" => subset.style.color = Some(WallColor::Red),
+        "GREEN" => subset.style.color = Some(WallColor::Green),
+        "BLUE" => subset.style.color = Some(WallColor::Blue),
+        "CYAN" => subset.style.color = Some(WallColor::Cyan),
+        "MAGENTA" => subset.style.color = Some(WallColor::Magenta),
+        "YELLOW" => subset.style.color = Some(WallColor::Yellow),
+        "BLACK" => subset.style.color = Some(WallColor::Black),
+        "RGB" => {
+            let parse_component = |idx: usize| {
+                tokens
+                    .get(idx)
+                    .and_then(|value| value.parse::<f32>().ok())
+                    .map(|value| (value.clamp(0.0, 1.0) * 255.0).round() as u8)
+            };
+            if let (Some(r), Some(g), Some(b)) =
+                (parse_component(1), parse_component(2), parse_component(3))
+            {
+                subset.style.color = Some(WallColor::Rgb { r, g, b });
+            } else {
+                return false;
+            }
+        }
+        _ => return false,
+    }
+
+    true
+}
+
+fn walls_subsets_token_belongs_to_prompt(
+    state: &LegacyWallsSubsetsState,
+    tokens: &[String],
+) -> bool {
+    if tokens.is_empty() {
+        return true;
+    }
+
+    match state.stage {
+        LegacyWallsSubsetsAxisStage::I
+        | LegacyWallsSubsetsAxisStage::J
+        | LegacyWallsSubsetsAxisStage::K => {
+            looks_like_walls_subsets_prompt_range_start(tokens)
+                || parse_prompt_index_token(&tokens[0]).is_some()
+        }
+        LegacyWallsSubsetsAxisStage::Style => {
+            if looks_like_walls_subsets_prompt_range_start(tokens) {
+                return true;
+            }
+
+            let token = tokens[0].to_uppercase();
+            matches!(
+                token.as_str(),
+                "LINE"
+                    | "L"
+                    | "SHADED"
+                    | "SH"
+                    | "HIDDEN_LINES"
+                    | "POINTS"
+                    | "RGB"
+                    | "WHITE"
+                    | "RED"
+                    | "GREEN"
+                    | "BLUE"
+                    | "CYAN"
+                    | "MAGENTA"
+                    | "YELLOW"
+                    | "BLACK"
+            ) || token == "0"
+        }
+    }
+}
+
+fn looks_like_walls_subsets_prompt_range_start(tokens: &[String]) -> bool {
+    if tokens.is_empty() {
+        return false;
+    }
+    let first = tokens[0].to_uppercase();
+    if first == "ALL" || first == "A" || first == "LAST" || first == "L" {
+        return true;
+    }
+    if let Ok(v) = tokens[0].parse::<i32>() {
+        return v != 0;
+    }
+    tokens[0].contains(':') || (tokens[0].starts_with('(') && tokens[0].ends_with(')'))
+}
+
+fn parse_walls_subsets_prompt_range(tokens: &[String]) -> Option<IndexRange> {
+    if tokens.is_empty() {
+        return None;
+    }
+
+    let first_upper = tokens[0].to_uppercase();
+    if first_upper == "ALL" || first_upper == "A" {
+        let end = tokens.get(1).and_then(|s| s.parse::<i32>().ok()).or(None);
+        return Some(IndexRange { start: 1, end });
+    }
+    if first_upper == "LAST" || first_upper == "L" {
+        return Some(IndexRange {
+            start: -1,
+            end: Some(-1),
+        });
+    }
+
+    if tokens.len() == 1 {
+        if let Some(range) = parse_index_range(&tokens[0]) {
+            return Some(range);
+        }
+    }
+
+    if let Some(start) = parse_prompt_index_token(&tokens[0]) {
+        let end = tokens
+            .get(1)
+            .and_then(|s| parse_prompt_index_token(s))
+            .unwrap_or(start);
+        return Some(IndexRange {
+            start,
+            end: Some(end),
+        });
+    }
+
+    None
+}
+
+fn parse_prompt_index_token(token: &str) -> Option<i32> {
+    let upper = token.to_uppercase();
+    match upper.as_str() {
+        "LAST" | "L" => Some(-1),
+        _ => token.parse::<i32>().ok(),
+    }
 }
 
 fn looks_like_command_start(token: &str) -> bool {
@@ -249,6 +754,42 @@ fn contours_manual_requested(args: &[String]) -> bool {
         }
     }
     false
+}
+
+/// Returns `true` when a CONTOURS command line has a numeric count but no
+/// inline attribute qualifier — i.e. the attribute will arrive as the next
+/// interactive prompt response on a subsequent line.
+fn contours_attr_input_needed(args: &[String]) -> bool {
+    let mut has_count = false;
+    let attr_qualifiers = ["LINE", "SURFACE", "GRID", "COLOR", "DOTS"];
+    for arg in args {
+        if let Some((raw_name, _)) = parse_qualifier(arg) {
+            let name = resolve_qualifier_abbrev(&raw_name, CONTOURS_QUALIFIERS);
+            if attr_qualifiers.contains(&name.as_str()) {
+                return false; // attribute already provided inline
+            }
+        } else if arg.parse::<f64>().is_ok() {
+            has_count = true;
+        } else {
+            // Check inline keyword form (without `/` prefix)
+            let upper = arg.to_uppercase();
+            if matches!(
+                upper.as_str(),
+                "LINE"
+                    | "LINES"
+                    | "SURFACE"
+                    | "SURFACES"
+                    | "GRID"
+                    | "GRID_LINES"
+                    | "COLOR"
+                    | "COLOR_CONTOURS"
+                    | "DOTS"
+            ) {
+                return false; // attribute already provided inline as keyword
+            }
+        }
+    }
+    has_count
 }
 
 fn parse_contours_manual_continuation(
@@ -394,9 +935,13 @@ fn is_contours_attribute_token(token: &str) -> bool {
             | "CHAINDASH"
             | "CHAINDOT"
             | "NONE"
+            | "LINE"
             | "LINES"
+            | "SURFACE"
             | "SURFACES"
+            | "GRID"
             | "GRID_LINES"
+            | "COLOR"
             | "COLOR_CONTOURS"
             | "DOTS"
             | "IJ"
@@ -1110,6 +1655,35 @@ fn parse_contours(args: &[String], file: &Path, line: u32, out: &mut ParsedScrip
         if let Some(number) = parse_f64(arg) {
             positional_values.push(number);
             continue;
+        }
+
+        // Allow attribute keywords to appear inline without a `/` prefix.
+        // Legacy scripts often write: `CONTOURS 50 LINES 2` or `CONTOURS 40 COLOR 0 0 0`.
+        let upper = arg.to_uppercase();
+        match upper.as_str() {
+            "LINE" | "LINES" => {
+                qualifier_values.insert("LINE".to_string(), None);
+                continue;
+            }
+            "SURFACE" | "SURFACES" => {
+                qualifier_values.insert("SURFACE".to_string(), None);
+                continue;
+            }
+            "GRID" | "GRID_LINES" => {
+                qualifier_values.insert("GRID".to_string(), None);
+                continue;
+            }
+            "COLOR" | "COLOR_CONTOURS" => {
+                qualifier_values.insert("COLOR".to_string(), None);
+                continue;
+            }
+            "DOTS" => {
+                qualifier_values.insert("DOTS".to_string(), None);
+                continue;
+            }
+            // Silently ignore thickness specifiers and color background values that
+            // may follow an attribute keyword (e.g. `2`, `0 0 0`).
+            _ => {}
         }
 
         out.diagnostics.push(diagnostic(
@@ -1843,6 +2417,7 @@ fn parse_walls_or_subsets(
         i_range: None,
         j_range: None,
         k_range: None,
+        style: WallStyle::default(),
     };
 
     // Range arguments are positional only and follow the optional positional grid.
@@ -1850,6 +2425,17 @@ fn parse_walls_or_subsets(
     // Legacy fallback: i_range j_range k_range (e.g. 1:10 2:20 3:30 or (1,10) ...)
     let range_start = if grid_from_qualifier.is_some() { 0 } else { 1 };
     let range_args = positional.get(range_start..).unwrap_or(&[]);
+
+    // Legacy prompt-driven WALLS/SUBSETS commands frequently specify only
+    // command-level context (e.g. WALL/GRID=2) and provide I/J/K ranges on
+    // follow-on lines. In that case, do not emit a default full-grid action.
+    if range_args.is_empty()
+        && i_from_qualifier.is_none()
+        && j_from_qualifier.is_none()
+        && k_from_qualifier.is_none()
+    {
+        return;
+    }
 
     let parse_i32_token = |idx: usize| -> Option<i32> {
         range_args
@@ -3149,7 +3735,7 @@ VPOINT 1.0 2.0 3.0
 MINMAX -1.0 1.0
 CONTOURS 15
 TEXT "Pressure" 0.1 0.9
-WALLS 1
+WALLS/GRID=1 1:1 1:1 1:1
 PLOT/CONTOUR
 "#;
         fs::write(&file, script).expect("write");
@@ -3613,6 +4199,218 @@ fn subsets_invalid_legacy_token_warns_and_retains_valid_tokens() {
     } else {
         panic!("expected SetSubsets, got {:?}", parsed.actions[0]);
     }
+}
+
+#[test]
+fn walls_interactive_prompt_lines_produce_add_actions() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("walls_interactive.com");
+    fs::write(
+        &file,
+        "WALL/GRID=2\nLAST\n\n2 34\n\nALL\n\nLINE\nRGB .6 .6 .6\n\nALL\n\n34\n\nALL\n\nLINE\nRGB .6 .6 .6\n",
+    )
+    .expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+
+    let add_walls: Vec<&Vec<GridSubset>> = parsed
+        .actions
+        .iter()
+        .filter_map(|action| {
+            if let PlotAction::AddWalls(walls) = action {
+                Some(walls)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    assert_eq!(add_walls.len(), 2);
+    assert_eq!(add_walls[0][0].grid, 2);
+    assert_eq!(add_walls[0][0].i_range.as_ref().map(|r| r.start), Some(-1));
+    assert_eq!(add_walls[0][0].j_range.as_ref().map(|r| r.start), Some(2));
+    assert_eq!(
+        add_walls[0][0].j_range.as_ref().and_then(|r| r.end),
+        Some(34)
+    );
+    assert_eq!(add_walls[0][0].k_range.as_ref().map(|r| r.start), Some(1));
+    assert!(add_walls[0][0]
+        .k_range
+        .as_ref()
+        .and_then(|r| r.end)
+        .is_none());
+
+    assert_eq!(add_walls[1][0].grid, 2);
+    assert_eq!(add_walls[1][0].i_range.as_ref().map(|r| r.start), Some(1));
+    assert!(add_walls[1][0]
+        .i_range
+        .as_ref()
+        .and_then(|r| r.end)
+        .is_none());
+    assert_eq!(add_walls[1][0].j_range.as_ref().map(|r| r.start), Some(34));
+    assert_eq!(
+        add_walls[1][0].j_range.as_ref().and_then(|r| r.end),
+        Some(34)
+    );
+    assert_eq!(add_walls[1][0].k_range.as_ref().map(|r| r.start), Some(1));
+    assert!(add_walls[1][0]
+        .k_range
+        .as_ref()
+        .and_then(|r| r.end)
+        .is_none());
+}
+
+#[test]
+fn subsets_interactive_blocks_accumulate_across_commands() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("subsets_interactive.com");
+    fs::write(
+        &file,
+        "SUBSET/GRID=3\n3 64\n\n1 21\n\n1\n\nLINE\nRED\nSUBSET/GRID=4\n3 54\n\n1 11\n\n1\n\nLINE\nGREEN\n",
+    )
+    .expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+
+    let add_subsets: Vec<&Vec<GridSubset>> = parsed
+        .actions
+        .iter()
+        .filter_map(|action| {
+            if let PlotAction::AddSubsets(subsets) = action {
+                Some(subsets)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    assert_eq!(add_subsets.len(), 2);
+    assert_eq!(add_subsets[0][0].grid, 3);
+    assert_eq!(add_subsets[0][0].i_range.as_ref().map(|r| r.start), Some(3));
+    assert_eq!(
+        add_subsets[0][0].i_range.as_ref().and_then(|r| r.end),
+        Some(64)
+    );
+    assert_eq!(add_subsets[0][0].j_range.as_ref().map(|r| r.start), Some(1));
+    assert_eq!(
+        add_subsets[0][0].j_range.as_ref().and_then(|r| r.end),
+        Some(21)
+    );
+    assert_eq!(add_subsets[0][0].k_range.as_ref().map(|r| r.start), Some(1));
+    assert_eq!(
+        add_subsets[0][0].k_range.as_ref().and_then(|r| r.end),
+        Some(1)
+    );
+
+    assert_eq!(add_subsets[1][0].grid, 4);
+    assert_eq!(add_subsets[1][0].i_range.as_ref().map(|r| r.start), Some(3));
+    assert_eq!(
+        add_subsets[1][0].i_range.as_ref().and_then(|r| r.end),
+        Some(54)
+    );
+    assert_eq!(add_subsets[1][0].j_range.as_ref().map(|r| r.start), Some(1));
+    assert_eq!(
+        add_subsets[1][0].j_range.as_ref().and_then(|r| r.end),
+        Some(11)
+    );
+    assert_eq!(add_subsets[1][0].k_range.as_ref().map(|r| r.start), Some(1));
+    assert_eq!(
+        add_subsets[1][0].k_range.as_ref().and_then(|r| r.end),
+        Some(1)
+    );
+}
+
+#[test]
+fn text_prompt_lines_are_consumed_as_annotation() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("text_prompt.com");
+    fs::write(
+        &file,
+        "TEXT\nGENERIC WING/BODY/TAIL, CHIMERA GRID SCHEME\n\nPLOT\n",
+    )
+    .expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+
+    assert!(parsed.diagnostics.iter().all(|d| {
+        !d.message.contains("TEXT requires at least a quoted string")
+            && !d.message.contains("Unsupported command 'GENERIC' ignored")
+    }));
+
+    let text_action = parsed.actions.iter().find_map(|action| {
+        if let PlotAction::AddTextAnnotation(text) = action {
+            Some(text)
+        } else {
+            None
+        }
+    });
+
+    let text_action = text_action.expect("expected AddTextAnnotation action");
+    assert_eq!(
+        text_action.content,
+        "GENERIC WING/BODY/TAIL, CHIMERA GRID SCHEME"
+    );
+    assert_eq!(text_action.x, 0.05);
+    assert_eq!(text_action.y, 0.95);
+}
+
+#[test]
+fn wbt_script_first_plot_setup_matches_legacy_intent() {
+    let file = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../demo/wbt/wbt.com");
+    let parsed = parse_com_file(&file).expect("parse wbt.com");
+    let result = crate::execute_parsed_script(crate::PlotState::default(), &parsed);
+
+    assert!(
+        !result.intents.is_empty(),
+        "wbt.com should produce at least one PLOT intent"
+    );
+
+    for (idx, intent) in result.intents.iter().enumerate() {
+        let viewpoint = intent
+            .state
+            .viewpoint
+            .as_ref()
+            .map(|vp| format!("({:.3},{:.3},{:.3})", vp.x, vp.y, vp.z))
+            .unwrap_or_else(|| "none".to_string());
+        println!(
+            "WBT intent {}: walls={} subsets={} family={:?} axis={:?} vpoint={}",
+            idx + 1,
+            intent.state.walls.len(),
+            intent.state.subsets.len(),
+            intent.state.plot_family,
+            intent.state.axis_view,
+            viewpoint
+        );
+    }
+
+    let first = &result.intents[0].state;
+
+    assert!(
+        first.walls.len() >= 12,
+        "expected at least 12 wall entries in first WBT frame, got {}",
+        first.walls.len()
+    );
+
+    let grids_present: std::collections::BTreeSet<u32> =
+        first.walls.iter().map(|w| w.grid).collect();
+    assert!(
+        grids_present.contains(&2) && grids_present.contains(&3) && grids_present.contains(&4),
+        "first WBT frame walls should include grids 2, 3, and 4; got {:?}",
+        grids_present
+    );
+
+    assert_eq!(
+        first.minmax.x.as_ref().map(|b| (b.min, b.max)),
+        Some((0.0, 14.0))
+    );
+    assert_eq!(
+        first.minmax.y.as_ref().map(|b| (b.min, b.max)),
+        Some((-5.0, 5.0))
+    );
+    assert_eq!(
+        first.minmax.z.as_ref().map(|b| (b.min, b.max)),
+        Some((-1.0, 1.0))
+    );
 }
 
 // ── Integration tests: plot3d.md examples ────────────────────────────────────
