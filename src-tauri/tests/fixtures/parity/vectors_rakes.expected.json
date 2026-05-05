@@ -1,0 +1,47 @@
+{
+    "final_state": {
+        "dataset": {
+            "grid_id": null,
+            "solution_id": null
+        },
+        "scalar_field": "none",
+        "axis_view": "custom",
+        "viewpoint": null,
+        "plot_up": null,
+        "minmax": {
+            "x": null,
+            "y": null,
+            "z": null
+        },
+        "contour_spec": {
+            "mode": "none"
+        },
+        "contour_attribute": "line",
+        "walls": [],
+        "subsets": [],
+        "fsurface": null,
+        "text_annotations": [],
+        "vectors": {
+            "scalar_function": 114,
+            "scalar_function_disabled": false,
+            "length_scale": 0.5,
+            "attributes_enabled": false
+        },
+        "rakes": {
+            "coordinate_mode": "xyz",
+            "add": true,
+            "attributes_enabled": null,
+            "io_mode": {
+                "kind": "read",
+                "path": "seeds.dat"
+            },
+            "time_mode": "plus",
+            "max_points": 200,
+            "scalar_function": 190,
+            "scalar_function_disabled": false
+        },
+        "plot_family": "contour"
+    },
+    "intents": [],
+    "show_output": []
+}

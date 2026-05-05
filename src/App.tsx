@@ -149,8 +149,74 @@ interface BackendPlotState {
   subsets: BackendGridSubset[];
   fsurface?: BackendFsurfaceSpec | null;
   text_annotations: BackendPlotText[];
+  vectors?: BackendVectorSettings | null;
+  rakes?: BackendRakeSettings | null;
   viewpoint?: { x: number; y: number; z: number } | null;
 }
+
+interface BackendVectorSettings {
+  scalar_function?: number | null;
+  scalar_function_disabled: boolean;
+  length_scale?: number | null;
+  attributes_enabled?: boolean | null;
+}
+
+type BackendRakeCoordinateMode = 'ijk' | 'xyz';
+type BackendRakeTimeMode = 'plus' | 'minus' | 'plus_minus';
+
+type BackendRakeIoMode =
+  | { kind: 'read'; path: string }
+  | { kind: 'write'; path: string };
+
+interface BackendRakeSettings {
+  coordinate_mode?: BackendRakeCoordinateMode | null;
+  add: boolean;
+  attributes_enabled?: boolean | null;
+  io_mode?: BackendRakeIoMode | null;
+  time_mode?: BackendRakeTimeMode | null;
+  max_points?: number | null;
+  scalar_function?: number | null;
+  scalar_function_disabled: boolean;
+}
+
+const formatVectorSettingsSummary = (vectors?: BackendVectorSettings | null): string => {
+  if (!vectors) {
+    return '(not set)';
+  }
+
+  const scalar = vectors.scalar_function_disabled
+    ? 'disabled'
+    : vectors.scalar_function != null
+      ? String(vectors.scalar_function)
+      : 'none';
+  const lengthScale = vectors.length_scale != null ? String(vectors.length_scale) : 'none';
+  const attributes = vectors.attributes_enabled == null ? 'default' : vectors.attributes_enabled ? 'on' : 'off';
+  return `scalar=${scalar}, length_scale=${lengthScale}, attributes=${attributes}`;
+};
+
+const formatRakeSettingsSummary = (rakes?: BackendRakeSettings | null): string => {
+  if (!rakes) {
+    return '(not set)';
+  }
+
+  const scalar = rakes.scalar_function_disabled
+    ? 'disabled'
+    : rakes.scalar_function != null
+      ? String(rakes.scalar_function)
+      : 'none';
+  const io = rakes.io_mode ? `${rakes.io_mode.kind}:${rakes.io_mode.path}` : 'none';
+  const attrs = rakes.attributes_enabled == null ? 'default' : rakes.attributes_enabled ? 'on' : 'off';
+
+  return [
+    `mode=${rakes.coordinate_mode ?? 'none'}`,
+    `add=${rakes.add ? 'yes' : 'no'}`,
+    `time=${rakes.time_mode ?? 'none'}`,
+    `max_points=${rakes.max_points ?? 'none'}`,
+    `scalar=${scalar}`,
+    `io=${io}`,
+    `attributes=${attrs}`,
+  ].join(', ');
+};
 
 interface BackendFsurfaceSpec {
   value: number;
@@ -2695,6 +2761,14 @@ const App = () => {
                   <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: '#cbd5e1', background: '#020617', border: '1px solid #334155', borderRadius: '6px', padding: '8px' }}>
                     {showStatusOutput || 'No SHOW snapshot yet.'}
                   </pre>
+
+                  <div style={{ fontWeight: 600 }}>VECTORS / RAKES State</div>
+                  <pre
+                    data-testid="vectors-rakes-status"
+                    style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: '#cbd5e1', background: '#020617', border: '1px solid #334155', borderRadius: '6px', padding: '8px' }}
+                  >
+                    {`VECTORS: ${formatVectorSettingsSummary(backendPlotState?.vectors)}\nRAKES: ${formatRakeSettingsSummary(backendPlotState?.rakes)}`}
+                  </pre>
                 </div>
 
                 {gridTree.length === 0 ? (
@@ -3081,6 +3155,8 @@ const App = () => {
               colorMapMin={colorMapMin}
               colorMapMax={colorMapMax}
               onActualRangeChange={handleActualRangeChange}
+              vectors={backendPlotState?.vectors ?? null}
+              rakes={backendPlotState?.rakes ?? null}
             />
           </div>
 

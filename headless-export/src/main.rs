@@ -441,8 +441,14 @@ fn render_intent_image_for_cmd(
 
     // Multi-subset scalar surface: when the script specifies SUBSETS with a
     // non-None scalar field, load all grids + solutions and render each subset
-    // patch with the scalar colormap.
-    if !intent.state.subsets.is_empty() && intent.state.scalar_field != ScalarField::None {
+    // patch with the scalar colormap.  Skip this path when overlays (rakes or
+    // vectors) are active — those need the single-snapshot path so the overlay
+    // drawing code can access velocity data.
+    if !intent.state.subsets.is_empty()
+        && intent.state.scalar_field != ScalarField::None
+        && intent.state.rakes.is_none()
+        && intent.state.vectors.is_none()
+    {
         if let Some(base_dir) = cmd_dir {
             if let Some((grids, scalars_per_grid, fmin, fmax)) =
                 try_load_all_grids_with_scalars(base_dir, &intent.state)
@@ -518,6 +524,24 @@ fn render_placeholder(img: &mut RgbaImage, intent: &RenderIntent) {
 
 // ─── Snapshot loader ──────────────────────────────────────────────────────────
 
+/// Determine the 0-based grid index to load for a snapshot.
+///
+/// When rakes or vectors are active, use the first subset's grid (subsets are
+/// 1-based in PLOT3D, so we subtract 1).  This ensures particle-trace frames
+/// sample velocity from the grid that actually contains flow data, not the
+/// background chimera block.  Falls back to 0 (first block) for all other frames.
+fn snapshot_grid_index(state: &PlotState) -> usize {
+    if state.rakes.is_some() || state.vectors.is_some() {
+        state
+            .subsets
+            .first()
+            .map(|s| s.grid.saturating_sub(1) as usize)
+            .unwrap_or(0)
+    } else {
+        0
+    }
+}
+
 /// Try to load grid and solution files referenced in `state.dataset` and
 /// compute a `SolutionSnapshot`.
 ///
@@ -553,16 +577,31 @@ fn try_load_snapshot(cmd_dir: &Path, state: &PlotState) -> Option<SolutionSnapsh
         return None;
     }
 
-    let (ni, nj, nk, x, y, z) = p3d_reader::read_grid(&grid_path)
+    let (ni, nj, nk, x, y, z) = p3d_reader::read_grid_n(&grid_path, snapshot_grid_index(state))
         .map_err(|e| eprintln!("[Warning] Could not read grid {}: {e}", grid_path.display()))
         .ok()?;
 
     let total = (ni as usize) * (nj as usize) * (nk as usize);
-    let q = p3d_reader::read_q(&sol_path, total)
+    let q = p3d_reader::read_q_n(&sol_path, snapshot_grid_index(state), total)
         .map_err(|e| eprintln!("[Warning] Could not read Q {}: {e}", sol_path.display()))
         .ok()?;
 
     let (scalar, field_min, field_max) = p3d_reader::compute_scalar(&q, &state.scalar_field);
+    let mut u = Vec::with_capacity(total);
+    let mut v = Vec::with_capacity(total);
+    let mut w = Vec::with_capacity(total);
+    for idx in 0..total {
+        let rho = q.rho[idx];
+        if rho.abs() <= 1e-12 {
+            u.push(0.0);
+            v.push(0.0);
+            w.push(0.0);
+            continue;
+        }
+        u.push(q.rhou[idx] / rho);
+        v.push(q.rhov[idx] / rho);
+        w.push(q.rhow[idx] / rho);
+    }
 
     Some(SolutionSnapshot {
         ni,
@@ -572,6 +611,9 @@ fn try_load_snapshot(cmd_dir: &Path, state: &PlotState) -> Option<SolutionSnapsh
         y,
         z,
         scalar,
+        u,
+        v,
+        w,
         field_min,
         field_max,
     })
@@ -979,6 +1021,9 @@ mod tests {
             y,
             z,
             scalar,
+            u: vec![1.0; n],
+            v: vec![0.0; n],
+            w: vec![0.0; n],
             field_min,
             field_max,
         }

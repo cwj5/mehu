@@ -1,6 +1,6 @@
 {
     "schemaVersion": 1,
-    "lastUpdated": "2026-05-02",
+    "lastUpdated": "2026-05-04",
     "parityStates": [
         "supported",
         "script-only",
@@ -79,6 +79,20 @@
             "status": "supported",
             "ticket": "TKT-008",
             "notes": "SHOW status output is supported with backend status generation and GUI visibility; Phase B hardening includes commit-boundary tests confirming SHOW-only flows do not emit RenderIntent and SHOW output ordering remains stable across commits. Legacy terminology/status alignment updated SHOW family labels to legacy wording (`CONTOUR`, `SURFACE/CARPET/LINE`) across backend output and parity fixtures."
+        },
+        {
+            "id": "VECTORS",
+            "status": "script-only",
+            "ticket": "TKT-013",
+            "notes": "Parser maps VECTORS qualifiers into deterministic PlotState mutations via SetVectors (scalar function, length scale, and attribute toggles), with validation diagnostics for missing/invalid typed qualifier values. Rendering is available as overlay arrows in the interactive viewer and headless contour snapshots; dedicated GUI controls are still deferred.",
+            "rationale": "Script compatibility and deterministic command replay remain primary; VECTORS now render from script/state, while direct GUI editing controls are deferred to a follow-up parity phase."
+        },
+        {
+            "id": "RAKES",
+            "status": "script-only",
+            "ticket": "TKT-013",
+            "notes": "Parser maps RAKES qualifiers into deterministic PlotState mutations via SetRakes (coordinate mode, add/attribute toggles, read/write path, time mode, max points, scalar function), with diagnostics for missing/invalid typed values. Rendering is now available as rake-line overlays in the interactive viewer and headless contour snapshots; dedicated GUI controls remain deferred.",
+            "rationale": "Script compatibility and deterministic command replay remain primary; RAKES now render from script/state, while direct GUI editing controls are deferred to a follow-up parity phase."
         }
     ],
     "outOfScopeCommands": [
@@ -87,8 +101,6 @@
         "MAP",
         "CLEAR",
         "EXIT",
-        "QUIT",
-        "VECTORS",
-        "RAKES"
+        "QUIT"
     ]
 }

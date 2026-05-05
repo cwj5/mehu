@@ -167,6 +167,22 @@ interface Viewer3DProps {
     colorMapMin?: number | null;
     colorMapMax?: number | null;
     onActualRangeChange?: (min: number, max: number) => void;
+    vectors?: {
+        scalar_function?: number | null;
+        scalar_function_disabled: boolean;
+        length_scale?: number | null;
+        attributes_enabled?: boolean | null;
+    } | null;
+    rakes?: {
+        coordinate_mode?: 'ijk' | 'xyz' | null;
+        add: boolean;
+        attributes_enabled?: boolean | null;
+        io_mode?: { kind: 'read' | 'write'; path: string } | null;
+        time_mode?: 'plus' | 'minus' | 'plus_minus' | null;
+        max_points?: number | null;
+        scalar_function?: number | null;
+        scalar_function_disabled: boolean;
+    } | null;
 }
 
 function CameraViewpointSync({
@@ -786,6 +802,401 @@ function ContourLineRenderer({ lineData, color }: { lineData: Float32Array; colo
     return <primitive object={lineSegments} frustumCulled={true} />;
 }
 
+function VectorFieldRenderer({
+    meshGeometry,
+    colorScheme,
+    vectors,
+}: {
+    meshGeometry: MeshGeometry;
+    colorScheme: ColorScheme;
+    vectors: {
+        scalar_function?: number | null;
+        scalar_function_disabled: boolean;
+        length_scale?: number | null;
+        attributes_enabled?: boolean | null;
+    };
+}) {
+    const lineGeometry = useMemo(() => {
+        const probe = meshGeometry.probe_components;
+        const vertexCount = meshGeometry.vertex_count;
+        if (!probe || vertexCount <= 0 || probe.length !== vertexCount * PROBE_COMPONENT_STRIDE) {
+            return null;
+        }
+
+        const targetArrowCount = 450;
+        const sampleStride = Math.max(1, Math.floor(vertexCount / targetArrowCount));
+
+        let minX = Number.POSITIVE_INFINITY;
+        let minY = Number.POSITIVE_INFINITY;
+        let minZ = Number.POSITIVE_INFINITY;
+        let maxX = Number.NEGATIVE_INFINITY;
+        let maxY = Number.NEGATIVE_INFINITY;
+        let maxZ = Number.NEGATIVE_INFINITY;
+        for (let i = 0; i < meshGeometry.vertices.length; i += 3) {
+            const x = meshGeometry.vertices[i];
+            const y = meshGeometry.vertices[i + 1];
+            const z = meshGeometry.vertices[i + 2];
+            minX = Math.min(minX, x);
+            minY = Math.min(minY, y);
+            minZ = Math.min(minZ, z);
+            maxX = Math.max(maxX, x);
+            maxY = Math.max(maxY, y);
+            maxZ = Math.max(maxZ, z);
+        }
+        const dx = maxX - minX;
+        const dy = maxY - minY;
+        const dz = maxZ - minZ;
+        const bboxDiag = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+        const sampled: Array<{ index: number; vx: number; vy: number; vz: number; mag: number }> = [];
+        let maxMag = 0;
+        let minMag = Number.POSITIVE_INFINITY;
+
+        for (let vertexIndex = 0; vertexIndex < vertexCount; vertexIndex += sampleStride) {
+            const start = vertexIndex * PROBE_COMPONENT_STRIDE;
+            const rho = probe[start];
+            const rhou = probe[start + 1];
+            const rhov = probe[start + 2];
+            const rhow = probe[start + 3];
+
+            if (!Number.isFinite(rho) || Math.abs(rho) < 1e-12) {
+                continue;
+            }
+
+            const vx = rhou / rho;
+            const vy = rhov / rho;
+            const vz = rhow / rho;
+            const mag = Math.sqrt(vx * vx + vy * vy + vz * vz);
+            if (!Number.isFinite(mag) || mag <= 1e-10) {
+                continue;
+            }
+
+            sampled.push({ index: vertexIndex, vx, vy, vz, mag });
+            maxMag = Math.max(maxMag, mag);
+            minMag = Math.min(minMag, mag);
+        }
+
+        if (sampled.length === 0 || maxMag <= 0) {
+            return null;
+        }
+
+        const lengthScale = Math.max(0.01, vectors.length_scale ?? 1.0);
+        const baseArrowLength = Math.max(1e-4, bboxDiag * 0.04 * lengthScale);
+        const useAttributes = vectors.attributes_enabled !== false;
+
+        const positions: number[] = [];
+        const colors: number[] = [];
+
+        for (const sample of sampled) {
+            const p = sample.index * 3;
+            const x0 = meshGeometry.vertices[p];
+            const y0 = meshGeometry.vertices[p + 1];
+            const z0 = meshGeometry.vertices[p + 2];
+
+            const dirScale = baseArrowLength * (sample.mag / maxMag);
+            const invMag = 1.0 / sample.mag;
+            const x1 = x0 + sample.vx * invMag * dirScale;
+            const y1 = y0 + sample.vy * invMag * dirScale;
+            const z1 = z0 + sample.vz * invMag * dirScale;
+
+            positions.push(x0, y0, z0, x1, y1, z1);
+
+            if (useAttributes) {
+                const t = normalizeValue(sample.mag, minMag, maxMag);
+                const rgb = mapValueToColor(t, colorScheme);
+                colors.push(rgb.r / 255, rgb.g / 255, rgb.b / 255, rgb.r / 255, rgb.g / 255, rgb.b / 255);
+            }
+        }
+
+        if (positions.length === 0) {
+            return null;
+        }
+
+        const geo = new BufferGeometry();
+        geo.setAttribute('position', new BufferAttribute(new Float32Array(positions), 3));
+        if (useAttributes && colors.length === positions.length) {
+            geo.setAttribute('color', new BufferAttribute(new Float32Array(colors), 3));
+        }
+        geo.computeBoundingSphere();
+        return geo;
+    }, [colorScheme, meshGeometry, vectors.attributes_enabled, vectors.length_scale]);
+
+    if (!lineGeometry) {
+        return null;
+    }
+
+    const useAttributes = vectors.attributes_enabled !== false;
+    return (
+        <lineSegments geometry={lineGeometry} frustumCulled={true}>
+            <lineBasicMaterial
+                color={useAttributes ? '#ffffff' : '#f59e0b'}
+                vertexColors={useAttributes}
+                transparent={false}
+                depthTest={true}
+                depthWrite={true}
+            />
+        </lineSegments>
+    );
+}
+
+function RakeFieldRenderer({
+    meshGeometry,
+    colorScheme,
+    rakes,
+}: {
+    meshGeometry: MeshGeometry;
+    colorScheme: ColorScheme;
+    rakes: {
+        coordinate_mode?: 'ijk' | 'xyz' | null;
+        add: boolean;
+        attributes_enabled?: boolean | null;
+        io_mode?: { kind: 'read' | 'write'; path: string } | null;
+        time_mode?: 'plus' | 'minus' | 'plus_minus' | null;
+        max_points?: number | null;
+        scalar_function?: number | null;
+        scalar_function_disabled: boolean;
+    };
+}) {
+    const lineGeometry = useMemo(() => {
+        const probe = meshGeometry.probe_components;
+        const vertexCount = meshGeometry.vertex_count;
+        if (!probe || vertexCount <= 0 || probe.length !== vertexCount * PROBE_COMPONENT_STRIDE) {
+            return null;
+        }
+
+        let minX = Number.POSITIVE_INFINITY;
+        let minY = Number.POSITIVE_INFINITY;
+        let minZ = Number.POSITIVE_INFINITY;
+        let maxX = Number.NEGATIVE_INFINITY;
+        let maxY = Number.NEGATIVE_INFINITY;
+        let maxZ = Number.NEGATIVE_INFINITY;
+        for (let i = 0; i < meshGeometry.vertices.length; i += 3) {
+            const x = meshGeometry.vertices[i];
+            const y = meshGeometry.vertices[i + 1];
+            const z = meshGeometry.vertices[i + 2];
+            minX = Math.min(minX, x);
+            minY = Math.min(minY, y);
+            minZ = Math.min(minZ, z);
+            maxX = Math.max(maxX, x);
+            maxY = Math.max(maxY, y);
+            maxZ = Math.max(maxZ, z);
+        }
+        const dx = maxX - minX;
+        const dy = maxY - minY;
+        const dz = maxZ - minZ;
+        const bboxDiag = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+        const maxSeeds = Math.max(8, Math.min(600, rakes.max_points ?? 120));
+        const fieldTarget = Math.max(200, Math.min(2200, maxSeeds * 4));
+        const fieldStride = Math.max(1, Math.floor(vertexCount / fieldTarget));
+
+        const sampled: Array<{ x: number; y: number; z: number; vx: number; vy: number; vz: number; mag: number }> = [];
+        let maxMag = 0;
+        let minMag = Number.POSITIVE_INFINITY;
+
+        for (let vertexIndex = 0; vertexIndex < vertexCount; vertexIndex += fieldStride) {
+            const start = vertexIndex * PROBE_COMPONENT_STRIDE;
+            const rho = probe[start];
+            const rhou = probe[start + 1];
+            const rhov = probe[start + 2];
+            const rhow = probe[start + 3];
+
+            if (!Number.isFinite(rho) || Math.abs(rho) < 1e-12) {
+                continue;
+            }
+
+            const vx = rhou / rho;
+            const vy = rhov / rho;
+            const vz = rhow / rho;
+            const mag = Math.sqrt(vx * vx + vy * vy + vz * vz);
+            if (!Number.isFinite(mag) || mag <= 1e-10) {
+                continue;
+            }
+
+            const p = vertexIndex * 3;
+            const x = meshGeometry.vertices[p];
+            const y = meshGeometry.vertices[p + 1];
+            const z = meshGeometry.vertices[p + 2];
+
+            sampled.push({ x, y, z, vx, vy, vz, mag });
+            maxMag = Math.max(maxMag, mag);
+            minMag = Math.min(minMag, mag);
+        }
+
+        if (sampled.length === 0 || maxMag <= 0) {
+            return null;
+        }
+
+        const seedStride = Math.max(1, Math.floor(sampled.length / maxSeeds));
+        const seedSamples = sampled.filter((_, idx) => idx % seedStride === 0).slice(0, maxSeeds);
+        const lengthScale = Math.max(0.01, rakes.max_points != null ? Math.min(4, Math.max(0.25, rakes.max_points / 120)) : 1);
+        const baseStepLength = Math.max(1e-4, bboxDiag * 0.008 * lengthScale);
+        const stepCount = 12;
+        const useAttributes = rakes.attributes_enabled !== false;
+
+        const directions: number[] =
+            rakes.time_mode === 'minus'
+                ? [-1]
+                : rakes.time_mode === 'plus_minus'
+                    ? [1, -1]
+                    : [1];
+
+        const positions: number[] = [];
+        const colors: number[] = [];
+
+        const sampleVelocityAt = (x: number, y: number, z: number): { vx: number; vy: number; vz: number; mag: number } | null => {
+            const nearest: Array<{ d2: number; sample: (typeof sampled)[number] }> = [];
+            const k = 6;
+
+            for (const s of sampled) {
+                const dxs = s.x - x;
+                const dys = s.y - y;
+                const dzs = s.z - z;
+                const d2 = dxs * dxs + dys * dys + dzs * dzs;
+                if (!Number.isFinite(d2)) {
+                    continue;
+                }
+                if (d2 < 1e-14) {
+                    return { vx: s.vx, vy: s.vy, vz: s.vz, mag: s.mag };
+                }
+
+                if (nearest.length < k) {
+                    nearest.push({ d2, sample: s });
+                    nearest.sort((a, b) => a.d2 - b.d2);
+                } else if (d2 < nearest[k - 1].d2) {
+                    nearest[k - 1] = { d2, sample: s };
+                    nearest.sort((a, b) => a.d2 - b.d2);
+                }
+            }
+
+            if (nearest.length === 0) {
+                return null;
+            }
+
+            let wSum = 0;
+            let vx = 0;
+            let vy = 0;
+            let vz = 0;
+            for (const entry of nearest) {
+                const w = 1.0 / Math.max(1e-12, entry.d2);
+                wSum += w;
+                vx += entry.sample.vx * w;
+                vy += entry.sample.vy * w;
+                vz += entry.sample.vz * w;
+            }
+
+            if (wSum <= 0 || !Number.isFinite(wSum)) {
+                return null;
+            }
+
+            vx /= wSum;
+            vy /= wSum;
+            vz /= wSum;
+            const mag = Math.sqrt(vx * vx + vy * vy + vz * vz);
+            if (!Number.isFinite(mag) || mag <= 1e-10) {
+                return null;
+            }
+            return { vx, vy, vz, mag };
+        };
+
+        for (const seed of seedSamples) {
+
+            for (const sign of directions) {
+                let px = seed.x;
+                let py = seed.y;
+                let pz = seed.z;
+
+                for (let step = 0; step < stepCount; step += 1) {
+                    const v1 = sampleVelocityAt(px, py, pz);
+                    if (!v1) {
+                        break;
+                    }
+
+                    const v1Inv = 1.0 / v1.mag;
+                    const h = baseStepLength * (0.35 + 0.65 * (v1.mag / maxMag));
+                    const midX = px + sign * v1.vx * v1Inv * h * 0.5;
+                    const midY = py + sign * v1.vy * v1Inv * h * 0.5;
+                    const midZ = pz + sign * v1.vz * v1Inv * h * 0.5;
+
+                    const v2 = sampleVelocityAt(midX, midY, midZ);
+                    if (!v2) {
+                        break;
+                    }
+                    const v2Inv = 1.0 / v2.mag;
+                    const nx = px + sign * v2.vx * v2Inv * h;
+                    const ny = py + sign * v2.vy * v2Inv * h;
+                    const nz = pz + sign * v2.vz * v2Inv * h;
+
+                    if (
+                        nx < minX || nx > maxX ||
+                        ny < minY || ny > maxY ||
+                        nz < minZ || nz > maxZ
+                    ) {
+                        break;
+                    }
+
+                    positions.push(px, py, pz, nx, ny, nz);
+
+                    if (useAttributes) {
+                        const t = normalizeValue(v2.mag, minMag, maxMag);
+                        const rgb = mapValueToColor(t, colorScheme);
+                        colors.push(
+                            rgb.r / 255,
+                            rgb.g / 255,
+                            rgb.b / 255,
+                            rgb.r / 255,
+                            rgb.g / 255,
+                            rgb.b / 255
+                        );
+                    } else {
+                        colors.push(
+                            34 / 255,
+                            197 / 255,
+                            94 / 255,
+                            34 / 255,
+                            197 / 255,
+                            94 / 255
+                        );
+                    }
+
+                    px = nx;
+                    py = ny;
+                    pz = nz;
+                }
+            }
+        }
+
+        if (positions.length === 0) {
+            return null;
+        }
+
+        const geo = new BufferGeometry();
+        geo.setAttribute('position', new BufferAttribute(new Float32Array(positions), 3));
+        if (colors.length === positions.length) {
+            geo.setAttribute('color', new BufferAttribute(new Float32Array(colors), 3));
+        }
+        geo.computeBoundingSphere();
+        return geo;
+    }, [colorScheme, meshGeometry, rakes.attributes_enabled, rakes.max_points, rakes.time_mode]);
+
+    if (!lineGeometry) {
+        return null;
+    }
+
+    const useAttributes = rakes.attributes_enabled !== false;
+    return (
+        <lineSegments geometry={lineGeometry} frustumCulled={true}>
+            <lineBasicMaterial
+                color={useAttributes ? '#ffffff' : '#22c55e'}
+                vertexColors={true}
+                transparent={false}
+                depthTest={true}
+                depthWrite={true}
+            />
+        </lineSegments>
+    );
+}
+
 // Point probe interaction handler component
 function PointerInteractionHandler({
     probeTargets,
@@ -1095,6 +1506,8 @@ export default function Viewer3D({
     colorMapMin,
     colorMapMax,
     onActualRangeChange,
+    vectors = null,
+    rakes = null,
 }: Viewer3DProps) {
     type IsoSurfaceGeometry = {
         mesh: MeshGeometry;
@@ -2449,6 +2862,20 @@ export default function Viewer3D({
                                     forceSolidColor={shouldForceSolidContext}
                                 />
                             )}
+                            {vectors && (
+                                <VectorFieldRenderer
+                                    meshGeometry={mesh}
+                                    colorScheme={colorScheme}
+                                    vectors={vectors}
+                                />
+                            )}
+                            {rakes && (
+                                <RakeFieldRenderer
+                                    meshGeometry={mesh}
+                                    colorScheme={colorScheme}
+                                    rakes={rakes}
+                                />
+                            )}
                         </group>
                     );
                 })}
@@ -2480,6 +2907,20 @@ export default function Viewer3D({
                                         color={sliceColor}
                                         dimmed={false}
                                         forceSolidColor={shouldForceSolidContext}
+                                    />
+                                )}
+                                {vectors && (
+                                    <VectorFieldRenderer
+                                        meshGeometry={mesh}
+                                        colorScheme={colorScheme}
+                                        vectors={vectors}
+                                    />
+                                )}
+                                {rakes && (
+                                    <RakeFieldRenderer
+                                        meshGeometry={mesh}
+                                        colorScheme={colorScheme}
+                                        rakes={rakes}
                                     />
                                 )}
                             </group>

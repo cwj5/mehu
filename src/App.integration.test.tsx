@@ -328,6 +328,55 @@ describe('App frontend integration', () => {
             );
         });
     });
+
+    it('shows backend VECTORS/RAKES summary in command sidebar', async () => {
+        invokeMock.mockReset();
+        viewer3DMock.mockReset();
+
+        invokeMock.mockImplementation(async (cmd: string) => {
+            if (cmd === 'get_plot_state') {
+                return {
+                    scalar_field: 'none',
+                    plot_family: 'contour',
+                    contour_attribute: 'line',
+                    axis_view: 'custom',
+                    plot_up: 'negative_y',
+                    contour_spec: { mode: 'none' },
+                    walls: [],
+                    subsets: [],
+                    fsurface: null,
+                    text_annotations: [],
+                    vectors: {
+                        scalar_function: 114,
+                        scalar_function_disabled: false,
+                        length_scale: 0.5,
+                        attributes_enabled: false,
+                    },
+                    rakes: {
+                        coordinate_mode: 'xyz',
+                        add: true,
+                        attributes_enabled: null,
+                        io_mode: { kind: 'read', path: 'seeds.dat' },
+                        time_mode: 'plus',
+                        max_points: 200,
+                        scalar_function: 190,
+                        scalar_function_disabled: false,
+                    },
+                    viewpoint: null,
+                };
+            }
+            return null;
+        });
+
+        render(<App />);
+
+        const sidebarToggle = await screen.findByRole('button', { name: 'Show Command Sidebar' });
+        fireEvent.click(sidebarToggle);
+
+        const summary = await screen.findByTestId('vectors-rakes-status');
+        expect(summary.textContent).toContain('VECTORS: scalar=114, length_scale=0.5, attributes=off');
+        expect(summary.textContent).toContain('RAKES: mode=xyz, add=yes, time=plus, max_points=200, scalar=190, io=read:seeds.dat, attributes=default');
+    });
 });
 
 // ──────────────────────────────────────────────────────────────────────────────

@@ -44,6 +44,12 @@ pub struct SolutionSnapshot {
     pub z: Vec<f32>,
     /// Computed scalar field values, same length as `x`.
     pub scalar: Vec<f32>,
+    /// Velocity component along X, same length as `x`.
+    pub u: Vec<f32>,
+    /// Velocity component along Y, same length as `x`.
+    pub v: Vec<f32>,
+    /// Velocity component along Z, same length as `x`.
+    pub w: Vec<f32>,
     /// Minimum finite scalar value in this snapshot.
     pub field_min: f32,
     /// Maximum finite scalar value in this snapshot.
@@ -146,7 +152,7 @@ mod tests {
 
     const REQUIRED_CAPABILITIES: &[&str] = &[
         "FUNCTION", "VIEW", "VPOINT", "MINMAX", "CONTOURS", "PLOT", "WALLS", "SUBSETS", "FSURFACE",
-        "TEXT", "SHOW",
+        "TEXT", "SHOW", "VECTORS", "RAKES",
     ];
 
     const PARITY_FIXTURES: &[ParityFixtureCase] = &[
@@ -176,6 +182,10 @@ mod tests {
         ParityFixtureCase {
             name: "non_scalar_function_ranges",
             capabilities: &["FUNCTION"],
+        },
+        ParityFixtureCase {
+            name: "vectors_rakes",
+            capabilities: &["VECTORS", "RAKES"],
         },
     ];
 

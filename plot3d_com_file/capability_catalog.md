@@ -1,6 +1,6 @@
 # PLOT3D Capability Catalog
 
-Last updated: 2026-04-03
+Last updated: 2026-05-04
 
 ## Purpose
 
@@ -48,6 +48,10 @@ Allowed status values:
     - Configure plot text lines.
 12. `SHOW`
     - Display structured current state and command status.
+13. `VECTORS`
+   - Parse and track VECTORS qualifier state in shared `PlotState` (rendering deferred).
+14. `RAKES`
+   - Parse and track RAKES qualifier state in shared `PlotState` (rendering deferred).
 
 ## Out-of-Scope Legacy Commands (Current Phase)
 
@@ -57,8 +61,6 @@ Allowed status values:
 4. `CLEAR`
 5. `EXIT` journal/save semantics
 6. `QUIT` journal/save semantics
-7. `VECTORS`
-8. `RAKES`
 
 ## Inclusion Rule
 

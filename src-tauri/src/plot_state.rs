@@ -30,6 +30,8 @@ pub mod cap {
     pub const FSURFACE: &str = "FSURFACE";
     pub const TEXT: &str = "TEXT";
     pub const SHOW: &str = "SHOW";
+    pub const VECTORS: &str = "VECTORS";
+    pub const RAKES: &str = "RAKES";
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -488,6 +490,59 @@ pub struct PlotText {
     pub y: f64,
 }
 
+/// Shared VECTORS state used for deterministic parser/executor replay and
+/// renderer overlays.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct VectorSettings {
+    /// Legacy scalar function number used to color vectors.
+    pub scalar_function: Option<u16>,
+    /// Whether /NOSCALAR_FUNCTION was explicitly provided.
+    pub scalar_function_disabled: bool,
+    /// Optional vector length multiplier from /LENGTH_SCALE.
+    pub length_scale: Option<f64>,
+    /// Optional attribute toggle from /(NO)ATTRIBUTES.
+    pub attributes_enabled: Option<bool>,
+}
+
+/// RAKES coordinate interpretation mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RakeCoordinateMode {
+    Ijk,
+    Xyz,
+}
+
+/// RAKES time-direction mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RakeTimeMode {
+    Plus,
+    Minus,
+    PlusMinus,
+}
+
+/// RAKES read/write mode.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "path", rename_all = "snake_case")]
+pub enum RakeIoMode {
+    Read(String),
+    Write(String),
+}
+
+/// Shared RAKES state. Geometry/particle rendering is deferred; parser/executor
+/// preserve deterministic command intent in PlotState.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct RakeSettings {
+    pub coordinate_mode: Option<RakeCoordinateMode>,
+    pub add: bool,
+    pub attributes_enabled: Option<bool>,
+    pub io_mode: Option<RakeIoMode>,
+    pub time_mode: Option<RakeTimeMode>,
+    pub max_points: Option<u32>,
+    pub scalar_function: Option<u16>,
+    pub scalar_function_disabled: bool,
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Contour attribute (CONTOURS attribute qualifier)
 // ──────────────────────────────────────────────────────────────────────────────
@@ -670,6 +725,14 @@ pub struct PlotState {
     // TEXT
     pub text_annotations: Vec<PlotText>,
 
+    // VECTORS
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vectors: Option<VectorSettings>,
+
+    // RAKES
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rakes: Option<RakeSettings>,
+
     // PLOT
     pub plot_family: PlotFamily,
 
@@ -749,6 +812,12 @@ pub enum PlotAction {
 
     // TEXT: clear all text annotations.
     ClearTextAnnotations,
+
+    // VECTORS: update vector-display settings (rendering deferred).
+    SetVectors(VectorSettings),
+
+    // RAKES: update rake/particle-seed settings (rendering deferred).
+    SetRakes(RakeSettings),
 
     // SHOW: emit a status snapshot in executor output.
     ShowStatus,
@@ -1012,6 +1081,22 @@ pub fn apply_action(mut state: PlotState, action: PlotAction) -> (PlotState, Vec
 
         PlotAction::ClearTextAnnotations => {
             state.text_annotations.clear();
+        }
+
+        PlotAction::SetVectors(settings) => {
+            state.vectors = Some(settings);
+            diags.push(Diagnostic::info(
+                cap::VECTORS,
+                "VECTORS settings captured (rendering deferred)",
+            ));
+        }
+
+        PlotAction::SetRakes(settings) => {
+            state.rakes = Some(settings);
+            diags.push(Diagnostic::info(
+                cap::RAKES,
+                "RAKES settings captured (rendering deferred)",
+            ));
         }
 
         PlotAction::ShowStatus => {
@@ -1528,6 +1613,40 @@ mod tests {
         let (new_state, diags) = apply_action(state, PlotAction::ClearTextAnnotations);
         assert!(new_state.text_annotations.is_empty());
         assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn set_vectors_stores_settings_and_emits_info() {
+        let state = default_state();
+        let vectors = VectorSettings {
+            scalar_function: Some(114),
+            scalar_function_disabled: false,
+            length_scale: Some(0.75),
+            attributes_enabled: Some(true),
+        };
+
+        let (new_state, diags) = apply_action(state, PlotAction::SetVectors(vectors.clone()));
+        assert_eq!(new_state.vectors, Some(vectors));
+        assert!(diags.iter().any(|d| d.capability == cap::VECTORS));
+    }
+
+    #[test]
+    fn set_rakes_stores_settings_and_emits_info() {
+        let state = default_state();
+        let rakes = RakeSettings {
+            coordinate_mode: Some(RakeCoordinateMode::Xyz),
+            add: true,
+            attributes_enabled: Some(false),
+            io_mode: Some(RakeIoMode::Write("out.rake".to_string())),
+            time_mode: Some(RakeTimeMode::PlusMinus),
+            max_points: Some(400),
+            scalar_function: Some(190),
+            scalar_function_disabled: false,
+        };
+
+        let (new_state, diags) = apply_action(state, PlotAction::SetRakes(rakes.clone()));
+        assert_eq!(new_state.rakes, Some(rakes));
+        assert!(diags.iter().any(|d| d.capability == cap::RAKES));
     }
 
     // ── Plot family ───────────────────────────────────────────────────────────

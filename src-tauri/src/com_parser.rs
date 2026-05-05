@@ -2,8 +2,9 @@ use crate::function_mapping::{map_function_number_to_action, map_legacy_function
 use crate::plot_state::{
     cap, spherical_to_cartesian, AxisBounds, AxisView, ContourAttribute, ContourEntry, ContourSpec,
     DatasetRef, Diagnostic, DiagnosticSeverity, FsurfaceSpec, GridSubset, IndexRange,
-    MinMaxOverride, PlotAction, PlotFamily, PlotText, PlotUpAxis, ScalarField, ViewPoint,
-    WallColor, WallRenderMode, WallStyle,
+    MinMaxOverride, PlotAction, PlotFamily, PlotText, PlotUpAxis, RakeCoordinateMode, RakeIoMode,
+    RakeSettings, RakeTimeMode, ScalarField, VectorSettings, ViewPoint, WallColor, WallRenderMode,
+    WallStyle,
 };
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -1152,25 +1153,93 @@ fn parse_rakes(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) 
         "NOSCALAR_FUNCTION",
     ];
 
+    let mut settings = RakeSettings::default();
+
     for arg in args {
         if let Some((raw_name, value)) = parse_qualifier(arg) {
             let name = resolve_qualifier_abbrev(&raw_name, RAKES_QUALIFIERS);
-            if matches!(
-                name.as_str(),
-                "READ" | "WRITE" | "MAXPOINTS" | "SCALAR_FUNCTION"
-            ) && value.as_deref().unwrap_or("").trim().is_empty()
-            {
-                out.diagnostics.push(diagnostic(
-                    "RAKES",
+            match name.as_str() {
+                "IJK" => settings.coordinate_mode = Some(RakeCoordinateMode::Ijk),
+                "XYZ" => settings.coordinate_mode = Some(RakeCoordinateMode::Xyz),
+                "ADD" => settings.add = true,
+                "ATTRIBUTES" => settings.attributes_enabled = Some(true),
+                "NOATTRIBUTES" => settings.attributes_enabled = Some(false),
+                "+TIME" => settings.time_mode = Some(RakeTimeMode::Plus),
+                "-TIME" => settings.time_mode = Some(RakeTimeMode::Minus),
+                "+-TIME" => settings.time_mode = Some(RakeTimeMode::PlusMinus),
+                "NOSCALAR_FUNCTION" => {
+                    settings.scalar_function = None;
+                    settings.scalar_function_disabled = true;
+                }
+                "READ" | "WRITE" | "MAXPOINTS" | "SCALAR_FUNCTION" => {
+                    if value.as_deref().unwrap_or("").trim().is_empty() {
+                        out.diagnostics.push(diagnostic(
+                            cap::RAKES,
+                            DiagnosticSeverity::Warning,
+                            Some(file.to_string_lossy().to_string()),
+                            Some(line),
+                            Some(1),
+                            format!("RAKES /{} requires '=value'", name),
+                        ));
+                        continue;
+                    }
+
+                    match name.as_str() {
+                        "READ" => {
+                            settings.io_mode = Some(RakeIoMode::Read(
+                                value.expect("checked above").trim().to_string(),
+                            ));
+                        }
+                        "WRITE" => {
+                            settings.io_mode = Some(RakeIoMode::Write(
+                                value.expect("checked above").trim().to_string(),
+                            ));
+                        }
+                        "MAXPOINTS" => match value.expect("checked above").trim().parse::<u32>() {
+                            Ok(v) => settings.max_points = Some(v),
+                            Err(_) => out.diagnostics.push(diagnostic(
+                                cap::RAKES,
+                                DiagnosticSeverity::Warning,
+                                Some(file.to_string_lossy().to_string()),
+                                Some(line),
+                                Some(1),
+                                format!("RAKES /MAXPOINTS expects an integer, got '{}'", arg),
+                            )),
+                        },
+                        "SCALAR_FUNCTION" => match value
+                            .expect("checked above")
+                            .trim()
+                            .parse::<u16>()
+                        {
+                            Ok(v) => {
+                                settings.scalar_function = Some(v);
+                                settings.scalar_function_disabled = false;
+                            }
+                            Err(_) => out.diagnostics.push(diagnostic(
+                                cap::RAKES,
+                                DiagnosticSeverity::Warning,
+                                Some(file.to_string_lossy().to_string()),
+                                Some(line),
+                                Some(1),
+                                format!("RAKES /SCALAR_FUNCTION expects an integer, got '{}'", arg),
+                            )),
+                        },
+                        _ => {}
+                    }
+                }
+                _ => out.diagnostics.push(diagnostic(
+                    cap::RAKES,
                     DiagnosticSeverity::Warning,
                     Some(file.to_string_lossy().to_string()),
                     Some(line),
                     Some(1),
-                    format!("RAKES /{} requires '=value'", name),
-                ));
+                    format!("Unknown RAKES qualifier '/{}' ignored", name),
+                )),
             }
         }
     }
+
+    out.actions.push(PlotAction::SetRakes(settings));
 }
 
 fn parse_vectors(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {
@@ -1182,23 +1251,79 @@ fn parse_vectors(args: &[String], file: &Path, line: u32, out: &mut ParsedScript
         "NOATTRIBUTES",
     ];
 
+    let mut settings = VectorSettings::default();
+
     for arg in args {
         if let Some((raw_name, value)) = parse_qualifier(arg) {
             let name = resolve_qualifier_abbrev(&raw_name, VECTORS_QUALIFIERS);
-            if matches!(name.as_str(), "SCALAR_FUNCTION" | "LENGTH_SCALE")
-                && value.as_deref().unwrap_or("").trim().is_empty()
-            {
-                out.diagnostics.push(diagnostic(
-                    "VECTORS",
+            match name.as_str() {
+                "NOSCALAR_FUNCTION" => {
+                    settings.scalar_function = None;
+                    settings.scalar_function_disabled = true;
+                }
+                "ATTRIBUTES" => settings.attributes_enabled = Some(true),
+                "NOATTRIBUTES" => settings.attributes_enabled = Some(false),
+                "SCALAR_FUNCTION" | "LENGTH_SCALE" => {
+                    if value.as_deref().unwrap_or("").trim().is_empty() {
+                        out.diagnostics.push(diagnostic(
+                            cap::VECTORS,
+                            DiagnosticSeverity::Warning,
+                            Some(file.to_string_lossy().to_string()),
+                            Some(line),
+                            Some(1),
+                            format!("VECTORS /{} requires '=value'", name),
+                        ));
+                        continue;
+                    }
+
+                    match name.as_str() {
+                        "SCALAR_FUNCTION" => {
+                            match value.expect("checked above").trim().parse::<u16>() {
+                                Ok(v) => {
+                                    settings.scalar_function = Some(v);
+                                    settings.scalar_function_disabled = false;
+                                }
+                                Err(_) => out.diagnostics.push(diagnostic(
+                                    cap::VECTORS,
+                                    DiagnosticSeverity::Warning,
+                                    Some(file.to_string_lossy().to_string()),
+                                    Some(line),
+                                    Some(1),
+                                    format!(
+                                        "VECTORS /SCALAR_FUNCTION expects an integer, got '{}'",
+                                        arg
+                                    ),
+                                )),
+                            }
+                        }
+                        "LENGTH_SCALE" => match value.expect("checked above").trim().parse::<f64>()
+                        {
+                            Ok(v) => settings.length_scale = Some(v),
+                            Err(_) => out.diagnostics.push(diagnostic(
+                                cap::VECTORS,
+                                DiagnosticSeverity::Warning,
+                                Some(file.to_string_lossy().to_string()),
+                                Some(line),
+                                Some(1),
+                                format!("VECTORS /LENGTH_SCALE expects a real, got '{}'", arg),
+                            )),
+                        },
+                        _ => {}
+                    }
+                }
+                _ => out.diagnostics.push(diagnostic(
+                    cap::VECTORS,
                     DiagnosticSeverity::Warning,
                     Some(file.to_string_lossy().to_string()),
                     Some(line),
                     Some(1),
-                    format!("VECTORS /{} requires '=value'", name),
-                ));
+                    format!("Unknown VECTORS qualifier '/{}' ignored", name),
+                )),
             }
         }
     }
+
+    out.actions.push(PlotAction::SetVectors(settings));
 }
 
 fn parse_automm(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {
@@ -2997,6 +3122,75 @@ mod tests {
             PlotAction::SetPlotFamily(PlotFamily::FunctionSurface)
         );
         assert_eq!(parsed.actions[1], PlotAction::CommitPlot);
+    }
+
+    #[test]
+    fn vectors_command_emits_settings_action() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("vectors.com");
+        fs::write(
+            &file,
+            "VECTORS/SCALAR_FUNCTION=114/LENGTH_SCALE=0.5/NOATTRIBUTES\n",
+        )
+        .expect("write script");
+
+        let parsed = parse_com_file(&file).expect("parse script");
+        let settings = parsed.actions.iter().find_map(|action| {
+            if let PlotAction::SetVectors(settings) = action {
+                Some(settings)
+            } else {
+                None
+            }
+        });
+
+        let settings = settings.expect("expected SetVectors action");
+        assert_eq!(settings.scalar_function, Some(114));
+        assert_eq!(settings.length_scale, Some(0.5));
+        assert_eq!(settings.attributes_enabled, Some(false));
+        assert!(!settings.scalar_function_disabled);
+    }
+
+    #[test]
+    fn vectors_missing_value_emits_warning() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("vectors_missing.com");
+        fs::write(&file, "VECTORS/SCALAR_FUNCTION\n").expect("write script");
+
+        let parsed = parse_com_file(&file).expect("parse script");
+        assert!(parsed.diagnostics.iter().any(|d| d
+            .message
+            .contains("VECTORS /SCALAR_FUNCTION requires '=value'")));
+    }
+
+    #[test]
+    fn rakes_command_emits_settings_action() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("rakes.com");
+        fs::write(
+            &file,
+            "RAKES/XYZ/ADD/+TIME/MAXPOINTS=200/SCALAR_FUNCTION=190/READ=seeds.dat\n",
+        )
+        .expect("write script");
+
+        let parsed = parse_com_file(&file).expect("parse script");
+        let settings = parsed.actions.iter().find_map(|action| {
+            if let PlotAction::SetRakes(settings) = action {
+                Some(settings)
+            } else {
+                None
+            }
+        });
+
+        let settings = settings.expect("expected SetRakes action");
+        assert_eq!(settings.coordinate_mode, Some(RakeCoordinateMode::Xyz));
+        assert!(settings.add);
+        assert_eq!(settings.time_mode, Some(RakeTimeMode::Plus));
+        assert_eq!(settings.max_points, Some(200));
+        assert_eq!(settings.scalar_function, Some(190));
+        assert_eq!(
+            settings.io_mode,
+            Some(RakeIoMode::Read("seeds.dat".to_string()))
+        );
     }
 
     #[test]

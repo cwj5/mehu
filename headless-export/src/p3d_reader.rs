@@ -19,6 +19,16 @@ pub struct QData {
 ///
 /// Returns `(ni, nj, nk, x_coords, y_coords, z_coords)`.
 pub fn read_grid(path: &Path) -> io::Result<(u32, u32, u32, Vec<f32>, Vec<f32>, Vec<f32>)> {
+    read_grid_n(path, 0)
+}
+
+/// Read the `grid_index`-th grid (0-based) from a PLOT3D grid file.
+///
+/// Falls back to grid 0 if the requested index is out of range.
+pub fn read_grid_n(
+    path: &Path,
+    grid_index: usize,
+) -> io::Result<(u32, u32, u32, Vec<f32>, Vec<f32>, Vec<f32>)> {
     let grids = match crate::plot3d::read_plot3d_grid(path) {
         Ok(v) => v,
         Err(binary_err) => crate::plot3d::read_plot3d_grid_ascii(path).map_err(|ascii_err| {
@@ -29,7 +39,9 @@ pub fn read_grid(path: &Path) -> io::Result<(u32, u32, u32, Vec<f32>, Vec<f32>, 
         })?,
     };
 
-    let grid = grids.into_iter().next().ok_or_else(|| {
+    let len = grids.len();
+    let idx = if grid_index < len { grid_index } else { 0 };
+    let grid = grids.into_iter().nth(idx).ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidData, "Grid file contained no grids")
     })?;
 
@@ -47,6 +59,13 @@ pub fn read_grid(path: &Path) -> io::Result<(u32, u32, u32, Vec<f32>, Vec<f32>, 
 ///
 /// `total` must equal `ni * nj * nk` for the selected grid.
 pub fn read_q(path: &Path, total: usize) -> io::Result<QData> {
+    read_q_n(path, 0, total)
+}
+
+/// Read the `grid_index`-th solution (0-based) from a PLOT3D solution file.
+///
+/// Falls back to solution 0 if the requested index is out of range.
+pub fn read_q_n(path: &Path, grid_index: usize, total: usize) -> io::Result<QData> {
     let solutions = match crate::plot3d::read_plot3d_solution(path) {
         Ok(v) => v,
         Err(binary_err) => {
@@ -59,7 +78,9 @@ pub fn read_q(path: &Path, total: usize) -> io::Result<QData> {
         }
     };
 
-    let sol = solutions.into_iter().next().ok_or_else(|| {
+    let len = solutions.len();
+    let idx = if grid_index < len { grid_index } else { 0 };
+    let sol = solutions.into_iter().nth(idx).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidData,
             "Q file contained no solution grids",
@@ -142,9 +163,7 @@ pub fn read_all_q_for_grids(
         Err(binary_err) => crate::plot3d::read_plot3d_solution_ascii(path).map_err(|ae| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!(
-                    "Failed to parse Q as binary ({binary_err}) or ASCII ({ae})"
-                ),
+                format!("Failed to parse Q as binary ({binary_err}) or ASCII ({ae})"),
             )
         })?,
     };
@@ -153,9 +172,7 @@ pub fn read_all_q_for_grids(
     for (idx, sol) in solutions.into_iter().enumerate() {
         let expected = grids
             .get(idx)
-            .map(|g| {
-                g.dimensions.i as usize * g.dimensions.j as usize * g.dimensions.k as usize
-            })
+            .map(|g| g.dimensions.i as usize * g.dimensions.j as usize * g.dimensions.k as usize)
             .unwrap_or(0);
         let got = sol.rho.len();
         if expected > 0 && got != expected {
@@ -228,89 +245,89 @@ mod tests {
         assert!((vals[0] - 1.0).abs() < 1e-5, "pressure={}", vals[0]);
     }
 
-        #[test]
-        fn compute_scalar_u_velocity() {
-            let q = QData {
-                rho: vec![2.0, 4.0],
-                rhou: vec![4.0, 12.0],
-                rhov: vec![0.0; 2],
-                rhow: vec![0.0; 2],
-                rhoe: vec![0.0; 2],
-                gamma: None,
-            };
-            let (vals, _, _) = compute_scalar(&q, &crate::plot_state::ScalarField::UVelocity);
-            // u[0] = rhou[0] / rho[0] = 4.0 / 2.0 = 2.0
-            // u[1] = rhou[1] / rho[1] = 12.0 / 4.0 = 3.0
-            assert_eq!(vals.len(), 2);
-            assert!((vals[0] - 2.0).abs() < 1e-5, "u[0]={}", vals[0]);
-            assert!((vals[1] - 3.0).abs() < 1e-5, "u[1]={}", vals[1]);
-        }
+    #[test]
+    fn compute_scalar_u_velocity() {
+        let q = QData {
+            rho: vec![2.0, 4.0],
+            rhou: vec![4.0, 12.0],
+            rhov: vec![0.0; 2],
+            rhow: vec![0.0; 2],
+            rhoe: vec![0.0; 2],
+            gamma: None,
+        };
+        let (vals, _, _) = compute_scalar(&q, &crate::plot_state::ScalarField::UVelocity);
+        // u[0] = rhou[0] / rho[0] = 4.0 / 2.0 = 2.0
+        // u[1] = rhou[1] / rho[1] = 12.0 / 4.0 = 3.0
+        assert_eq!(vals.len(), 2);
+        assert!((vals[0] - 2.0).abs() < 1e-5, "u[0]={}", vals[0]);
+        assert!((vals[1] - 3.0).abs() < 1e-5, "u[1]={}", vals[1]);
+    }
 
-        #[test]
-        fn compute_scalar_v_velocity() {
-            let q = QData {
-                rho: vec![1.0, 2.0],
-                rhou: vec![0.0; 2],
-                rhov: vec![5.0, 8.0],
-                rhow: vec![0.0; 2],
-                rhoe: vec![0.0; 2],
-                gamma: None,
-            };
-            let (vals, _, _) = compute_scalar(&q, &crate::plot_state::ScalarField::VVelocity);
-            // v[0] = rhov[0] / rho[0] = 5.0 / 1.0 = 5.0
-            // v[1] = rhov[1] / rho[1] = 8.0 / 2.0 = 4.0
-            assert_eq!(vals.len(), 2);
-            assert!((vals[0] - 5.0).abs() < 1e-5, "v[0]={}", vals[0]);
-            assert!((vals[1] - 4.0).abs() < 1e-5, "v[1]={}", vals[1]);
-        }
+    #[test]
+    fn compute_scalar_v_velocity() {
+        let q = QData {
+            rho: vec![1.0, 2.0],
+            rhou: vec![0.0; 2],
+            rhov: vec![5.0, 8.0],
+            rhow: vec![0.0; 2],
+            rhoe: vec![0.0; 2],
+            gamma: None,
+        };
+        let (vals, _, _) = compute_scalar(&q, &crate::plot_state::ScalarField::VVelocity);
+        // v[0] = rhov[0] / rho[0] = 5.0 / 1.0 = 5.0
+        // v[1] = rhov[1] / rho[1] = 8.0 / 2.0 = 4.0
+        assert_eq!(vals.len(), 2);
+        assert!((vals[0] - 5.0).abs() < 1e-5, "v[0]={}", vals[0]);
+        assert!((vals[1] - 4.0).abs() < 1e-5, "v[1]={}", vals[1]);
+    }
 
-        #[test]
-        fn compute_scalar_w_velocity() {
-            let q = QData {
-                rho: vec![1.0, 2.0],
-                rhou: vec![0.0; 2],
-                rhov: vec![0.0; 2],
-                rhow: vec![3.0, 10.0],
-                rhoe: vec![0.0; 2],
-                gamma: None,
-            };
-            let (vals, _, _) = compute_scalar(&q, &crate::plot_state::ScalarField::WVelocity);
-            // w[0] = rhow[0] / rho[0] = 3.0 / 1.0 = 3.0
-            // w[1] = rhow[1] / rho[1] = 10.0 / 2.0 = 5.0
-            assert_eq!(vals.len(), 2);
-            assert!((vals[0] - 3.0).abs() < 1e-5, "w[0]={}", vals[0]);
-            assert!((vals[1] - 5.0).abs() < 1e-5, "w[1]={}", vals[1]);
-        }
+    #[test]
+    fn compute_scalar_w_velocity() {
+        let q = QData {
+            rho: vec![1.0, 2.0],
+            rhou: vec![0.0; 2],
+            rhov: vec![0.0; 2],
+            rhow: vec![3.0, 10.0],
+            rhoe: vec![0.0; 2],
+            gamma: None,
+        };
+        let (vals, _, _) = compute_scalar(&q, &crate::plot_state::ScalarField::WVelocity);
+        // w[0] = rhow[0] / rho[0] = 3.0 / 1.0 = 3.0
+        // w[1] = rhow[1] / rho[1] = 10.0 / 2.0 = 5.0
+        assert_eq!(vals.len(), 2);
+        assert!((vals[0] - 3.0).abs() < 1e-5, "w[0]={}", vals[0]);
+        assert!((vals[1] - 5.0).abs() < 1e-5, "w[1]={}", vals[1]);
+    }
 
-        #[test]
-        fn compute_scalar_velocity_fields_handle_zero_density() {
-            let q = QData {
-                rho: vec![1.0, 0.0, -1.0],
-                rhou: vec![2.0, 2.0, 2.0],
-                rhov: vec![3.0, 3.0, 3.0],
-                rhow: vec![4.0, 4.0, 4.0],
-                rhoe: vec![0.0; 3],
-                gamma: None,
-            };
-            // Test UVelocity with zero and negative density
-            let (u_vals, _, _) = compute_scalar(&q, &crate::plot_state::ScalarField::UVelocity);
-            assert_eq!(u_vals.len(), 3);
-            assert!((u_vals[0] - 2.0).abs() < 1e-5, "u[0]={}", u_vals[0]);
-            assert_eq!(u_vals[1], 0.0, "u[1] should be 0 for zero density");
-            assert_eq!(u_vals[2], 0.0, "u[2] should be 0 for negative density");
+    #[test]
+    fn compute_scalar_velocity_fields_handle_zero_density() {
+        let q = QData {
+            rho: vec![1.0, 0.0, -1.0],
+            rhou: vec![2.0, 2.0, 2.0],
+            rhov: vec![3.0, 3.0, 3.0],
+            rhow: vec![4.0, 4.0, 4.0],
+            rhoe: vec![0.0; 3],
+            gamma: None,
+        };
+        // Test UVelocity with zero and negative density
+        let (u_vals, _, _) = compute_scalar(&q, &crate::plot_state::ScalarField::UVelocity);
+        assert_eq!(u_vals.len(), 3);
+        assert!((u_vals[0] - 2.0).abs() < 1e-5, "u[0]={}", u_vals[0]);
+        assert_eq!(u_vals[1], 0.0, "u[1] should be 0 for zero density");
+        assert_eq!(u_vals[2], 0.0, "u[2] should be 0 for negative density");
 
-            // Test VVelocity with zero and negative density
-            let (v_vals, _, _) = compute_scalar(&q, &crate::plot_state::ScalarField::VVelocity);
-            assert_eq!(v_vals.len(), 3);
-            assert!((v_vals[0] - 3.0).abs() < 1e-5, "v[0]={}", v_vals[0]);
-            assert_eq!(v_vals[1], 0.0, "v[1] should be 0 for zero density");
-            assert_eq!(v_vals[2], 0.0, "v[2] should be 0 for negative density");
+        // Test VVelocity with zero and negative density
+        let (v_vals, _, _) = compute_scalar(&q, &crate::plot_state::ScalarField::VVelocity);
+        assert_eq!(v_vals.len(), 3);
+        assert!((v_vals[0] - 3.0).abs() < 1e-5, "v[0]={}", v_vals[0]);
+        assert_eq!(v_vals[1], 0.0, "v[1] should be 0 for zero density");
+        assert_eq!(v_vals[2], 0.0, "v[2] should be 0 for negative density");
 
-            // Test WVelocity with zero and negative density
-            let (w_vals, _, _) = compute_scalar(&q, &crate::plot_state::ScalarField::WVelocity);
-            assert_eq!(w_vals.len(), 3);
-            assert!((w_vals[0] - 4.0).abs() < 1e-5, "w[0]={}", w_vals[0]);
-            assert_eq!(w_vals[1], 0.0, "w[1] should be 0 for zero density");
-            assert_eq!(w_vals[2], 0.0, "w[2] should be 0 for negative density");
-        }
+        // Test WVelocity with zero and negative density
+        let (w_vals, _, _) = compute_scalar(&q, &crate::plot_state::ScalarField::WVelocity);
+        assert_eq!(w_vals.len(), 3);
+        assert!((w_vals[0] - 4.0).abs() < 1e-5, "w[0]={}", w_vals[0]);
+        assert_eq!(w_vals[1], 0.0, "w[1] should be 0 for zero density");
+        assert_eq!(w_vals[2], 0.0, "w[2] should be 0 for negative density");
+    }
 }

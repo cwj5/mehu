@@ -18,8 +18,8 @@ use image::{Rgba, RgbaImage};
 use crate::colormap;
 use crate::plot3d::Plot3DGrid;
 use crate::plot_state::{
-    AxisView, ContourAttribute, ContourSpec, GridSubset, IndexRange, PlotFamily, PlotState,
-    PlotUpAxis, ViewPoint, WallColor,
+    AxisView, ContourAttribute, ContourSpec, GridSubset, IndexRange, ParticleFunction, PlotFamily,
+    PlotState, PlotUpAxis, ViewPoint, WallColor,
 };
 use crate::script_executor::SolutionSnapshot;
 
@@ -89,6 +89,653 @@ fn draw_wall_overlays(
             "Renderer: WALLS entries for grid > 1 are skipped in single-grid snapshot mode"
                 .to_string(),
         );
+    }
+}
+
+fn velocity_axis_value(axis: SpatialAxis, snap: &SolutionSnapshot, idx: usize) -> f32 {
+    match axis {
+        SpatialAxis::X => snap.u[idx],
+        SpatialAxis::Y => snap.v[idx],
+        SpatialAxis::Z => snap.w[idx],
+    }
+}
+
+fn draw_vector_overlays(
+    img: &mut RgbaImage,
+    uvs: &[(f32, f32)],
+    slab_w: usize,
+    slab_h: usize,
+    snap: &SolutionSnapshot,
+    state: &PlotState,
+    margin: u32,
+    warnings: &mut Vec<String>,
+) {
+    let Some(vectors) = &state.vectors else {
+        return;
+    };
+
+    if uvs.is_empty() || slab_w == 0 || slab_h == 0 {
+        return;
+    }
+
+    let total_points = (snap.ni as usize) * (snap.nj as usize) * (snap.nk as usize);
+    if snap.u.len() != total_points || snap.v.len() != total_points || snap.w.len() != total_points
+    {
+        warnings.push(
+            "Renderer: skipping VECTORS overlay because velocity component lengths do not match snapshot dimensions"
+                .to_string(),
+        );
+        return;
+    }
+
+    if matches!(state.axis_view, AxisView::Custom) {
+        warnings.push(
+            "Renderer: VECTORS overlay for custom viewpoint is not implemented; skipping vectors"
+                .to_string(),
+        );
+        return;
+    }
+
+    let (horizontal_axis, vertical_axis) =
+        resolve_contour_axes_for_view(state.axis_view, state.plot_up, warnings);
+
+    let ni = snap.ni as usize;
+    let nj = snap.nj as usize;
+    let nk = snap.nk as usize;
+
+    let mut projected: Vec<(usize, f32, f32)> = Vec::with_capacity(uvs.len());
+    match state.axis_view {
+        AxisView::PlusZ | AxisView::PlaneXY | AxisView::PlaneYX => {
+            let k = nk.saturating_sub(1);
+            for j in 0..nj {
+                for i in 0..ni {
+                    let idx = i + j * ni + k * ni * nj;
+                    let du =
+                        horizontal_axis.sign * velocity_axis_value(horizontal_axis.axis, snap, idx);
+                    let dv =
+                        vertical_axis.sign * velocity_axis_value(vertical_axis.axis, snap, idx);
+                    projected.push((idx, du, dv));
+                }
+            }
+        }
+        AxisView::MinusZ => {
+            let k = 0usize;
+            for j in 0..nj {
+                for i in 0..ni {
+                    let idx = i + j * ni + k * ni * nj;
+                    let du =
+                        horizontal_axis.sign * velocity_axis_value(horizontal_axis.axis, snap, idx);
+                    let dv =
+                        vertical_axis.sign * velocity_axis_value(vertical_axis.axis, snap, idx);
+                    projected.push((idx, du, dv));
+                }
+            }
+        }
+        AxisView::PlusX | AxisView::PlaneYZ | AxisView::PlaneZY => {
+            let i = ni.saturating_sub(1);
+            for k in 0..nk {
+                for j in 0..nj {
+                    let idx = i + j * ni + k * ni * nj;
+                    let du =
+                        horizontal_axis.sign * velocity_axis_value(horizontal_axis.axis, snap, idx);
+                    let dv =
+                        vertical_axis.sign * velocity_axis_value(vertical_axis.axis, snap, idx);
+                    projected.push((idx, du, dv));
+                }
+            }
+        }
+        AxisView::MinusX => {
+            let i = 0usize;
+            for k in 0..nk {
+                for j in 0..nj {
+                    let idx = i + j * ni + k * ni * nj;
+                    let du =
+                        horizontal_axis.sign * velocity_axis_value(horizontal_axis.axis, snap, idx);
+                    let dv =
+                        vertical_axis.sign * velocity_axis_value(vertical_axis.axis, snap, idx);
+                    projected.push((idx, du, dv));
+                }
+            }
+        }
+        AxisView::PlusY | AxisView::PlaneXZ | AxisView::PlaneZX => {
+            let j = nj.saturating_sub(1);
+            for k in 0..nk {
+                for i in 0..ni {
+                    let idx = i + j * ni + k * ni * nj;
+                    let du =
+                        horizontal_axis.sign * velocity_axis_value(horizontal_axis.axis, snap, idx);
+                    let dv =
+                        vertical_axis.sign * velocity_axis_value(vertical_axis.axis, snap, idx);
+                    projected.push((idx, du, dv));
+                }
+            }
+        }
+        AxisView::MinusY => {
+            let j = 0usize;
+            for k in 0..nk {
+                for i in 0..ni {
+                    let idx = i + j * ni + k * ni * nj;
+                    let du =
+                        horizontal_axis.sign * velocity_axis_value(horizontal_axis.axis, snap, idx);
+                    let dv =
+                        vertical_axis.sign * velocity_axis_value(vertical_axis.axis, snap, idx);
+                    projected.push((idx, du, dv));
+                }
+            }
+        }
+        AxisView::Custom => {
+            let look = camera_basis_for_state(state, &mut Vec::new()).2;
+            let abs_x = look.0.abs();
+            let abs_y = look.1.abs();
+            let abs_z = look.2.abs();
+            if abs_x >= abs_y && abs_x >= abs_z {
+                let i = if look.0 > 0.0 {
+                    0usize
+                } else {
+                    ni.saturating_sub(1)
+                };
+                for k in 0..nk {
+                    for j in 0..nj {
+                        let idx = i + j * ni + k * ni * nj;
+                        let du = horizontal_axis.sign
+                            * velocity_axis_value(horizontal_axis.axis, snap, idx);
+                        let dv =
+                            vertical_axis.sign * velocity_axis_value(vertical_axis.axis, snap, idx);
+                        projected.push((idx, du, dv));
+                    }
+                }
+            } else if abs_y >= abs_x && abs_y >= abs_z {
+                let j = if look.1 > 0.0 {
+                    0usize
+                } else {
+                    nj.saturating_sub(1)
+                };
+                for k in 0..nk {
+                    for i in 0..ni {
+                        let idx = i + j * ni + k * ni * nj;
+                        let du = horizontal_axis.sign
+                            * velocity_axis_value(horizontal_axis.axis, snap, idx);
+                        let dv =
+                            vertical_axis.sign * velocity_axis_value(vertical_axis.axis, snap, idx);
+                        projected.push((idx, du, dv));
+                    }
+                }
+            } else {
+                let k = if look.2 > 0.0 {
+                    0usize
+                } else {
+                    nk.saturating_sub(1)
+                };
+                for j in 0..nj {
+                    for i in 0..ni {
+                        let idx = i + j * ni + k * ni * nj;
+                        let du = horizontal_axis.sign
+                            * velocity_axis_value(horizontal_axis.axis, snap, idx);
+                        let dv =
+                            vertical_axis.sign * velocity_axis_value(vertical_axis.axis, snap, idx);
+                        projected.push((idx, du, dv));
+                    }
+                }
+            }
+        }
+    }
+
+    if projected.len() != uvs.len() {
+        warnings.push(
+            "Renderer: VECTORS overlay sampling mismatch; skipping vectors for this frame"
+                .to_string(),
+        );
+        return;
+    }
+
+    let (min_u, max_u, min_v, max_v) = bbox(uvs);
+    let range_u = (max_u - min_u).max(1e-20);
+    let range_v = (max_v - min_v).max(1e-20);
+    let draw_w = img.width().saturating_sub(2 * margin) as f32;
+    let draw_h = img.height().saturating_sub(2 * margin) as f32;
+    if draw_w <= 0.0 || draw_h <= 0.0 {
+        return;
+    }
+
+    let uv_to_screen = |u: f32, v: f32| -> (f32, f32) {
+        (
+            margin as f32 + (u - min_u) / range_u * draw_w,
+            margin as f32 + (v - min_v) / range_v * draw_h,
+        )
+    };
+
+    let target_count = 450usize;
+    let stride = ((projected.len() as f32 / target_count as f32).ceil() as usize).max(1);
+
+    let sampled: Vec<(usize, f32, f32, f32)> = projected
+        .iter()
+        .enumerate()
+        .step_by(stride)
+        .filter_map(|(slab_idx, (_grid_idx, du, dv))| {
+            let mag = (du * du + dv * dv).sqrt();
+            if mag <= 1e-10 || !mag.is_finite() {
+                None
+            } else {
+                Some((slab_idx, *du, *dv, mag))
+            }
+        })
+        .collect();
+
+    if sampled.is_empty() {
+        return;
+    }
+
+    let max_mag = sampled
+        .iter()
+        .fold(0.0f32, |acc, (_, _, _, mag)| acc.max(*mag));
+    let min_mag = sampled
+        .iter()
+        .fold(f32::INFINITY, |acc, (_, _, _, mag)| acc.min(*mag));
+    if max_mag <= 0.0 {
+        return;
+    }
+
+    let length_scale = vectors.length_scale.unwrap_or(1.0).abs() as f32;
+    let arrow_length_px = (12.0 * length_scale).clamp(3.0, 42.0);
+    let head_length_px = (3.0 + 2.0 * length_scale).clamp(2.0, 10.0);
+    let use_attributes = vectors.attributes_enabled.unwrap_or(true);
+
+    for (slab_idx, du, dv, mag) in sampled {
+        let (u, v) = uvs[slab_idx];
+        let (x0, y0) = uv_to_screen(u, v);
+        let inv = 1.0 / mag;
+        let dir_x = du * inv;
+        let dir_y = dv * inv;
+        let scale = arrow_length_px * (mag / max_mag);
+        let x1 = x0 + dir_x * scale;
+        let y1 = y0 + dir_y * scale;
+
+        let color = if use_attributes {
+            let t = ((mag - min_mag) / (max_mag - min_mag).max(1e-20)).clamp(0.0, 1.0);
+            let [r, g, b] = colormap::apply(t);
+            Rgba([r, g, b, 255])
+        } else {
+            Rgba([255, 191, 0, 255])
+        };
+
+        draw_line(
+            img,
+            x0.round() as i32,
+            y0.round() as i32,
+            x1.round() as i32,
+            y1.round() as i32,
+            color,
+        );
+
+        let perp_x = -dir_y;
+        let perp_y = dir_x;
+        let back_x = x1 - dir_x * head_length_px;
+        let back_y = y1 - dir_y * head_length_px;
+        let wing = head_length_px * 0.6;
+        let lx = back_x + perp_x * wing;
+        let ly = back_y + perp_y * wing;
+        let rx = back_x - perp_x * wing;
+        let ry = back_y - perp_y * wing;
+
+        draw_line(
+            img,
+            x1.round() as i32,
+            y1.round() as i32,
+            lx.round() as i32,
+            ly.round() as i32,
+            color,
+        );
+        draw_line(
+            img,
+            x1.round() as i32,
+            y1.round() as i32,
+            rx.round() as i32,
+            ry.round() as i32,
+            color,
+        );
+    }
+}
+
+fn draw_rake_overlays(
+    img: &mut RgbaImage,
+    uvs: &[(f32, f32)],
+    slab_w: usize,
+    slab_h: usize,
+    snap: &SolutionSnapshot,
+    state: &PlotState,
+    margin: u32,
+    warnings: &mut Vec<String>,
+) {
+    let Some(rakes) = &state.rakes else {
+        return;
+    };
+
+    if uvs.is_empty() || slab_w == 0 || slab_h == 0 {
+        return;
+    }
+
+    let total_points = (snap.ni as usize) * (snap.nj as usize) * (snap.nk as usize);
+    if snap.u.len() != total_points || snap.v.len() != total_points || snap.w.len() != total_points
+    {
+        warnings.push(
+            "Renderer: skipping RAKES overlay because velocity component lengths do not match snapshot dimensions"
+                .to_string(),
+        );
+        return;
+    }
+
+    let (horizontal_axis, vertical_axis) =
+        resolve_contour_axes_for_view(state.axis_view, state.plot_up, warnings);
+
+    let ni = snap.ni as usize;
+    let nj = snap.nj as usize;
+    let nk = snap.nk as usize;
+
+    let mut projected: Vec<(f32, f32)> = Vec::with_capacity(uvs.len());
+    match state.axis_view {
+        AxisView::PlusZ | AxisView::PlaneXY | AxisView::PlaneYX => {
+            let k = nk.saturating_sub(1);
+            for j in 0..nj {
+                for i in 0..ni {
+                    let idx = i + j * ni + k * ni * nj;
+                    let du =
+                        horizontal_axis.sign * velocity_axis_value(horizontal_axis.axis, snap, idx);
+                    let dv =
+                        vertical_axis.sign * velocity_axis_value(vertical_axis.axis, snap, idx);
+                    projected.push((du, dv));
+                }
+            }
+        }
+        AxisView::MinusZ => {
+            let k = 0usize;
+            for j in 0..nj {
+                for i in 0..ni {
+                    let idx = i + j * ni + k * ni * nj;
+                    let du =
+                        horizontal_axis.sign * velocity_axis_value(horizontal_axis.axis, snap, idx);
+                    let dv =
+                        vertical_axis.sign * velocity_axis_value(vertical_axis.axis, snap, idx);
+                    projected.push((du, dv));
+                }
+            }
+        }
+        AxisView::PlusX | AxisView::PlaneYZ | AxisView::PlaneZY => {
+            let i = ni.saturating_sub(1);
+            for k in 0..nk {
+                for j in 0..nj {
+                    let idx = i + j * ni + k * ni * nj;
+                    let du =
+                        horizontal_axis.sign * velocity_axis_value(horizontal_axis.axis, snap, idx);
+                    let dv =
+                        vertical_axis.sign * velocity_axis_value(vertical_axis.axis, snap, idx);
+                    projected.push((du, dv));
+                }
+            }
+        }
+        AxisView::MinusX => {
+            let i = 0usize;
+            for k in 0..nk {
+                for j in 0..nj {
+                    let idx = i + j * ni + k * ni * nj;
+                    let du =
+                        horizontal_axis.sign * velocity_axis_value(horizontal_axis.axis, snap, idx);
+                    let dv =
+                        vertical_axis.sign * velocity_axis_value(vertical_axis.axis, snap, idx);
+                    projected.push((du, dv));
+                }
+            }
+        }
+        AxisView::PlusY | AxisView::PlaneXZ | AxisView::PlaneZX => {
+            let j = nj.saturating_sub(1);
+            for k in 0..nk {
+                for i in 0..ni {
+                    let idx = i + j * ni + k * ni * nj;
+                    let du =
+                        horizontal_axis.sign * velocity_axis_value(horizontal_axis.axis, snap, idx);
+                    let dv =
+                        vertical_axis.sign * velocity_axis_value(vertical_axis.axis, snap, idx);
+                    projected.push((du, dv));
+                }
+            }
+        }
+        AxisView::MinusY => {
+            let j = 0usize;
+            for k in 0..nk {
+                for i in 0..ni {
+                    let idx = i + j * ni + k * ni * nj;
+                    let du =
+                        horizontal_axis.sign * velocity_axis_value(horizontal_axis.axis, snap, idx);
+                    let dv =
+                        vertical_axis.sign * velocity_axis_value(vertical_axis.axis, snap, idx);
+                    projected.push((du, dv));
+                }
+            }
+        }
+        AxisView::Custom => {
+            let look = camera_basis_for_state(state, &mut Vec::new()).2;
+            let abs_x = look.0.abs();
+            let abs_y = look.1.abs();
+            let abs_z = look.2.abs();
+            if abs_x >= abs_y && abs_x >= abs_z {
+                let i = if look.0 > 0.0 {
+                    0usize
+                } else {
+                    ni.saturating_sub(1)
+                };
+                for k in 0..nk {
+                    for j in 0..nj {
+                        let idx = i + j * ni + k * ni * nj;
+                        let du = horizontal_axis.sign
+                            * velocity_axis_value(horizontal_axis.axis, snap, idx);
+                        let dv =
+                            vertical_axis.sign * velocity_axis_value(vertical_axis.axis, snap, idx);
+                        projected.push((du, dv));
+                    }
+                }
+            } else if abs_y >= abs_x && abs_y >= abs_z {
+                let j = if look.1 > 0.0 {
+                    0usize
+                } else {
+                    nj.saturating_sub(1)
+                };
+                for k in 0..nk {
+                    for i in 0..ni {
+                        let idx = i + j * ni + k * ni * nj;
+                        let du = horizontal_axis.sign
+                            * velocity_axis_value(horizontal_axis.axis, snap, idx);
+                        let dv =
+                            vertical_axis.sign * velocity_axis_value(vertical_axis.axis, snap, idx);
+                        projected.push((du, dv));
+                    }
+                }
+            } else {
+                let k = if look.2 > 0.0 {
+                    0usize
+                } else {
+                    nk.saturating_sub(1)
+                };
+                for j in 0..nj {
+                    for i in 0..ni {
+                        let idx = i + j * ni + k * ni * nj;
+                        let du = horizontal_axis.sign
+                            * velocity_axis_value(horizontal_axis.axis, snap, idx);
+                        let dv =
+                            vertical_axis.sign * velocity_axis_value(vertical_axis.axis, snap, idx);
+                        projected.push((du, dv));
+                    }
+                }
+            }
+        }
+    }
+
+    if projected.len() != uvs.len() {
+        warnings.push(
+            "Renderer: RAKES overlay sampling mismatch; skipping rakes for this frame".to_string(),
+        );
+        return;
+    }
+
+    let (min_u, max_u, min_v, max_v) = bbox(uvs);
+    let range_u = (max_u - min_u).max(1e-20);
+    let range_v = (max_v - min_v).max(1e-20);
+    let draw_w = img.width().saturating_sub(2 * margin) as f32;
+    let draw_h = img.height().saturating_sub(2 * margin) as f32;
+    if draw_w <= 0.0 || draw_h <= 0.0 {
+        return;
+    }
+
+    let uv_to_screen = |u: f32, v: f32| -> (f32, f32) {
+        (
+            margin as f32 + (u - min_u) / range_u * draw_w,
+            margin as f32 + (v - min_v) / range_v * draw_h,
+        )
+    };
+
+    let max_seeds = rakes.max_points.unwrap_or(120).clamp(8, 600) as usize;
+    let seed_stride = ((projected.len() as f32 / max_seeds as f32).ceil() as usize).max(1);
+    let use_attributes = rakes.attributes_enabled.unwrap_or(true);
+
+    let (min_mag, max_mag) =
+        projected
+            .iter()
+            .fold((f32::INFINITY, 0.0f32), |(mn, mx), (du, dv)| {
+                let mag = (du * du + dv * dv).sqrt();
+                if mag.is_finite() && mag > 1e-10 {
+                    (mn.min(mag), mx.max(mag))
+                } else {
+                    (mn, mx)
+                }
+            });
+    if max_mag <= 0.0 {
+        return;
+    }
+
+    let sample_vec = |i: f32, j: f32| -> Option<(f32, f32, f32)> {
+        if i < 0.0 || j < 0.0 || i > (slab_w - 1) as f32 || j > (slab_h - 1) as f32 {
+            return None;
+        }
+
+        let i0 = i.floor() as usize;
+        let j0 = j.floor() as usize;
+        let i1 = (i0 + 1).min(slab_w - 1);
+        let j1 = (j0 + 1).min(slab_h - 1);
+        let it = i - i0 as f32;
+        let jt = j - j0 as f32;
+
+        let v00 = projected[i0 + j0 * slab_w];
+        let v10 = projected[i1 + j0 * slab_w];
+        let v01 = projected[i0 + j1 * slab_w];
+        let v11 = projected[i1 + j1 * slab_w];
+
+        let vx = v00.0 * (1.0 - it) * (1.0 - jt)
+            + v10.0 * it * (1.0 - jt)
+            + v01.0 * (1.0 - it) * jt
+            + v11.0 * it * jt;
+        let vy = v00.1 * (1.0 - it) * (1.0 - jt)
+            + v10.1 * it * (1.0 - jt)
+            + v01.1 * (1.0 - it) * jt
+            + v11.1 * it * jt;
+        let mag = (vx * vx + vy * vy).sqrt();
+        if !mag.is_finite() || mag <= 1e-10 {
+            return None;
+        }
+        Some((vx, vy, mag))
+    };
+
+    let sample_uv = |i: f32, j: f32| -> Option<(f32, f32)> {
+        if i < 0.0 || j < 0.0 || i > (slab_w - 1) as f32 || j > (slab_h - 1) as f32 {
+            return None;
+        }
+
+        let i0 = i.floor() as usize;
+        let j0 = j.floor() as usize;
+        let i1 = (i0 + 1).min(slab_w - 1);
+        let j1 = (j0 + 1).min(slab_h - 1);
+        let it = i - i0 as f32;
+        let jt = j - j0 as f32;
+
+        let uv00 = uvs[i0 + j0 * slab_w];
+        let uv10 = uvs[i1 + j0 * slab_w];
+        let uv01 = uvs[i0 + j1 * slab_w];
+        let uv11 = uvs[i1 + j1 * slab_w];
+
+        let u = uv00.0 * (1.0 - it) * (1.0 - jt)
+            + uv10.0 * it * (1.0 - jt)
+            + uv01.0 * (1.0 - it) * jt
+            + uv11.0 * it * jt;
+        let v = uv00.1 * (1.0 - it) * (1.0 - jt)
+            + uv10.1 * it * (1.0 - jt)
+            + uv01.1 * (1.0 - it) * jt
+            + uv11.1 * it * jt;
+        Some((u, v))
+    };
+
+    let directions: &[f32] = match rakes.time_mode {
+        Some(crate::plot_state::RakeTimeMode::Minus) => &[-1.0],
+        Some(crate::plot_state::RakeTimeMode::PlusMinus) => &[1.0, -1.0],
+        _ => &[1.0],
+    };
+
+    let step_count = 14usize;
+    let step_idx = 0.85f32;
+
+    for slab_idx in (0..projected.len()).step_by(seed_stride) {
+        let seed_i = (slab_idx % slab_w) as f32;
+        let seed_j = (slab_idx / slab_w) as f32;
+
+        for direction in directions {
+            let mut ci = seed_i;
+            let mut cj = seed_j;
+            for _ in 0..step_count {
+                let Some((vx1, vy1, mag1)) = sample_vec(ci, cj) else {
+                    break;
+                };
+                let h = step_idx * (0.35 + 0.65 * (mag1 / max_mag));
+                let inv1 = 1.0 / mag1;
+
+                let mid_i = ci + direction * vx1 * inv1 * h * 0.5;
+                let mid_j = cj + direction * vy1 * inv1 * h * 0.5;
+                let Some((vx2, vy2, mag2)) = sample_vec(mid_i, mid_j) else {
+                    break;
+                };
+                let inv2 = 1.0 / mag2;
+
+                let ni = ci + direction * vx2 * inv2 * h;
+                let nj = cj + direction * vy2 * inv2 * h;
+                if ni < 0.0 || nj < 0.0 || ni > (slab_w - 1) as f32 || nj > (slab_h - 1) as f32 {
+                    break;
+                }
+
+                let Some((u0, v0)) = sample_uv(ci, cj) else {
+                    break;
+                };
+                let Some((u1, v1)) = sample_uv(ni, nj) else {
+                    break;
+                };
+                let (x0, y0) = uv_to_screen(u0, v0);
+                let (x1, y1) = uv_to_screen(u1, v1);
+
+                let color = if use_attributes {
+                    let t = ((mag2 - min_mag) / (max_mag - min_mag).max(1e-20)).clamp(0.0, 1.0);
+                    let [r, g, b] = colormap::apply(t);
+                    Rgba([r, g, b, 255])
+                } else {
+                    Rgba([64, 255, 160, 255])
+                };
+
+                draw_line(
+                    img,
+                    x0.round() as i32,
+                    y0.round() as i32,
+                    x1.round() as i32,
+                    y1.round() as i32,
+                    color,
+                );
+
+                ci = ni;
+                cj = nj;
+            }
+        }
     }
 }
 
@@ -743,6 +1390,18 @@ pub fn render_snapshot(
                     .to_string(),
             );
         }
+        if state.vectors.is_some() {
+            render_warnings.push(
+                "Renderer: VECTORS overlay is currently supported only in contour family mode"
+                    .to_string(),
+            );
+        }
+        if state.rakes.is_some() {
+            render_warnings.push(
+                "Renderer: RAKES overlay is currently supported only in contour family mode"
+                    .to_string(),
+            );
+        }
     } else {
         let (uvs, scalars, slab_w, slab_h) = extract_face_slab(snapshot, state, render_warnings);
 
@@ -751,27 +1410,56 @@ pub fn render_snapshot(
             return;
         }
 
-        rasterize_heatmap(
-            img, &uvs, &scalars, slab_w, slab_h, field_min, field_max, margin,
+        // Particle-trace plots (FUNCTION 300+) show only overlays on a black
+        // background — skip the heatmap and iso-features.
+        let is_particle_mode = matches!(
+            state.particle_function,
+            Some(ParticleFunction::ParticleTraces)
         );
 
-        let levels = resolve_contour_levels(&state.contour_spec, field_min, field_max);
-        if !levels.is_empty() {
-            draw_iso_features(
-                img,
-                &uvs,
-                &scalars,
-                slab_w,
-                slab_h,
-                &levels,
-                &state.contour_attribute,
-                field_min,
-                field_max,
-                margin,
+        if !is_particle_mode {
+            rasterize_heatmap(
+                img, &uvs, &scalars, slab_w, slab_h, field_min, field_max, margin,
             );
+
+            let levels = resolve_contour_levels(&state.contour_spec, field_min, field_max);
+            if !levels.is_empty() {
+                draw_iso_features(
+                    img,
+                    &uvs,
+                    &scalars,
+                    slab_w,
+                    slab_h,
+                    &levels,
+                    &state.contour_attribute,
+                    field_min,
+                    field_max,
+                    margin,
+                );
+            }
         }
 
         draw_wall_overlays(img, &uvs, slab_w, slab_h, state, margin, render_warnings);
+        draw_vector_overlays(
+            img,
+            &uvs,
+            slab_w,
+            slab_h,
+            snapshot,
+            state,
+            margin,
+            render_warnings,
+        );
+        draw_rake_overlays(
+            img,
+            &uvs,
+            slab_w,
+            slab_h,
+            snapshot,
+            state,
+            margin,
+            render_warnings,
+        );
     }
 
     draw_frame_border(img);
@@ -2180,7 +2868,9 @@ fn bbox(uvs: &[(f32, f32)]) -> (f32, f32, f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plot_state::{ContourEntry, ContourSpec, PlotFamily, PlotUpAxis};
+    use crate::plot_state::{
+        ContourEntry, ContourSpec, PlotFamily, PlotUpAxis, RakeSettings, RakeTimeMode,
+    };
     use crate::script_executor::SolutionSnapshot;
 
     /// Build a synthetic 4×4×1 snapshot with a simple gradient scalar field.
@@ -2219,6 +2909,9 @@ mod tests {
             y,
             z,
             scalar,
+            u: vec![0.0; n],
+            v: vec![0.0; n],
+            w: vec![0.0; n],
             field_min: mn,
             field_max: mx,
         }
@@ -2359,6 +3052,9 @@ mod tests {
             y: vec![0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0],
             z: vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
             scalar: vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
+            u: vec![0.0; 8],
+            v: vec![0.0; 8],
+            w: vec![0.0; 8],
             field_min: 0.0,
             field_max: 7.0,
         };
@@ -2428,6 +3124,62 @@ mod tests {
     }
 
     #[test]
+    fn function_surface_with_rakes_emits_deferred_warning() {
+        let snap = synthetic_snapshot();
+        let state = PlotState {
+            plot_family: PlotFamily::FunctionSurface,
+            rakes: Some(RakeSettings {
+                time_mode: Some(RakeTimeMode::Plus),
+                ..RakeSettings::default()
+            }),
+            ..PlotState::default()
+        };
+        let mut img = RgbaImage::new(120, 80);
+        let mut warnings = Vec::new();
+        render_snapshot(&mut img, &snap, &state, &mut warnings);
+
+        assert!(warnings.iter().any(
+            |w| w.contains("RAKES overlay is currently supported only in contour family mode")
+        ));
+    }
+
+    #[test]
+    fn rakes_overlay_draws_fixed_color_when_attributes_disabled() {
+        let mut snap = synthetic_snapshot();
+        let n = snap.scalar.len();
+        snap.u = vec![1.0; n];
+        snap.v = vec![0.0; n];
+        snap.w = vec![0.0; n];
+
+        let state = PlotState {
+            axis_view: AxisView::PlusZ,
+            rakes: Some(RakeSettings {
+                attributes_enabled: Some(false),
+                max_points: Some(120),
+                time_mode: Some(RakeTimeMode::Plus),
+                ..RakeSettings::default()
+            }),
+            ..PlotState::default()
+        };
+
+        let mut img = RgbaImage::new(140, 100);
+        let mut warnings = Vec::new();
+        render_snapshot(&mut img, &snap, &state, &mut warnings);
+
+        let rake_pixels = img
+            .pixels()
+            .filter(|p| p[0] == 64 && p[1] == 255 && p[2] == 160)
+            .count();
+        assert!(rake_pixels > 0, "expected fixed-color rake overlay pixels");
+        assert!(
+            !warnings
+                .iter()
+                .any(|w| w.contains("skipping RAKES overlay")),
+            "unexpected rakes warning: {warnings:?}"
+        );
+    }
+
+    #[test]
     fn function_surface_i_plane_supports_thin_yz_slab() {
         let snap = synthetic_snapshot_with_dims(1, 4, 4);
         let state = PlotState {
@@ -2481,6 +3233,9 @@ mod tests {
             y: vec![1.0, 2.0, 3.0, 4.0],
             z: vec![0.0, 0.0, 0.0, 0.0],
             scalar: vec![0.0, 1.0, 2.0, 3.0],
+            u: vec![0.0; 4],
+            v: vec![0.0; 4],
+            w: vec![0.0; 4],
             field_min: 0.0,
             field_max: 3.0,
         };
@@ -2508,6 +3263,9 @@ mod tests {
             y: vec![0.0, 0.0, 1.0, 1.0, 5.0, 5.0, 5.0, 5.0],
             z: vec![7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0],
             scalar: vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
+            u: vec![0.0; 8],
+            v: vec![0.0; 8],
+            w: vec![0.0; 8],
             field_min: 0.0,
             field_max: 7.0,
         };
@@ -2535,6 +3293,9 @@ mod tests {
             y: vec![1.0, 2.0, 3.0, 4.0, 11.0, 12.0, 13.0, 14.0],
             z: vec![5.0, 6.0, 7.0, 8.0, 15.0, 16.0, 17.0, 18.0],
             scalar: vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
+            u: vec![0.0; 8],
+            v: vec![0.0; 8],
+            w: vec![0.0; 8],
             field_min: 0.0,
             field_max: 7.0,
         };
@@ -2562,6 +3323,9 @@ mod tests {
             y: vec![1.0, 2.0, 3.0, 4.0],
             z: vec![0.0, 0.0, 0.0, 0.0],
             scalar: vec![0.0, 1.0, 2.0, 3.0],
+            u: vec![0.0; 4],
+            v: vec![0.0; 4],
+            w: vec![0.0; 4],
             field_min: 0.0,
             field_max: 3.0,
         };
@@ -2588,6 +3352,9 @@ mod tests {
             y: vec![1.0, 2.0, 3.0, 4.0],
             z: vec![0.0, 0.0, 0.0, 0.0],
             scalar: vec![0.0, 1.0, 2.0, 3.0],
+            u: vec![0.0; 4],
+            v: vec![0.0; 4],
+            w: vec![0.0; 4],
             field_min: 0.0,
             field_max: 3.0,
         };
@@ -2634,6 +3401,9 @@ mod tests {
             y: vec![0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0],
             z: vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
             scalar: vec![10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0],
+            u: vec![0.0; 8],
+            v: vec![0.0; 8],
+            w: vec![0.0; 8],
             field_min: 10.0,
             field_max: 17.0,
         };
@@ -2665,6 +3435,9 @@ mod tests {
             y: vec![0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0],
             z: vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
             scalar: vec![10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0],
+            u: vec![0.0; 8],
+            v: vec![0.0; 8],
+            w: vec![0.0; 8],
             field_min: 10.0,
             field_max: 17.0,
         };
@@ -2697,6 +3470,9 @@ mod tests {
             y: vec![0.0, 0.0, 1.0, 1.0],
             z: vec![0.0, 0.0, 0.0, 0.0],
             scalar: vec![20.0, 21.0, 22.0, 23.0],
+            u: vec![0.0; 4],
+            v: vec![0.0; 4],
+            w: vec![0.0; 4],
             field_min: 20.0,
             field_max: 23.0,
         };

@@ -16,7 +16,9 @@ const REQUIRED_CAPABILITIES = [
     "SUBSETS",
     "FSURFACE",
     "TEXT",
-    "SHOW"
+    "SHOW",
+    "VECTORS",
+    "RAKES"
 ];
 
 const ALLOWED_STATES = new Set([

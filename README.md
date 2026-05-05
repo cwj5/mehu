@@ -41,6 +41,8 @@ Current capability status snapshot:
 | FSURFACE | supported | TKT-008 | Bounded-MVP FSURFACE semantics implemented (iso-level + FUNCTION scalar field) |
 | TEXT | supported | TKT-008 | Plot text state and GUI controls implemented |
 | SHOW | supported | TKT-008 | SHOW status output and GUI display implemented |
+| VECTORS | script-only | TKT-013 | VECTORS qualifiers parsed into deterministic PlotState (`SetVectors`); rendering and GUI controls deferred |
+| RAKES | script-only | TKT-013 | RAKES qualifiers parsed into deterministic PlotState (`SetRakes`); rendering and GUI controls deferred |
 
 Commands currently out of scope:
 
@@ -50,8 +52,6 @@ Commands currently out of scope:
 - CLEAR
 - EXIT
 - QUIT
-- VECTORS
-- RAKES
 
 ## Known Limitations and Deviations
 
