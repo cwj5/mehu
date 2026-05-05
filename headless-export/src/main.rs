@@ -29,8 +29,12 @@ mod colormap;
 mod p3d_reader;
 mod renderer;
 
-use plot_state::{ContourAttribute, ContourSpec, PlotFamily, PlotState, ScalarField};
+use plot_state::{ContourAttribute, ContourSpec, PlotFamily, ScalarField};
 use script_executor::{RenderIntent, SolutionSnapshot};
+// Re-export at crate root so `com_parser` tests referencing `crate::execute_parsed_script`
+// and `crate::PlotState` compile when included via `#[path]` into this crate.
+pub(crate) use plot_state::PlotState;
+pub(crate) use script_executor::execute_parsed_script;
 
 /// IBLANK filter mode shim required by shared `plot3d` module APIs.
 #[derive(Debug, Clone, Copy, PartialEq)]

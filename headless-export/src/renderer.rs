@@ -362,9 +362,8 @@ pub fn render_multigrid_walls(
     }
 
     if points.is_empty() {
-        render_warnings.push(
-            "Renderer: multigrid wall scene produced no drawable segments".to_string(),
-        );
+        render_warnings
+            .push("Renderer: multigrid wall scene produced no drawable segments".to_string());
         draw_frame_border(img);
         return;
     }
@@ -1984,140 +1983,6 @@ fn draw_iso_features(
     let range_v = (max_v - min_v).max(1e-20);
     let field_range = (field_max - field_min).max(1e-20);
 
-    fn draw_wall_overlays(
-        img: &mut RgbaImage,
-        uvs: &[(f32, f32)],
-        slab_w: usize,
-        slab_h: usize,
-        state: &PlotState,
-        margin: u32,
-        warnings: &mut Vec<String>,
-    ) {
-        if state.walls.is_empty() || slab_w == 0 || slab_h == 0 || uvs.is_empty() {
-            return;
-        }
-
-        if matches!(state.axis_view, AxisView::Custom) {
-            warnings.push(
-                "Renderer: WALLS overlay for Custom VPOINT is not implemented; skipping wall lines"
-                    .to_string(),
-            );
-            return;
-        }
-
-        let (min_u, max_u, min_v, max_v) = bbox(uvs);
-        let range_u = (max_u - min_u).max(1e-20);
-        let range_v = (max_v - min_v).max(1e-20);
-        let draw_w = img.width().saturating_sub(2 * margin) as f32;
-        let draw_h = img.height().saturating_sub(2 * margin) as f32;
-        if draw_w <= 0.0 || draw_h <= 0.0 {
-            return;
-        }
-
-        let uv_to_screen = |u: f32, v: f32| -> (i32, i32) {
-            let x = margin as f32 + (u - min_u) / range_u * draw_w;
-            let y = margin as f32 + (v - min_v) / range_v * draw_h;
-            (x.round() as i32, y.round() as i32)
-        };
-
-        let wall_color = Rgba([240, 240, 240, 255]);
-        let mut skipped_non_primary_grid = false;
-
-        for wall in &state.walls {
-            // Headless snapshot currently holds one resolved grid. Keep parity deterministic by
-            // drawing only walls for grid 1 (or unspecified default behavior).
-            if wall.grid > 1 {
-                skipped_non_primary_grid = true;
-                continue;
-            }
-
-            let Some(((u_start, u_end), (v_start, v_end))) =
-                wall_ranges_for_view(wall, state.axis_view, slab_w, slab_h)
-            else {
-                continue;
-            };
-
-            let top_left = uvs[u_start + v_start * slab_w];
-            let top_right = uvs[u_end + v_start * slab_w];
-            let bottom_left = uvs[u_start + v_end * slab_w];
-            let bottom_right = uvs[u_end + v_end * slab_w];
-
-            let (x0, y0) = uv_to_screen(top_left.0, top_left.1);
-            let (x1, y1) = uv_to_screen(top_right.0, top_right.1);
-            let (x2, y2) = uv_to_screen(bottom_right.0, bottom_right.1);
-            let (x3, y3) = uv_to_screen(bottom_left.0, bottom_left.1);
-
-            draw_line(img, x0, y0, x1, y1, wall_color);
-            draw_line(img, x1, y1, x2, y2, wall_color);
-            draw_line(img, x2, y2, x3, y3, wall_color);
-            draw_line(img, x3, y3, x0, y0, wall_color);
-        }
-
-        if skipped_non_primary_grid {
-            warnings.push(
-                "Renderer: WALLS entries for grid > 1 are skipped in single-grid snapshot mode"
-                    .to_string(),
-            );
-        }
-    }
-
-    fn wall_ranges_for_view(
-        wall: &GridSubset,
-        view: AxisView,
-        slab_w: usize,
-        slab_h: usize,
-    ) -> Option<((usize, usize), (usize, usize))> {
-        let map_range = |range: &Option<IndexRange>, dim: usize| -> Option<(usize, usize)> {
-            if dim == 0 {
-                return None;
-            }
-            let resolved = resolve_index_range(range.as_ref(), dim)?;
-            Some((resolved.0.saturating_sub(1), resolved.1.saturating_sub(1)))
-        };
-
-        match view {
-            AxisView::PlusZ | AxisView::MinusZ | AxisView::PlaneXY | AxisView::PlaneYX => {
-                let u = map_range(&wall.i_range, slab_w)?;
-                let v = map_range(&wall.j_range, slab_h)?;
-                Some((u, v))
-            }
-            AxisView::PlusX | AxisView::MinusX | AxisView::PlaneYZ | AxisView::PlaneZY => {
-                let u = map_range(&wall.j_range, slab_w)?;
-                let v = map_range(&wall.k_range, slab_h)?;
-                Some((u, v))
-            }
-            AxisView::PlusY | AxisView::MinusY | AxisView::PlaneXZ | AxisView::PlaneZX => {
-                let u = map_range(&wall.i_range, slab_w)?;
-                let v = map_range(&wall.k_range, slab_h)?;
-                Some((u, v))
-            }
-            AxisView::Custom => None,
-        }
-    }
-
-    fn resolve_index_range(range: Option<&IndexRange>, dim: usize) -> Option<(usize, usize)> {
-        let resolve = |n: i32| -> i32 {
-            if n < 0 {
-                dim as i32 + n + 1
-            } else {
-                n
-            }
-        };
-
-        let Some(range) = range else {
-            return Some((1, dim));
-        };
-
-        let start_raw = resolve(range.start);
-        let end_raw = resolve(range.end.unwrap_or(dim as i32));
-        let start = start_raw.clamp(1, dim as i32) as usize;
-        let end = end_raw.clamp(1, dim as i32) as usize;
-        Some(if start <= end {
-            (start, end)
-        } else {
-            (end, start)
-        })
-    }
     let draw_w = img_w.saturating_sub(2 * margin) as f32;
     let draw_h = img_h.saturating_sub(2 * margin) as f32;
     if draw_w <= 0.0 || draw_h <= 0.0 {
