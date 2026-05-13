@@ -1057,10 +1057,12 @@ pub fn apply_action(mut state: PlotState, action: PlotAction) -> (PlotState, Vec
 
         PlotAction::SetWalls(walls) => {
             state.walls = walls;
+            println!("SetWalls action: {:?}", state.walls);
         }
 
         PlotAction::AddWalls(mut walls) => {
             state.walls.append(&mut walls);
+            println!("AddWalls action: {:?}", state.walls);
         }
 
         PlotAction::SetSubsets(subsets) => {
@@ -1463,8 +1465,8 @@ mod tests {
         let spec = ContourSpec::Manual {
             entries: entries.clone(),
         };
-        let (new_state, diags) = apply_action(state, PlotAction::SetContourSpec(spec));
-        assert_eq!(new_state.contour_spec, ContourSpec::Manual { entries });
+        let (new_state, diags) = apply_action(state, PlotAction::SetContourSpec(spec.clone()));
+        assert_eq!(new_state.contour_spec, spec);
         assert!(diags.is_empty());
     }
 

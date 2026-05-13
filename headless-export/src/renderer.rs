@@ -19,7 +19,7 @@ use crate::colormap;
 use crate::plot3d::Plot3DGrid;
 use crate::plot_state::{
     AxisView, ContourAttribute, ContourSpec, GridSubset, IndexRange, ParticleFunction, PlotFamily,
-    PlotState, PlotUpAxis, ViewPoint, WallColor,
+    PlotState, PlotUpAxis, ViewPoint, WallColor, WallRenderMode,
 };
 use crate::script_executor::SolutionSnapshot;
 
@@ -876,6 +876,15 @@ pub fn render_multigrid_walls(
     let mut points: Vec<(f32, f32)> = Vec::new();
     let mut skipped_missing_grid = false;
 
+    // Helper to expand an IndexRange into a Vec<usize> (1-based inclusive)
+    fn expand_index_range(range: (usize, usize)) -> Vec<usize> {
+        if range.0 <= range.1 {
+            (range.0..=range.1).collect()
+        } else {
+            (range.1..=range.0).rev().collect()
+        }
+    }
+
     for wall in &state.walls {
         let segment_color = wall_style_rgba(wall);
         let Some(grid) = wall
@@ -901,9 +910,9 @@ pub fn render_multigrid_walls(
             continue;
         };
 
-        let i_fixed = i_range.0 == i_range.1;
-        let j_fixed = j_range.0 == j_range.1;
-        let k_fixed = k_range.0 == k_range.1;
+        let i_indices = expand_index_range(i_range);
+        let j_indices = expand_index_range(j_range);
+        let k_indices = expand_index_range(k_range);
 
         let add_segment = |segments: &mut Vec<((f32, f32), (f32, f32), Rgba<u8>)>,
                            points: &mut Vec<(f32, f32)>,
@@ -931,80 +940,46 @@ pub fn render_multigrid_walls(
             (grid.x_coords[idx], grid.y_coords[idx], grid.z_coords[idx])
         };
 
-        if i_fixed {
-            let i = i_range.0;
-            for j in j_range.0..=j_range.1 {
-                for k in k_range.0..k_range.1 {
+        // Draw lines along i (for each j,k), j (for each i,k), and k (for each i,j)
+        // Only draw lines for the exact indices specified by the user
+        for &j in &j_indices {
+            for &k in &k_indices {
+                for w in i_indices.windows(2) {
                     add_segment(
                         &mut segments,
                         &mut points,
-                        world_point(i, j, k),
-                        world_point(i, j, k + 1),
+                        world_point(w[0], j, k),
+                        world_point(w[1], j, k),
                         segment_color,
                     );
                 }
             }
-            for k in k_range.0..=k_range.1 {
-                for j in j_range.0..j_range.1 {
+        }
+        for &i in &i_indices {
+            for &k in &k_indices {
+                for w in j_indices.windows(2) {
                     add_segment(
                         &mut segments,
                         &mut points,
-                        world_point(i, j, k),
-                        world_point(i, j + 1, k),
+                        world_point(i, w[0], k),
+                        world_point(i, w[1], k),
                         segment_color,
                     );
                 }
             }
-        } else if j_fixed {
-            let j = j_range.0;
-            for i in i_range.0..=i_range.1 {
-                for k in k_range.0..k_range.1 {
+        }
+        for &i in &i_indices {
+            for &j in &j_indices {
+                for w in k_indices.windows(2) {
                     add_segment(
                         &mut segments,
                         &mut points,
-                        world_point(i, j, k),
-                        world_point(i, j, k + 1),
+                        world_point(i, j, w[0]),
+                        world_point(i, j, w[1]),
                         segment_color,
                     );
                 }
             }
-            for k in k_range.0..=k_range.1 {
-                for i in i_range.0..i_range.1 {
-                    add_segment(
-                        &mut segments,
-                        &mut points,
-                        world_point(i, j, k),
-                        world_point(i + 1, j, k),
-                        segment_color,
-                    );
-                }
-            }
-        } else if k_fixed {
-            let k = k_range.0;
-            for i in i_range.0..=i_range.1 {
-                for j in j_range.0..j_range.1 {
-                    add_segment(
-                        &mut segments,
-                        &mut points,
-                        world_point(i, j, k),
-                        world_point(i, j + 1, k),
-                        segment_color,
-                    );
-                }
-            }
-            for j in j_range.0..=j_range.1 {
-                for i in i_range.0..i_range.1 {
-                    add_segment(
-                        &mut segments,
-                        &mut points,
-                        world_point(i, j, k),
-                        world_point(i + 1, j, k),
-                        segment_color,
-                    );
-                }
-            }
-        } else {
-            skipped_missing_grid = true;
         }
     }
 
@@ -1114,56 +1089,70 @@ pub fn render_multigrid_subsets(
             continue;
         };
 
-        let i_count = i_range.1 - i_range.0 + 1;
-        let j_count = j_range.1 - j_range.0 + 1;
-        let k_count = k_range.1 - k_range.0 + 1;
+        // Use the same index expansion logic as for walls
+        fn expand_index_range(range: (usize, usize)) -> Vec<usize> {
+            if range.0 <= range.1 {
+                (range.0..=range.1).collect()
+            } else {
+                (range.1..=range.0).rev().collect()
+            }
+        }
+        let i_indices = expand_index_range(i_range);
+        let j_indices = expand_index_range(j_range);
+        let k_indices = expand_index_range(k_range);
 
-        let i_fixed = i_count == 1;
-        let j_fixed = j_count == 1;
-        let k_fixed = k_count == 1;
-
-        // Build a flat map from (u, v) → linear grid index.
-        // Prefer j_fixed > k_fixed > i_fixed; fall back to outer-K face for
-        // volume subsets.
-        let (slab_u, slab_v, idx_map): (usize, usize, Vec<usize>) = if j_fixed {
-            let j0 = j_range.0 - 1;
-            let i0 = i_range.0 - 1;
-            let k0 = k_range.0 - 1;
-            let su = i_count;
-            let sv = k_count;
-            let map = (0..sv)
-                .flat_map(|v| (0..su).map(move |u| (i0 + u) + j0 * ni + (k0 + v) * ni * nj))
+        // Prefer j_fixed > k_fixed > i_fixed; fall back to outer-K face for volume subsets.
+        let (slab_u, slab_v, idx_map): (usize, usize, Vec<usize>) = if j_indices.len() == 1 {
+            let j = j_indices[0];
+            let su = i_indices.len();
+            let sv = k_indices.len();
+            let map = k_indices
+                .iter()
+                .flat_map(|&k| {
+                    i_indices
+                        .iter()
+                        .map(move |&i| (i - 1) + (j - 1) * ni + (k - 1) * ni * nj)
+                })
                 .collect();
             (su, sv, map)
-        } else if k_fixed {
-            let k0 = k_range.0 - 1;
-            let i0 = i_range.0 - 1;
-            let j0 = j_range.0 - 1;
-            let su = i_count;
-            let sv = j_count;
-            let map = (0..sv)
-                .flat_map(|v| (0..su).map(move |u| (i0 + u) + (j0 + v) * ni + k0 * ni * nj))
+        } else if k_indices.len() == 1 {
+            let k = k_indices[0];
+            let su = i_indices.len();
+            let sv = j_indices.len();
+            let map = j_indices
+                .iter()
+                .flat_map(|&j| {
+                    i_indices
+                        .iter()
+                        .map(move |&i| (i - 1) + (j - 1) * ni + (k - 1) * ni * nj)
+                })
                 .collect();
             (su, sv, map)
-        } else if i_fixed {
-            let i0 = i_range.0 - 1;
-            let j0 = j_range.0 - 1;
-            let k0 = k_range.0 - 1;
-            let su = j_count;
-            let sv = k_count;
-            let map = (0..sv)
-                .flat_map(|v| (0..su).map(move |u| i0 + (j0 + u) * ni + (k0 + v) * ni * nj))
+        } else if i_indices.len() == 1 {
+            let i = i_indices[0];
+            let su = j_indices.len();
+            let sv = k_indices.len();
+            let map = k_indices
+                .iter()
+                .flat_map(|&k| {
+                    j_indices
+                        .iter()
+                        .map(move |&j| (i - 1) + (j - 1) * ni + (k - 1) * ni * nj)
+                })
                 .collect();
             (su, sv, map)
         } else {
             // Volume subset — expose the low-K face as a representative surface.
-            let k0 = k_range.0 - 1;
-            let i0 = i_range.0 - 1;
-            let j0 = j_range.0 - 1;
-            let su = i_count;
-            let sv = j_count;
-            let map = (0..sv)
-                .flat_map(|v| (0..su).map(move |u| (i0 + u) + (j0 + v) * ni + k0 * ni * nj))
+            let k = *k_indices.first().unwrap();
+            let su = i_indices.len();
+            let sv = j_indices.len();
+            let map = j_indices
+                .iter()
+                .flat_map(|&j| {
+                    i_indices
+                        .iter()
+                        .map(move |&i| (i - 1) + (j - 1) * ni + (k - 1) * ni * nj)
+                })
                 .collect();
             (su, sv, map)
         };
@@ -1218,6 +1207,236 @@ pub fn render_multigrid_subsets(
             margin as f32 + (v - min_v) / range_v * draw_h,
         )
     };
+
+    if matches!(state.plot_family, PlotFamily::FunctionSurface) {
+        // Legacy multigrid function-surface frames (e.g., WBT Cp plot) need an
+        // elevated scalar wireframe across all active subset patches.
+        let field_range_inv = 1.0 / field_range;
+        let height_scale_px = draw_h * 0.34;
+
+        struct WireSeg {
+            depth: f32,
+            x0: i32,
+            y0: i32,
+            x1: i32,
+            y1: i32,
+            color: Rgba<u8>,
+        }
+
+        let mut segments: Vec<WireSeg> = Vec::new();
+
+        for patch in &patches {
+            let su = patch.slab_u;
+            let sv = patch.slab_v;
+
+            let vertex_screen = |idx: usize| -> (f32, f32, f32, f32) {
+                let (sx, sy) = uv_to_screen(patch.proj[idx].0, patch.proj[idx].1);
+                let t = ((patch.scalars[idx] - field_min) * field_range_inv).clamp(0.0, 1.0);
+                let y = sy - t * height_scale_px;
+                (sx, y, patch.proj[idx].2, t)
+            };
+
+            for v in 0..sv {
+                for u in 0..su {
+                    let i0 = u + v * su;
+
+                    if u + 1 < su {
+                        let i1 = (u + 1) + v * su;
+                        let a = vertex_screen(i0);
+                        let b = vertex_screen(i1);
+                        let t_mid = ((a.3 + b.3) * 0.5).clamp(0.0, 1.0);
+                        let rgb = colormap::apply(t_mid);
+                        segments.push(WireSeg {
+                            depth: 0.5 * (a.2 + b.2),
+                            x0: a.0.round() as i32,
+                            y0: a.1.round() as i32,
+                            x1: b.0.round() as i32,
+                            y1: b.1.round() as i32,
+                            color: Rgba([rgb[0], rgb[1], rgb[2], 255]),
+                        });
+                    }
+
+                    if v + 1 < sv {
+                        let i1 = u + (v + 1) * su;
+                        let a = vertex_screen(i0);
+                        let b = vertex_screen(i1);
+                        let t_mid = ((a.3 + b.3) * 0.5).clamp(0.0, 1.0);
+                        let rgb = colormap::apply(t_mid);
+                        segments.push(WireSeg {
+                            depth: 0.5 * (a.2 + b.2),
+                            x0: a.0.round() as i32,
+                            y0: a.1.round() as i32,
+                            x1: b.0.round() as i32,
+                            y1: b.1.round() as i32,
+                            color: Rgba([rgb[0], rgb[1], rgb[2], 255]),
+                        });
+                    }
+                }
+            }
+        }
+
+        segments.sort_by(|a, b| {
+            b.depth
+                .partial_cmp(&a.depth)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        for seg in segments {
+            draw_line(img, seg.x0, seg.y0, seg.x1, seg.y1, seg.color);
+        }
+
+        // Overlay wall outlines in the same projected space used for subset
+        // patches so legacy Cp frames retain their red/green wall guides.
+        let mut skipped_wall_entry = false;
+        for wall in &state.walls {
+            // Respect legacy wall style semantics: line overlays should appear
+            // only for line-like wall render modes.
+            let line_like = matches!(
+                wall.style.mode,
+                Some(WallRenderMode::Line) | Some(WallRenderMode::HiddenLines) | None
+            );
+            if !line_like {
+                continue;
+            }
+
+            let Some(grid) = wall
+                .grid
+                .checked_sub(1)
+                .and_then(|idx| grids.get(idx as usize))
+            else {
+                skipped_wall_entry = true;
+                continue;
+            };
+
+            let ni = grid.dimensions.i as usize;
+            let nj = grid.dimensions.j as usize;
+            let nk = grid.dimensions.k as usize;
+
+            let Some(i_range) = resolve_index_range(wall.i_range.as_ref(), ni) else {
+                continue;
+            };
+            let Some(j_range) = resolve_index_range(wall.j_range.as_ref(), nj) else {
+                continue;
+            };
+            let Some(k_range) = resolve_index_range(wall.k_range.as_ref(), nk) else {
+                continue;
+            };
+
+            let i_fixed = i_range.0 == i_range.1;
+            let j_fixed = j_range.0 == j_range.1;
+            let k_fixed = k_range.0 == k_range.1;
+            if !(i_fixed || j_fixed || k_fixed) {
+                skipped_wall_entry = true;
+                continue;
+            }
+
+            let segment_color = wall_style_rgba(wall);
+            let world_point = |i1: usize, j1: usize, k1: usize| -> (f32, f32, f32) {
+                let i0 = i1.saturating_sub(1);
+                let j0 = j1.saturating_sub(1);
+                let k0 = k1.saturating_sub(1);
+                let idx = i0 + j0 * ni + k0 * ni * nj;
+                (grid.x_coords[idx], grid.y_coords[idx], grid.z_coords[idx])
+            };
+
+            let draw_wall_segment =
+                |img: &mut RgbaImage, a: (f32, f32, f32), b: (f32, f32, f32), color: Rgba<u8>| {
+                    let mut pa = project_point(a, camera);
+                    let mut pb = project_point(b, camera);
+                    if swap {
+                        pa = (pa.1, pa.0, pa.2);
+                        pb = (pb.1, pb.0, pb.2);
+                    }
+                    let (x0, y0) = uv_to_screen(pa.0, pa.1);
+                    let (x1, y1) = uv_to_screen(pb.0, pb.1);
+                    draw_line(
+                        img,
+                        x0.round() as i32,
+                        y0.round() as i32,
+                        x1.round() as i32,
+                        y1.round() as i32,
+                        color,
+                    );
+                };
+
+            if i_fixed {
+                let i = i_range.0;
+                for j in j_range.0..=j_range.1 {
+                    for k in k_range.0..k_range.1 {
+                        draw_wall_segment(
+                            img,
+                            world_point(i, j, k),
+                            world_point(i, j, k + 1),
+                            segment_color,
+                        );
+                    }
+                }
+                for k in k_range.0..=k_range.1 {
+                    for j in j_range.0..j_range.1 {
+                        draw_wall_segment(
+                            img,
+                            world_point(i, j, k),
+                            world_point(i, j + 1, k),
+                            segment_color,
+                        );
+                    }
+                }
+            } else if j_fixed {
+                let j = j_range.0;
+                for i in i_range.0..=i_range.1 {
+                    for k in k_range.0..k_range.1 {
+                        draw_wall_segment(
+                            img,
+                            world_point(i, j, k),
+                            world_point(i, j, k + 1),
+                            segment_color,
+                        );
+                    }
+                }
+                for k in k_range.0..=k_range.1 {
+                    for i in i_range.0..i_range.1 {
+                        draw_wall_segment(
+                            img,
+                            world_point(i, j, k),
+                            world_point(i + 1, j, k),
+                            segment_color,
+                        );
+                    }
+                }
+            } else {
+                let k = k_range.0;
+                for i in i_range.0..=i_range.1 {
+                    for j in j_range.0..j_range.1 {
+                        draw_wall_segment(
+                            img,
+                            world_point(i, j, k),
+                            world_point(i, j + 1, k),
+                            segment_color,
+                        );
+                    }
+                }
+                for j in j_range.0..=j_range.1 {
+                    for i in i_range.0..i_range.1 {
+                        draw_wall_segment(
+                            img,
+                            world_point(i, j, k),
+                            world_point(i + 1, j, k),
+                            segment_color,
+                        );
+                    }
+                }
+            }
+        }
+
+        if skipped_wall_entry {
+            render_warnings.push(
+                "Renderer: some multigrid wall entries could not be resolved exactly".to_string(),
+            );
+        }
+
+        draw_frame_border(img);
+        return;
+    }
 
     // ── Pass 1: filled triangle rasterisation ──────────────────────────────
     let do_fill = !matches!(state.contour_attribute, ContourAttribute::Line);

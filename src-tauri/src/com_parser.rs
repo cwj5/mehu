@@ -141,6 +141,7 @@ fn parse_file_internal(
     let mut in_contours_attr_payload = false; // consuming post-attribute thickness/colour tokens
     let mut walls_subsets_state: Option<LegacyWallsSubsetsState> = None;
     let mut text_state: Option<LegacyTextState> = None;
+    let mut interactive_walls_block_initialized = false;
 
     for (idx, raw_line) in content.lines().enumerate() {
         let line_number = (idx + 1) as u32;
@@ -338,7 +339,11 @@ fn parse_file_internal(
         if (command == "WALLS" || command == "SUBSETS")
             && walls_subsets_is_interactive_request(&args_with_inline)
         {
-            let (grid, _add_mode) = extract_walls_subsets_interactive_context(&args_with_inline);
+            let (grid, add_mode) = extract_walls_subsets_interactive_context(&args_with_inline);
+            if command == "WALLS" && !add_mode && !interactive_walls_block_initialized {
+                out.actions.push(PlotAction::SetWalls(Vec::new()));
+                interactive_walls_block_initialized = true;
+            }
             walls_subsets_state = Some(LegacyWallsSubsetsState {
                 walls: command == "WALLS",
                 grid,
@@ -362,6 +367,10 @@ fn parse_file_internal(
             line_number,
             &mut out,
         );
+
+        if command == "PLOT" {
+            interactive_walls_block_initialized = false;
+        }
 
         in_contours_manual_input =
             command == "CONTOURS" && contours_manual_requested(&args_with_inline);
