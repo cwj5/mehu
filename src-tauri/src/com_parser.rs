@@ -39,6 +39,34 @@ struct LegacyTextState {
     lines: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
+enum LegacyRakeStage {
+    Grid,
+    Dimension,
+    Range1Start,
+    Range1End,
+    Range2Start,
+    Range2End,
+    Range3Start,
+    Range3End,
+    Count,
+    LineType,
+    Color,
+    Thickness,
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+struct LegacyRakeState {
+    is_xyz: bool, // false=IJK, true=XYZ
+    stage: LegacyRakeStage,
+    grids: Vec<u32>,
+    current_grid: Option<u32>,
+    current_max_points: Option<u32>,
+    parsed_line_number: u32,
+}
+
 pub fn parse_com_file(path: &Path) -> Result<ParsedScript, String> {
     let mut visited = HashSet::new();
     parse_file_internal(path, &mut visited)
@@ -140,6 +168,7 @@ fn parse_file_internal(
     let mut in_contours_attr_expected = false;
     let mut in_contours_attr_payload = false; // consuming post-attribute thickness/colour tokens
     let mut walls_subsets_state: Option<LegacyWallsSubsetsState> = None;
+    let mut rake_state: Option<LegacyRakeState> = None;
     let mut text_state: Option<LegacyTextState> = None;
     let mut interactive_walls_block_initialized = false;
 
@@ -248,10 +277,32 @@ fn parse_file_internal(
                 continue; // blank separator
             }
             // Purely numeric line → thickness or colour component → skip.
-            if continuation_tokens.iter().all(|t| t.parse::<f64>().is_ok()) {
+            if continuation_tokens
+                .iter()
+                .all(|t| t.parse::<f64>().is_ok() || t == "0")
+            {
                 continue;
             }
-            // Anything non-numeric terminates the payload region.
+            // Color sequence (part of CONTOUR attribute) → skip.
+            let all_colors = continuation_tokens.iter().all(|t| {
+                let upper = t.to_uppercase();
+                matches!(
+                    upper.as_str(),
+                    "RED"
+                        | "GREEN"
+                        | "BLUE"
+                        | "CYAN"
+                        | "MAGENTA"
+                        | "YELLOW"
+                        | "BLACK"
+                        | "WHITE"
+                        | "RGB"
+                )
+            });
+            if all_colors {
+                continue;
+            }
+            // Anything else terminates the payload region.
             in_contours_attr_payload = false;
         }
 
@@ -274,6 +325,20 @@ fn parse_file_internal(
                 continue;
             }
             walls_subsets_state = None;
+        }
+
+        // Legacy RAKE also uses interactive follow-on responses.
+        // Consume non-command lines as command-owned payload until a clear
+        // next command token appears.
+        if let Some(_state) = rake_state.as_mut() {
+            let continuation_tokens = tokenize_line(trimmed);
+            if !continuation_tokens.is_empty() && !looks_like_command_start(&continuation_tokens[0])
+            {
+                // For now, just consume the continuation lines as payload
+                // TODO: Parse rake paths, colors, line types according to stage
+                continue;
+            }
+            rake_state = None;
         }
 
         // Prompt-style include shorthand: @filename.com
@@ -353,6 +418,24 @@ fn parse_file_internal(
                 axis_tokens: Vec::new(),
             });
             continue;
+        }
+
+        if command == "RAKE" || command == "RAKES" {
+            if rake_is_interactive_request(&args_with_inline) {
+                let is_xyz = args_with_inline.iter().any(|arg| {
+                    let (name, _) = parse_qualifier(arg).unwrap_or(("".to_string(), None));
+                    resolve_qualifier_abbrev(&name, &["IJK", "XYZ"]).to_uppercase() == "XYZ"
+                });
+                rake_state = Some(LegacyRakeState {
+                    is_xyz,
+                    stage: LegacyRakeStage::Grid,
+                    grids: Vec::new(),
+                    current_grid: None,
+                    current_max_points: None,
+                    parsed_line_number: line_number,
+                });
+                continue;
+            }
         }
 
         if command == "TEXT" && args_with_inline.is_empty() {
@@ -493,6 +576,50 @@ fn extract_walls_subsets_interactive_context(args: &[String]) -> (u32, bool) {
     }
 
     (grid, add_mode)
+}
+
+fn rake_is_interactive_request(args: &[String]) -> bool {
+    // Interactive RAKE mode is when RAKE is called with minimal or no qualifiers,
+    // expecting continuation-line input for grids, rake paths, and attributes.
+    // If there are positional arguments (file paths for /READ or /WRITE), it's not interactive.
+
+    const RAKE_QUALIFIERS: &[&str] = &[
+        "IJK",
+        "XYZ",
+        "ADD",
+        "ATTRIBUTES",
+        "NOATTRIBUTES",
+        "READ",
+        "WRITE",
+        "+TIME",
+        "-TIME",
+        "+-TIME",
+        "MAXPOINTS",
+        "SCALAR_FUNCTION",
+        "NOSCALAR_FUNCTION",
+    ];
+
+    let mut has_value_qualifier = false;
+    let mut positional_count = 0;
+
+    for arg in args {
+        if let Some((raw_name, value)) = parse_qualifier(arg) {
+            let name = resolve_qualifier_abbrev(&raw_name, RAKE_QUALIFIERS);
+            match name.as_str() {
+                "READ" | "WRITE" | "MAXPOINTS" | "SCALAR_FUNCTION" => {
+                    if value.is_some() {
+                        has_value_qualifier = true;
+                    }
+                }
+                _ => {}
+            }
+            continue;
+        }
+        positional_count += 1;
+    }
+
+    // Interactive if no file paths or positional args specified
+    !has_value_qualifier && positional_count == 0
 }
 
 fn parse_walls_subsets_continuation(
@@ -1095,6 +1222,8 @@ fn parse_list(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {
     ];
     const LIST_TARGETS: &[&str] = &["XYZ", "Q", "FUNCTION", "CGNS"];
 
+    let _parsed_quals = validate_qualifiers("LIST", args, LIST_QUALIFIERS, file, line, out);
+
     let mut positional = Vec::new();
     for arg in args {
         if let Some((raw_name, value)) = parse_qualifier(arg) {
@@ -1143,6 +1272,20 @@ fn parse_list(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {
             ));
         }
     }
+
+    if positional.len() > 1 {
+        out.diagnostics.push(diagnostic(
+            "LIST",
+            DiagnosticSeverity::Warning,
+            Some(file.to_string_lossy().to_string()),
+            Some(line),
+            Some(1),
+            format!(
+                "LIST expects at most 1 target argument; {} extra argument(s) ignored",
+                positional.len() - 1
+            ),
+        ));
+    }
 }
 
 fn parse_rakes(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {
@@ -1162,7 +1305,10 @@ fn parse_rakes(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) 
         "NOSCALAR_FUNCTION",
     ];
 
+    let _parsed_quals = validate_qualifiers("RAKES", args, RAKES_QUALIFIERS, file, line, out);
+
     let mut settings = RakeSettings::default();
+    let mut positional = Vec::new();
 
     for arg in args {
         if let Some((raw_name, value)) = parse_qualifier(arg) {
@@ -1245,7 +1391,23 @@ fn parse_rakes(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) 
                     format!("Unknown RAKES qualifier '/{}' ignored", name),
                 )),
             }
+        } else {
+            positional.push(arg.clone());
         }
+    }
+
+    if !positional.is_empty() {
+        out.diagnostics.push(diagnostic(
+            cap::RAKES,
+            DiagnosticSeverity::Warning,
+            Some(file.to_string_lossy().to_string()),
+            Some(line),
+            Some(1),
+            format!(
+                "RAKES positional argument(s) are not supported in this parser mode; {} argument(s) ignored",
+                positional.len()
+            ),
+        ));
     }
 
     out.actions.push(PlotAction::SetRakes(settings));
@@ -1260,7 +1422,10 @@ fn parse_vectors(args: &[String], file: &Path, line: u32, out: &mut ParsedScript
         "NOATTRIBUTES",
     ];
 
+    let _parsed_quals = validate_qualifiers("VECTORS", args, VECTORS_QUALIFIERS, file, line, out);
+
     let mut settings = VectorSettings::default();
+    let mut positional = Vec::new();
 
     for arg in args {
         if let Some((raw_name, value)) = parse_qualifier(arg) {
@@ -1329,7 +1494,23 @@ fn parse_vectors(args: &[String], file: &Path, line: u32, out: &mut ParsedScript
                     format!("Unknown VECTORS qualifier '/{}' ignored", name),
                 )),
             }
+        } else {
+            positional.push(arg.clone());
         }
+    }
+
+    if !positional.is_empty() {
+        out.diagnostics.push(diagnostic(
+            cap::VECTORS,
+            DiagnosticSeverity::Warning,
+            Some(file.to_string_lossy().to_string()),
+            Some(line),
+            Some(1),
+            format!(
+                "VECTORS positional argument(s) are not supported in this parser mode; {} argument(s) ignored",
+                positional.len()
+            ),
+        ));
     }
 
     out.actions.push(PlotAction::SetVectors(settings));
@@ -1379,6 +1560,20 @@ fn parse_function(args: &[String], file: &Path, line: u32, out: &mut ParsedScrip
             if let Some(action) = action {
                 out.actions.push(action);
             }
+
+            if args.len() > 1 {
+                out.diagnostics.push(diagnostic(
+                    cap::FUNCTION,
+                    DiagnosticSeverity::Warning,
+                    Some(file.to_string_lossy().to_string()),
+                    Some(line),
+                    Some(1),
+                    format!(
+                        "FUNCTION expects exactly 1 argument; {} extra argument(s) ignored",
+                        args.len() - 1
+                    ),
+                ));
+            }
         }
         Err(_) => out.diagnostics.push(diagnostic(
             cap::FUNCTION,
@@ -1410,7 +1605,20 @@ fn parse_view(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {
     ];
 
     let axis = args[0].to_uppercase();
-    let resolved_axis = resolve_qualifier_abbrev(&axis, VIEW_OPTIONS);
+    let resolved = resolve_qualifier_abbrev_with_status(&axis, VIEW_OPTIONS);
+    if resolved.status == ResolveStatus::Ambiguous {
+        out.diagnostics.push(diagnostic(
+            cap::VIEW,
+            DiagnosticSeverity::Warning,
+            Some(file.to_string_lossy().to_string()),
+            Some(line),
+            Some(1),
+            format!("Ambiguous VIEW argument '{}'", args[0]),
+        ));
+        return;
+    }
+
+    let resolved_axis = resolved.name;
     let mode = match resolved_axis.as_str() {
         "X" | "+X" => Some(AxisView::PlusX),
         "-X" => Some(AxisView::MinusX),
@@ -1459,6 +1667,9 @@ fn parse_vpoint(args: &[String], file: &Path, line: u32, out: &mut ParsedScript)
     // Check for /ANGLES qualifier to determine if spherical or Cartesian
     const VPOINT_QUALIFIERS: &[&str] = &["XYZ", "ANGLES"];
 
+    // Use new validation infrastructure to check for ambiguous/conflicting qualifiers
+    let _parsed_quals = validate_qualifiers("VPOINT", args, VPOINT_QUALIFIERS, file, line, out);
+
     let is_spherical = args.iter().any(|arg| {
         if let Some((raw_name, _)) = parse_qualifier(arg) {
             resolve_qualifier_abbrev(&raw_name, VPOINT_QUALIFIERS) == "ANGLES"
@@ -1481,6 +1692,21 @@ fn parse_vpoint(args: &[String], file: &Path, line: u32, out: &mut ParsedScript)
 
     let non_qualifier_args: Vec<&String> =
         args.iter().filter(|arg| !arg.starts_with('/')).collect();
+
+    // NEW: Warn if there are extra positional arguments beyond the 3 required
+    if non_qualifier_args.len() > 3 {
+        out.diagnostics.push(diagnostic(
+            cap::VPOINT,
+            DiagnosticSeverity::Warning,
+            Some(file.to_string_lossy().to_string()),
+            Some(line),
+            Some(1),
+            format!(
+                "VPOINT expects 3 numeric arguments; {} extra argument(s) will be ignored",
+                non_qualifier_args.len() - 3
+            ),
+        ));
+    }
 
     if numeric_args.len() < 3 {
         // Check if we have the right number of non-qualifier args but they're not numeric
@@ -1578,10 +1804,42 @@ const CONTOURS_QUALIFIERS: &[&str] = &[
     "DOTS",
 ];
 
+fn normalize_minmax_bounds(
+    axis: &str,
+    a: f64,
+    b: f64,
+    file: &Path,
+    line: u32,
+    out: &mut ParsedScript,
+) -> AxisBounds {
+    if a < b {
+        AxisBounds { min: a, max: b }
+    } else if a > b {
+        out.diagnostics.push(diagnostic(
+            cap::MINMAX,
+            DiagnosticSeverity::Warning,
+            Some(file.to_string_lossy().to_string()),
+            Some(line),
+            Some(1),
+            format!("MINMAX {} bounds reversed (min > max); swapping", axis),
+        ));
+        AxisBounds { min: b, max: a }
+    } else {
+        AxisBounds { min: a, max: a }
+    }
+}
+
 fn parse_minmax(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {
     // Collect axis-selection qualifiers and numeric values separately.
     // Known non-state qualifiers like /INCREMENT, /XSCALE are silently accepted.
+
+    // Use new validation infrastructure to check for ambiguous/conflicting qualifiers
+    let _parsed_quals = validate_qualifiers("MINMAX", args, MINMAX_QUALIFIERS, file, line, out);
+
     let mut active_axes: Vec<&str> = Vec::new();
+    let mut no_x = false;
+    let mut no_y = false;
+    let mut no_z = false;
     let mut numeric_args: Vec<f64> = Vec::new();
 
     for arg in args {
@@ -1591,8 +1849,11 @@ fn parse_minmax(args: &[String], file: &Path, line: u32, out: &mut ParsedScript)
                 "X" => active_axes.push("x"),
                 "Y" => active_axes.push("y"),
                 "Z" => active_axes.push("z"),
+                "NOX" => no_x = true,
+                "NOY" => no_y = true,
+                "NOZ" => no_z = true,
                 // Known advisory or unimplemented qualifiers — silently accepted.
-                "NOX" | "NOY" | "NOZ" | "INCREMENT" | "XSCALE" | "YSCALE" | "ZSCALE" => {}
+                "INCREMENT" | "XSCALE" | "YSCALE" | "ZSCALE" => {}
                 _ => out.diagnostics.push(diagnostic(
                     cap::MINMAX,
                     DiagnosticSeverity::Warning,
@@ -1620,7 +1881,29 @@ fn parse_minmax(args: &[String], file: &Path, line: u32, out: &mut ParsedScript)
     let mut mm = MinMaxOverride::default();
 
     if active_axes.is_empty() {
-        // Positional mode: pairs go to X, Y, Z in order.
+        // Positional mode: pairs go to enabled axes in X, Y, Z order.
+        let enabled_axes: Vec<&str> = [
+            if !no_x { Some("x") } else { None },
+            if !no_y { Some("y") } else { None },
+            if !no_z { Some("z") } else { None },
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+
+        if enabled_axes.is_empty() {
+            out.diagnostics.push(diagnostic(
+                cap::MINMAX,
+                DiagnosticSeverity::Warning,
+                Some(file.to_string_lossy().to_string()),
+                Some(line),
+                Some(1),
+                "MINMAX /NOX /NOY /NOZ disables all axes; command has no effect",
+            ));
+            out.actions.push(PlotAction::SetMinMax(mm));
+            return;
+        }
+
         if numeric_args.len() < 2 {
             out.diagnostics.push(diagnostic(
                 cap::MINMAX,
@@ -1628,77 +1911,72 @@ fn parse_minmax(args: &[String], file: &Path, line: u32, out: &mut ParsedScript)
                 Some(file.to_string_lossy().to_string()),
                 Some(line),
                 Some(1),
-                "MINMAX requires at least 2 values (xmin xmax)",
+                "MINMAX requires at least 2 values (min max)",
             ));
             return;
         }
-        // Validate and normalize bounds: ensure min < max
-        let (x_min, x_max) = if numeric_args[0] < numeric_args[1] {
-            (numeric_args[0], numeric_args[1])
-        } else if numeric_args[0] > numeric_args[1] {
-            out.diagnostics.push(diagnostic(
-                cap::MINMAX,
-                DiagnosticSeverity::Warning,
-                Some(file.to_string_lossy().to_string()),
-                Some(line),
-                Some(1),
-                "MINMAX X bounds reversed (min > max); swapping",
-            ));
-            (numeric_args[1], numeric_args[0])
-        } else {
-            (numeric_args[0], numeric_args[0])
-        };
-        mm.x = Some(AxisBounds {
-            min: x_min,
-            max: x_max,
-        });
 
-        if numeric_args.len() >= 4 {
-            let (y_min, y_max) = if numeric_args[2] < numeric_args[3] {
-                (numeric_args[2], numeric_args[3])
-            } else if numeric_args[2] > numeric_args[3] {
-                out.diagnostics.push(diagnostic(
-                    cap::MINMAX,
-                    DiagnosticSeverity::Warning,
-                    Some(file.to_string_lossy().to_string()),
-                    Some(line),
-                    Some(1),
-                    "MINMAX Y bounds reversed (min > max); swapping",
-                ));
-                (numeric_args[3], numeric_args[2])
-            } else {
-                (numeric_args[2], numeric_args[2])
-            };
-            mm.y = Some(AxisBounds {
-                min: y_min,
-                max: y_max,
-            });
-        }
-        if numeric_args.len() >= 6 {
-            let (z_min, z_max) = if numeric_args[4] < numeric_args[5] {
-                (numeric_args[4], numeric_args[5])
-            } else if numeric_args[4] > numeric_args[5] {
-                out.diagnostics.push(diagnostic(
-                    cap::MINMAX,
-                    DiagnosticSeverity::Warning,
-                    Some(file.to_string_lossy().to_string()),
-                    Some(line),
-                    Some(1),
-                    "MINMAX Z bounds reversed (min > max); swapping",
-                ));
-                (numeric_args[5], numeric_args[4])
-            } else {
-                (numeric_args[4], numeric_args[4])
-            };
-            mm.z = Some(AxisBounds {
-                min: z_min,
-                max: z_max,
-            });
+        let use_triplets = numeric_args.len() >= enabled_axes.len() * 3
+            && numeric_args.len() % 3 == 0
+            && numeric_args.len() != enabled_axes.len() * 2;
+
+        for (i, axis) in enabled_axes.iter().enumerate() {
+            let stride = if use_triplets { 3 } else { 2 };
+            let start = i * stride;
+            if numeric_args.len() < start + 2 {
+                break;
+            }
+            if use_triplets && numeric_args.len() >= start + 3 {
+                let inc = numeric_args[start + 2];
+                if inc <= 0.0 {
+                    out.diagnostics.push(diagnostic(
+                        cap::MINMAX,
+                        DiagnosticSeverity::Warning,
+                        Some(file.to_string_lossy().to_string()),
+                        Some(line),
+                        Some(1),
+                        format!(
+                            "MINMAX {} increment must be > 0 in min/max/increment triplet",
+                            axis.to_uppercase()
+                        ),
+                    ));
+                }
+            }
+
+            let bounds = normalize_minmax_bounds(
+                axis,
+                numeric_args[start],
+                numeric_args[start + 1],
+                file,
+                line,
+                out,
+            );
+            match *axis {
+                "x" => mm.x = Some(bounds),
+                "y" => mm.y = Some(bounds),
+                "z" => mm.z = Some(bounds),
+                _ => {}
+            }
         }
     } else {
         // Axis-qualifier mode: each qualifier consumes the next pair of values.
+        let active_axes: Vec<&str> = active_axes
+            .into_iter()
+            .filter(|axis| match *axis {
+                "x" => !no_x,
+                "y" => !no_y,
+                "z" => !no_z,
+                _ => true,
+            })
+            .collect();
+
+        let use_triplets = numeric_args.len() >= active_axes.len() * 3
+            && numeric_args.len() % 3 == 0
+            && numeric_args.len() != active_axes.len() * 2;
+
         for (i, axis) in active_axes.iter().enumerate() {
-            let start = i * 2;
+            let stride = if use_triplets { 3 } else { 2 };
+            let start = i * stride;
             if numeric_args.len() < start + 2 {
                 out.diagnostics.push(diagnostic(
                     cap::MINMAX,
@@ -1707,16 +1985,42 @@ fn parse_minmax(args: &[String], file: &Path, line: u32, out: &mut ParsedScript)
                     Some(line),
                     Some(1),
                     format!(
-                        "MINMAX /{} requires 2 values (min max)",
-                        axis.to_uppercase()
+                        "MINMAX /{} requires {} values ({})",
+                        axis.to_uppercase(),
+                        if use_triplets { 3 } else { 2 },
+                        if use_triplets {
+                            "min max increment"
+                        } else {
+                            "min max"
+                        }
                     ),
                 ));
                 continue;
             }
-            let bounds = AxisBounds {
-                min: numeric_args[start],
-                max: numeric_args[start + 1],
-            };
+            if use_triplets && numeric_args.len() >= start + 3 {
+                let inc = numeric_args[start + 2];
+                if inc <= 0.0 {
+                    out.diagnostics.push(diagnostic(
+                        cap::MINMAX,
+                        DiagnosticSeverity::Warning,
+                        Some(file.to_string_lossy().to_string()),
+                        Some(line),
+                        Some(1),
+                        format!(
+                            "MINMAX /{} increment must be > 0 in min/max/increment triplet",
+                            axis.to_uppercase()
+                        ),
+                    ));
+                }
+            }
+            let bounds = normalize_minmax_bounds(
+                axis,
+                numeric_args[start],
+                numeric_args[start + 1],
+                file,
+                line,
+                out,
+            );
             match *axis {
                 "x" => mm.x = Some(bounds),
                 "y" => mm.y = Some(bounds),
@@ -1738,15 +2042,25 @@ fn parse_contours(args: &[String], file: &Path, line: u32, out: &mut ParsedScrip
         return;
     }
 
+    // Use new validation infrastructure to check for ambiguous/conflicting qualifiers
+    let _parsed_quals = validate_qualifiers("CONTOURS", args, CONTOURS_QUALIFIERS, file, line, out);
+
     let mut qualifier_values: HashMap<String, Option<String>> = HashMap::new();
     // Positional numeric values; their interpretation depends on the active qualifier mode.
     let mut positional_values: Vec<f64> = Vec::new();
+    let mut in_attribute_payload = false;
 
     for arg in args {
         if let Some((raw_name, value)) = parse_qualifier(arg) {
             let name = resolve_qualifier_abbrev(&raw_name, CONTOURS_QUALIFIERS);
             qualifier_values.insert(name, value);
             continue;
+        }
+
+        if in_attribute_payload {
+            if is_contours_attribute_token(arg) || parse_f64(arg).is_some() {
+                continue;
+            }
         }
 
         if let Some(tuple_values) = parse_tuple_numbers(arg) {
@@ -1796,22 +2110,27 @@ fn parse_contours(args: &[String], file: &Path, line: u32, out: &mut ParsedScrip
         let upper = arg.to_uppercase();
         match upper.as_str() {
             "LINE" | "LINES" => {
+                in_attribute_payload = true;
                 qualifier_values.insert("LINE".to_string(), None);
                 continue;
             }
             "SURFACE" | "SURFACES" => {
+                in_attribute_payload = true;
                 qualifier_values.insert("SURFACE".to_string(), None);
                 continue;
             }
             "GRID" | "GRID_LINES" => {
+                in_attribute_payload = true;
                 qualifier_values.insert("GRID".to_string(), None);
                 continue;
             }
             "COLOR" | "COLOR_CONTOURS" => {
+                in_attribute_payload = true;
                 qualifier_values.insert("COLOR".to_string(), None);
                 continue;
             }
             "DOTS" => {
+                in_attribute_payload = true;
                 qualifier_values.insert("DOTS".to_string(), None);
                 continue;
             }
@@ -2081,6 +2400,26 @@ const PLOT_QUALIFIERS: &[&str] = &[
 ];
 
 fn parse_plot(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {
+    // Use new validation infrastructure to check for ambiguous/conflicting qualifiers
+    let _parsed_quals = validate_qualifiers("PLOT", args, PLOT_QUALIFIERS, file, line, out);
+
+    // Check for extra positional arguments (PLOT takes no positional args)
+    let positional: Vec<&String> = args.iter().filter(|a| !a.starts_with('/')).collect();
+
+    if !positional.is_empty() {
+        out.diagnostics.push(diagnostic(
+            cap::PLOT,
+            DiagnosticSeverity::Warning,
+            Some(file.to_string_lossy().to_string()),
+            Some(line),
+            Some(1),
+            format!(
+                "PLOT expects no positional arguments; {} argument(s) will be ignored",
+                positional.len()
+            ),
+        ));
+    }
+
     for arg in args {
         if let Some((raw_name, value)) = parse_qualifier(arg) {
             let name = resolve_qualifier_abbrev(&raw_name, PLOT_QUALIFIERS);
@@ -2255,6 +2594,8 @@ fn parse_fsurface(args: &[String], file: &Path, line: u32, out: &mut ParsedScrip
         return;
     }
 
+    let _parsed_quals = validate_qualifiers("FSURFACE", args, FSURFACE_QUALIFIERS, file, line, out);
+
     let mut qualifier_values: HashMap<String, Option<String>> = HashMap::new();
     let mut positional: Vec<String> = Vec::new();
 
@@ -2392,6 +2733,7 @@ fn parse_walls_or_subsets(
     out: &mut ParsedScript,
 ) {
     let capability = if walls { cap::WALLS } else { cap::SUBSETS };
+    let command = if walls { "WALLS" } else { "SUBSETS" };
     if args.is_empty() {
         out.diagnostics.push(diagnostic(
             capability,
@@ -2424,6 +2766,10 @@ fn parse_walls_or_subsets(
         "ATTRIBUTES",
         "NOATTRIBUTES",
     ];
+
+    let _parsed_quals =
+        validate_qualifiers(command, args, WALLS_SUBSETS_QUALIFIERS, file, line, out);
+
     for arg in args {
         if let Some((raw_name, value)) = parse_qualifier(arg) {
             let name = resolve_qualifier_abbrev(&raw_name, WALLS_SUBSETS_QUALIFIERS);
@@ -2762,6 +3108,9 @@ fn parse_read(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {
         return;
     }
 
+    // Use new validation infrastructure to check for ambiguous/conflicting qualifiers
+    let _parsed_quals = validate_qualifiers("READ", args, READ_QUALIFIERS, file, line, out);
+
     // Support both qualifier form (READ/XYZ=grid.p3d /Q=sol.q) and positional
     // form (READ grid.p3d sol.q).  Path-to-cache resolution is deferred to the
     // executor (TKT-005).
@@ -2849,6 +3198,18 @@ fn parse_read(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {
         solution_path = positional.get(1).cloned();
     }
 
+    // NEW: Warn if there are extra positional arguments beyond the 2 used
+    if positional.len() > 2 {
+        out.diagnostics.push(diagnostic(
+            cap::READ,
+            DiagnosticSeverity::Warning,
+            Some(file.to_string_lossy().to_string()),
+            Some(line),
+            Some(1),
+            format!("READ expects 0-2 positional arguments (grid, solution); {} extra argument(s) will be ignored", positional.len() - 2),
+        ));
+    }
+
     let dataset = DatasetRef {
         grid_id: grid_path,
         solution_id: solution_path,
@@ -2876,18 +3237,448 @@ fn parse_qualifier(token: &str) -> Option<(String, Option<String>)> {
     }
 }
 
+/// Validate and resolve qualifiers for a command, checking for ambiguities and group conflicts
+#[allow(dead_code)]
+fn validate_qualifiers(
+    command: &str,
+    args: &[String],
+    known_qualifiers: &[&str],
+    file: &Path,
+    line: u32,
+    out: &mut ParsedScript,
+) -> Vec<ParsedQualifier> {
+    let mut parsed_qualifiers = Vec::new();
+    let mut seen_groups: std::collections::HashMap<u32, String> = std::collections::HashMap::new();
+    let _groups = get_qualifier_groups(command);
+
+    for arg in args {
+        if let Some((raw_name, value)) = parse_qualifier(arg) {
+            let resolved = resolve_qualifier_abbrev_with_status(&raw_name, known_qualifiers);
+
+            // Check for ambiguous prefix
+            if resolved.status == ResolveStatus::Ambiguous {
+                out.diagnostics.push(diagnostic(
+                    cap::READ,
+                    DiagnosticSeverity::Warning,
+                    Some(file.to_string_lossy().to_string()),
+                    Some(line),
+                    Some(1),
+                    format!(
+                        "Ambiguous qualifier '{}' matches multiple options",
+                        raw_name
+                    ),
+                ));
+                continue;
+            }
+
+            // Check for unknown qualifier
+            if resolved.status == ResolveStatus::NoMatch {
+                out.diagnostics.push(diagnostic(
+                    cap::READ,
+                    DiagnosticSeverity::Warning,
+                    Some(file.to_string_lossy().to_string()),
+                    Some(line),
+                    Some(1),
+                    format!("Unknown qualifier '{}'", raw_name),
+                ));
+                continue;
+            }
+
+            let qual_name = resolved.name;
+            let group_id = find_qualifier_group(command, &qual_name);
+
+            // Check for group conflicts
+            if let Some(gid) = group_id {
+                if let Some(previous) = seen_groups.get(&gid) {
+                    out.diagnostics.push(diagnostic(
+                        cap::READ,
+                        DiagnosticSeverity::Warning,
+                        Some(file.to_string_lossy().to_string()),
+                        Some(line),
+                        Some(1),
+                        format!(
+                            "Conflicting qualifiers '{}' and '{}' (only one choice per group)",
+                            previous, qual_name
+                        ),
+                    ));
+                    continue;
+                }
+                seen_groups.insert(gid, qual_name.clone());
+            }
+
+            parsed_qualifiers.push(ParsedQualifier {
+                name: qual_name,
+                value,
+                group_id,
+            });
+        }
+    }
+
+    parsed_qualifiers
+}
+
 /// Resolve a qualifier abbreviation against a list of known qualifier names.
 /// Returns the canonical (uppercase) name if the abbreviation is a unique prefix,
 /// otherwise returns the abbreviation unchanged.
-fn resolve_qualifier_abbrev(abbrev: &str, known: &[&str]) -> String {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResolveStatus {
+    Exact,
+    Unique,
+    Ambiguous,
+    NoMatch,
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+struct ResolveResult {
+    name: String,
+    status: ResolveStatus,
+}
+
+fn resolve_qualifier_abbrev_with_status(abbrev: &str, known: &[&str]) -> ResolveResult {
     if known.contains(&abbrev) {
-        return abbrev.to_string();
+        return ResolveResult {
+            name: abbrev.to_string(),
+            status: ResolveStatus::Exact,
+        };
     }
     let matches: Vec<&&str> = known.iter().filter(|q| q.starts_with(abbrev)).collect();
     if matches.len() == 1 {
-        return matches[0].to_string();
+        return ResolveResult {
+            name: matches[0].to_string(),
+            status: ResolveStatus::Unique,
+        };
     }
-    abbrev.to_string()
+    if matches.len() > 1 {
+        return ResolveResult {
+            name: abbrev.to_string(),
+            status: ResolveStatus::Ambiguous,
+        };
+    }
+    ResolveResult {
+        name: abbrev.to_string(),
+        status: ResolveStatus::NoMatch,
+    }
+}
+
+/// Defines a group of mutually exclusive qualifiers for a command
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+struct QualifierGroup {
+    group_id: u32,
+    choices: Vec<String>,
+}
+
+/// Defines qualifier groups for a specific command
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+struct CommandQualifierGroups {
+    command: String,
+    groups: Vec<QualifierGroup>,
+}
+
+/// Known qualifier group definitions by command
+#[allow(dead_code)]
+fn get_qualifier_groups(command: &str) -> Option<Vec<QualifierGroup>> {
+    match command {
+        "CONTOURS" => Some(vec![
+            QualifierGroup {
+                group_id: 1,
+                choices: vec![
+                    "AUTOMATIC".to_string(),
+                    "INCREMENT".to_string(),
+                    "MANUAL".to_string(),
+                ],
+            },
+            QualifierGroup {
+                group_id: 2,
+                choices: vec!["RANGE".to_string()],
+            },
+            QualifierGroup {
+                group_id: 3,
+                choices: vec!["LINEAR".to_string(), "CUBIC".to_string()],
+            },
+            QualifierGroup {
+                group_id: 4,
+                choices: vec!["ATTRIBUTES".to_string(), "NOATTRIBUTES".to_string()],
+            },
+        ]),
+        "VPOINT" => Some(vec![QualifierGroup {
+            group_id: 1,
+            choices: vec!["XYZ".to_string(), "ANGLES".to_string()],
+        }]),
+        "PLOT" => Some(vec![
+            QualifierGroup {
+                group_id: 1,
+                choices: vec!["2D".to_string(), "3D".to_string()],
+            },
+            QualifierGroup {
+                group_id: 2,
+                choices: vec![
+                    "SURFACE".to_string(),
+                    "CARPET".to_string(),
+                    "LINE".to_string(),
+                    "CONTOUR".to_string(),
+                    "FSURFACE".to_string(),
+                ],
+            },
+            QualifierGroup {
+                group_id: 3,
+                choices: vec!["AXES".to_string(), "NOAXES".to_string()],
+            },
+            QualifierGroup {
+                group_id: 4,
+                choices: vec!["FULLSCREEN".to_string(), "NOFULLSCREEN".to_string()],
+            },
+            QualifierGroup {
+                group_id: 5,
+                choices: vec!["LABELS".to_string(), "NOLABELS".to_string()],
+            },
+            QualifierGroup {
+                group_id: 6,
+                choices: vec!["TITLE".to_string(), "NOTITLE".to_string()],
+            },
+            QualifierGroup {
+                group_id: 7,
+                choices: vec!["BAR".to_string(), "NOBAR".to_string()],
+            },
+            QualifierGroup {
+                group_id: 8,
+                choices: vec!["SCRIPT".to_string(), "NOSCRIPT".to_string()],
+            },
+            QualifierGroup {
+                group_id: 9,
+                choices: vec!["FIGURE".to_string()],
+            },
+            QualifierGroup {
+                group_id: 10,
+                choices: vec!["BACKGROUND".to_string()],
+            },
+            QualifierGroup {
+                group_id: 11,
+                choices: vec!["UP".to_string()],
+            },
+        ]),
+        "READ" => Some(vec![
+            QualifierGroup {
+                group_id: 1,
+                choices: vec!["1D".to_string(), "2D".to_string(), "3D".to_string()],
+            },
+            QualifierGroup {
+                group_id: 2,
+                choices: vec![
+                    "FORMATTED".to_string(),
+                    "UNFORMATTED".to_string(),
+                    "BINARY".to_string(),
+                    "IEEE_DP".to_string(),
+                ],
+            },
+            QualifierGroup {
+                group_id: 3,
+                choices: vec!["PLANES".to_string(), "WHOLE".to_string()],
+            },
+            QualifierGroup {
+                group_id: 4,
+                choices: vec!["JACOBIAN".to_string(), "NOJACOBIAN".to_string()],
+            },
+            QualifierGroup {
+                group_id: 5,
+                choices: vec!["BLANK".to_string(), "NOBLANK".to_string()],
+            },
+            QualifierGroup {
+                group_id: 6,
+                choices: vec!["CHECK".to_string(), "NOCHECK".to_string()],
+            },
+            QualifierGroup {
+                group_id: 7,
+                choices: vec!["XYZ".to_string()],
+            },
+            QualifierGroup {
+                group_id: 8,
+                choices: vec!["Q".to_string()],
+            },
+            QualifierGroup {
+                group_id: 9,
+                choices: vec!["FUNCTION".to_string()],
+            },
+            QualifierGroup {
+                group_id: 10,
+                choices: vec!["MDATASET".to_string()],
+            },
+            QualifierGroup {
+                group_id: 11,
+                choices: vec!["MGRID".to_string()],
+            },
+            QualifierGroup {
+                group_id: 12,
+                choices: vec!["CGNS".to_string()],
+            },
+        ]),
+        "LIST" => Some(vec![
+            QualifierGroup {
+                group_id: 1,
+                choices: vec![
+                    "FORMATTED".to_string(),
+                    "UNFORMATTED".to_string(),
+                    "BINARY".to_string(),
+                    "TEXT".to_string(),
+                    "IEEE_DP".to_string(),
+                ],
+            },
+            QualifierGroup {
+                group_id: 2,
+                choices: vec!["OUTPUT".to_string()],
+            },
+            QualifierGroup {
+                group_id: 3,
+                choices: vec!["CGNS".to_string()],
+            },
+        ]),
+        "WALLS" | "SUBSETS" => Some(vec![
+            QualifierGroup {
+                group_id: 1,
+                choices: vec!["GRID".to_string()],
+            },
+            QualifierGroup {
+                group_id: 2,
+                choices: vec!["ADD".to_string()],
+            },
+            QualifierGroup {
+                group_id: 3,
+                choices: vec!["ATTRIBUTES".to_string(), "NOATTRIBUTES".to_string()],
+            },
+            QualifierGroup {
+                group_id: 4,
+                choices: vec!["ALL".to_string(), "NONE".to_string()],
+            },
+        ]),
+        "MINMAX" => Some(vec![
+            QualifierGroup {
+                group_id: 1,
+                choices: vec!["X".to_string(), "NOX".to_string()],
+            },
+            QualifierGroup {
+                group_id: 2,
+                choices: vec!["Y".to_string(), "NOY".to_string()],
+            },
+            QualifierGroup {
+                group_id: 3,
+                choices: vec!["Z".to_string(), "NOZ".to_string()],
+            },
+            QualifierGroup {
+                group_id: 4,
+                choices: vec!["INCREM".to_string()],
+            },
+            QualifierGroup {
+                group_id: 5,
+                choices: vec!["XSCALE".to_string()],
+            },
+            QualifierGroup {
+                group_id: 6,
+                choices: vec!["YSCALE".to_string()],
+            },
+            QualifierGroup {
+                group_id: 7,
+                choices: vec!["ZSCALE".to_string()],
+            },
+        ]),
+        "FSURFACE" => Some(vec![
+            QualifierGroup {
+                group_id: 1,
+                choices: vec!["SCALE_FACTOR".to_string()],
+            },
+            QualifierGroup {
+                group_id: 2,
+                choices: vec!["WALLS_ORIGIN".to_string()],
+            },
+            QualifierGroup {
+                group_id: 3,
+                choices: vec!["CONTOUR".to_string(), "GRID".to_string()],
+            },
+        ]),
+        "VECTORS" => Some(vec![
+            QualifierGroup {
+                group_id: 1,
+                choices: vec![
+                    "SCALAR_FUNCTION".to_string(),
+                    "NOSCALAR_FUNCTION".to_string(),
+                ],
+            },
+            QualifierGroup {
+                group_id: 2,
+                choices: vec!["LENGTH_SCALE".to_string()],
+            },
+            QualifierGroup {
+                group_id: 3,
+                choices: vec!["ATTRIBUTES".to_string(), "NOATTRIBUTES".to_string()],
+            },
+        ]),
+        "RAKES" => Some(vec![
+            QualifierGroup {
+                group_id: 1,
+                choices: vec!["IJK".to_string(), "XYZ".to_string()],
+            },
+            QualifierGroup {
+                group_id: 2,
+                choices: vec!["ADD".to_string()],
+            },
+            QualifierGroup {
+                group_id: 3,
+                choices: vec!["ATTRIBUTES".to_string(), "NOATTRIBUTES".to_string()],
+            },
+            QualifierGroup {
+                group_id: 4,
+                choices: vec!["READ".to_string(), "WRITE".to_string()],
+            },
+            QualifierGroup {
+                group_id: 5,
+                choices: vec![
+                    "+TIME".to_string(),
+                    "-TIME".to_string(),
+                    "+-TIME".to_string(),
+                ],
+            },
+            QualifierGroup {
+                group_id: 6,
+                choices: vec!["MAXPOINTS".to_string()],
+            },
+            QualifierGroup {
+                group_id: 7,
+                choices: vec![
+                    "SCALAR_FUNCTION".to_string(),
+                    "NOSCALAR_FUNCTION".to_string(),
+                ],
+            },
+        ]),
+        _ => None,
+    }
+}
+
+/// Check if a qualifier belongs to any group for a command
+#[allow(dead_code)]
+fn find_qualifier_group(command: &str, qualifier_name: &str) -> Option<u32> {
+    get_qualifier_groups(command).and_then(|groups| {
+        groups.iter().find_map(|group| {
+            if group.choices.iter().any(|c| c == qualifier_name) {
+                Some(group.group_id)
+            } else {
+                None
+            }
+        })
+    })
+}
+
+/// Store parsed qualifiers with their group ID for enforcement
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+struct ParsedQualifier {
+    name: String,
+    value: Option<String>,
+    group_id: Option<u32>,
+}
+
+fn resolve_qualifier_abbrev(abbrev: &str, known: &[&str]) -> String {
+    resolve_qualifier_abbrev_with_status(abbrev, known).name
 }
 
 fn parse_tuple_numbers(token: &str) -> Option<Vec<f64>> {
@@ -2950,11 +3741,14 @@ const KNOWN_COMMANDS: &[&str] = &[
     "HELP", "LIST", "MAP", "CLEAR", "EXIT", "QUIT", "VECTORS", "RAKES", "AUTOMM",
 ];
 
-fn resolve_command_alias(command: &str) -> String {
+fn resolve_command_alias_with_status(command: &str) -> ResolveResult {
     let upper = command.to_uppercase();
     // Exact match first
     if KNOWN_COMMANDS.contains(&upper.as_str()) {
-        return upper;
+        return ResolveResult {
+            name: upper,
+            status: ResolveStatus::Exact,
+        };
     }
     // Unique prefix match.
     let matches: Vec<&&str> = KNOWN_COMMANDS
@@ -2962,9 +3756,25 @@ fn resolve_command_alias(command: &str) -> String {
         .filter(|c| c.starts_with(upper.as_str()))
         .collect();
     if matches.len() == 1 {
-        return matches[0].to_string();
+        return ResolveResult {
+            name: matches[0].to_string(),
+            status: ResolveStatus::Unique,
+        };
     }
-    upper
+    if matches.len() > 1 {
+        return ResolveResult {
+            name: upper.clone(),
+            status: ResolveStatus::Ambiguous,
+        };
+    }
+    ResolveResult {
+        name: upper,
+        status: ResolveStatus::NoMatch,
+    }
+}
+
+fn resolve_command_alias(command: &str) -> String {
+    resolve_command_alias_with_status(command).name
 }
 
 fn strip_comments(line: &str) -> String {
@@ -5131,4 +5941,568 @@ fn contours_multiple_attribute_qualifiers_warns_and_uses_last() {
         }),
         "expected COLOR attribute to be used (last one)"
     );
+}
+
+#[test]
+fn contours_ambiguous_mode_qualifier_warns() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("contours_ambig.com");
+    // /A is ambiguous (AUTOMATIC vs ATTRIBUTES)
+    fs::write(&file, "CONTOURS /A 20\n").expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+    let warnings: Vec<_> = parsed
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == DiagnosticSeverity::Warning)
+        .collect();
+
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.message.contains("Ambiguous") || w.message.contains("Unknown")),
+        "expected warning about ambiguous/unknown qualifier; got {:?}",
+        warnings.iter().map(|w| &w.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn contours_conflicting_mode_qualifiers_warns() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("contours_conflict.com");
+    // AUTOMATIC and INCREMENT are mutually exclusive
+    fs::write(&file, "CONTOURS /AUTOMATIC 20 /INCREMENT 0.1\n").expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+    let warnings: Vec<_> = parsed
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == DiagnosticSeverity::Warning)
+        .collect();
+
+    assert!(
+        warnings.iter().any(|w| w.message.contains("Conflicting")),
+        "expected warning about conflicting qualifiers; got {:?}",
+        warnings.iter().map(|w| &w.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn vpoint_extra_positional_arguments_warns() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("vpoint_extra.com");
+    fs::write(&file, "VPOINT 1.0 2.0 3.0 4.0 5.0\n").expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+    let warnings: Vec<_> = parsed
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == DiagnosticSeverity::Warning)
+        .collect();
+
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.message.contains("extra argument")),
+        "expected warning about extra arguments; got {:?}",
+        warnings.iter().map(|w| &w.message).collect::<Vec<_>>()
+    );
+
+    // Should still create a valid action with first 3 args
+    assert!(
+        parsed
+            .actions
+            .iter()
+            .any(|a| matches!(a, PlotAction::SetViewpoint(_))),
+        "expected SetViewpoint action to be created"
+    );
+}
+
+#[test]
+fn vpoint_qualifier_group_enforced() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("vpoint_groups.com");
+    // XYZ and ANGLES are in the same group (mutually exclusive)
+    fs::write(&file, "VPOINT/XYZ/ANGLES 1.0 2.0 3.0\n").expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+    let warnings: Vec<_> = parsed
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == DiagnosticSeverity::Warning)
+        .collect();
+
+    assert!(
+        warnings.iter().any(|w| w.message.contains("Conflicting")),
+        "expected warning about conflicting qualifiers; got {:?}",
+        warnings.iter().map(|w| &w.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn plot_ambiguous_dimension_qualifier_warns() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("plot_ambig.com");
+    // /L is ambiguous (LABELS vs LINE)
+    fs::write(&file, "PLOT /L\n").expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+    let warnings: Vec<_> = parsed
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == DiagnosticSeverity::Warning)
+        .collect();
+
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.message.contains("Ambiguous") || w.message.contains("Unknown")),
+        "expected warning about ambiguous/unknown qualifier; got {:?}",
+        warnings.iter().map(|w| &w.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn plot_extra_positional_arguments_warns() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("plot_extra.com");
+    fs::write(&file, "PLOT EXTRA_ARG ANOTHER\n").expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+    let warnings: Vec<_> = parsed
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == DiagnosticSeverity::Warning)
+        .collect();
+
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.message.contains("positional argument")),
+        "expected warning about positional arguments; got {:?}",
+        warnings.iter().map(|w| &w.message).collect::<Vec<_>>()
+    );
+
+    // Should still create plot action
+    assert!(
+        parsed
+            .actions
+            .iter()
+            .any(|a| matches!(a, PlotAction::CommitPlot)),
+        "expected CommitPlot action"
+    );
+}
+
+#[test]
+fn plot_conflicting_dimension_qualifiers_warns() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("plot_conflict.com");
+    // 2D and 3D are in same group (mutually exclusive)
+    fs::write(&file, "PLOT /2D /3D\n").expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+    let warnings: Vec<_> = parsed
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == DiagnosticSeverity::Warning)
+        .collect();
+
+    assert!(
+        warnings.iter().any(|w| w.message.contains("Conflicting")),
+        "expected warning about conflicting qualifiers; got {:?}",
+        warnings.iter().map(|w| &w.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn read_ambiguous_dimensionality_qualifier_warns() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("read_ambig.com");
+    // /B is ambiguous (BINARY vs BLANK)
+    fs::write(&file, "READ /B grid.p3d\n").expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+    let warnings: Vec<_> = parsed
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == DiagnosticSeverity::Warning)
+        .collect();
+
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.message.contains("Ambiguous") || w.message.contains("Unknown")),
+        "expected warning about ambiguous/unknown qualifier; got {:?}",
+        warnings.iter().map(|w| &w.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn read_extra_positional_arguments_warns() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("read_extra.com");
+    fs::write(&file, "READ grid.p3d sol.q extra.txt more.txt\n").expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+    let warnings: Vec<_> = parsed
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == DiagnosticSeverity::Warning)
+        .collect();
+
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.message.contains("extra argument")),
+        "expected warning about extra arguments; got {:?}",
+        warnings.iter().map(|w| &w.message).collect::<Vec<_>>()
+    );
+
+    // Should still create a valid action with first 2 args
+    assert!(
+        parsed
+            .actions
+            .iter()
+            .any(|a| matches!(a, PlotAction::SetDataset(_))),
+        "expected SetDataset action"
+    );
+}
+
+#[test]
+fn read_conflicting_format_qualifiers_warns() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("read_conflict.com");
+    // FORMATTED and BINARY are in same group (mutually exclusive)
+    fs::write(&file, "READ /FORMATTED /BINARY grid.p3d\n").expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+    let warnings: Vec<_> = parsed
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == DiagnosticSeverity::Warning)
+        .collect();
+
+    assert!(
+        warnings.iter().any(|w| w.message.contains("Conflicting")),
+        "expected warning about conflicting qualifiers; got {:?}",
+        warnings.iter().map(|w| &w.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn minmax_conflicting_axis_qualifiers_warn() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("minmax_conflict.com");
+    fs::write(&file, "MINMAX /X /NOX -1 1\n").expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+    let warnings: Vec<_> = parsed
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == DiagnosticSeverity::Warning)
+        .collect();
+
+    assert!(
+        warnings.iter().any(|w| w.message.contains("Conflicting")),
+        "expected warning about conflicting qualifiers; got {:?}",
+        warnings.iter().map(|w| &w.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn minmax_ambiguous_qualifier_warns() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("minmax_ambig.com");
+    // /N is ambiguous (NOX, NOY, NOZ)
+    fs::write(&file, "MINMAX /N -1 1\n").expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+    let warnings: Vec<_> = parsed
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == DiagnosticSeverity::Warning)
+        .collect();
+
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.message.contains("Ambiguous") || w.message.contains("Unknown")),
+        "expected warning about ambiguous/unknown qualifier; got {:?}",
+        warnings.iter().map(|w| &w.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn minmax_nox_skips_x_in_positional_mode() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("minmax_nox.com");
+    fs::write(&file, "MINMAX /NOX -2 2 -3 3\n").expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+    assert_eq!(parsed.actions.len(), 1);
+    match &parsed.actions[0] {
+        PlotAction::SetMinMax(mm) => {
+            assert_eq!(mm.x, None);
+            assert_eq!(
+                mm.y,
+                Some(AxisBounds {
+                    min: -2.0,
+                    max: 2.0
+                })
+            );
+            assert_eq!(
+                mm.z,
+                Some(AxisBounds {
+                    min: -3.0,
+                    max: 3.0
+                })
+            );
+        }
+        action => panic!("expected SetMinMax action, got {:?}", action),
+    }
+}
+
+#[test]
+fn minmax_noy_noz_applies_only_x_in_positional_mode() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("minmax_noy_noz.com");
+    fs::write(&file, "MINMAX /NOY /NOZ -1 1 -2 2\n").expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+    assert_eq!(parsed.actions.len(), 1);
+    match &parsed.actions[0] {
+        PlotAction::SetMinMax(mm) => {
+            assert_eq!(
+                mm.x,
+                Some(AxisBounds {
+                    min: -1.0,
+                    max: 1.0
+                })
+            );
+            assert_eq!(mm.y, None);
+            assert_eq!(mm.z, None);
+        }
+        action => panic!("expected SetMinMax action, got {:?}", action),
+    }
+}
+
+#[test]
+fn minmax_nox_overrides_x_axis_qualifier() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("minmax_x_nox.com");
+    fs::write(&file, "MINMAX /X /NOX -1 1\n").expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+    assert_eq!(parsed.actions.len(), 1);
+    match &parsed.actions[0] {
+        PlotAction::SetMinMax(mm) => {
+            assert_eq!(mm.x, None);
+            assert_eq!(mm.y, None);
+            assert_eq!(mm.z, None);
+        }
+        action => panic!("expected SetMinMax action, got {:?}", action),
+    }
+}
+
+#[test]
+fn list_conflicting_format_qualifiers_warns() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("list_conflict.com");
+    fs::write(&file, "LIST /FORMATTED /BINARY XYZ\n").expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+    assert!(parsed
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("Conflicting")));
+}
+
+#[test]
+fn rakes_conflicting_read_write_qualifiers_warn() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("rakes_conflict.com");
+    fs::write(&file, "RAKES /READ=in.rake /WRITE=out.rake\n").expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+    assert!(parsed
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("Conflicting")));
+}
+
+#[test]
+fn vectors_conflicting_scalar_function_qualifiers_warn() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("vectors_conflict.com");
+    fs::write(&file, "VECTORS /SCALAR_FUNCTION=2 /NOSCALAR_FUNCTION\n").expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+    assert!(parsed
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("Conflicting")));
+}
+
+#[test]
+fn function_extra_arguments_warn() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("function_extra.com");
+    fs::write(&file, "FUNCTION 110 999\n").expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+    assert!(parsed
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("extra argument")));
+}
+
+#[test]
+fn view_ambiguous_prefix_warns() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("view_ambig.com");
+    fs::write(&file, "VIEW +\n").expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+    assert!(parsed
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("Ambiguous VIEW argument")));
+}
+
+#[test]
+fn fsurface_conflicting_display_qualifiers_warn() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("fsurface_conflict.com");
+    fs::write(&file, "FSURFACE /CONTOUR /GRID 0.5\n").expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+    assert!(parsed
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("Conflicting")));
+}
+
+#[test]
+fn walls_conflicting_all_none_qualifiers_warn() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("walls_conflict.com");
+    fs::write(&file, "WALLS /ALL /NONE\n").expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+    assert!(parsed
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("Conflicting") || d.message.contains("conflicting")));
+}
+
+#[test]
+fn contours_inline_color_sequence_is_consumed_without_unknown_argument_warnings() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("contours_inline_colors.com");
+    fs::write(
+        &file,
+        "CONTOURS 40 LINES MAGENTA RED YELLOW GREEN CYAN BLUE\n",
+    )
+    .expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+
+    assert!(
+        !parsed
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("Unknown CONTOURS argument")),
+        "unexpected unknown-argument diagnostics: {:?}",
+        parsed
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    );
+
+    assert!(
+        parsed.actions.iter().any(|a| {
+            matches!(
+                a,
+                PlotAction::SetContourSpec(ContourSpec::Automatic { count: 40 })
+            )
+        }),
+        "expected automatic contour count of 40"
+    );
+}
+
+#[test]
+fn minmax_positional_triplet_format_uses_min_max_and_ignores_increment() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("minmax_triplet_positional.com");
+    fs::write(&file, "MINMAX -1.0 1.0 0.1 -2.0 2.0 0.2 -3.0 3.0 0.3\n").expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+    assert_eq!(parsed.actions.len(), 1);
+    match &parsed.actions[0] {
+        PlotAction::SetMinMax(mm) => {
+            assert_eq!(
+                mm.x,
+                Some(AxisBounds {
+                    min: -1.0,
+                    max: 1.0
+                })
+            );
+            assert_eq!(
+                mm.y,
+                Some(AxisBounds {
+                    min: -2.0,
+                    max: 2.0
+                })
+            );
+            assert_eq!(
+                mm.z,
+                Some(AxisBounds {
+                    min: -3.0,
+                    max: 3.0
+                })
+            );
+        }
+        action => panic!("expected SetMinMax action, got {:?}", action),
+    }
+}
+
+#[test]
+fn minmax_axis_qualified_triplet_format_uses_min_max_and_ignores_increment() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("minmax_triplet_axis.com");
+    fs::write(
+        &file,
+        "MINMAX /X /Y /Z -1.0 1.0 0.1 -2.0 2.0 0.2 -3.0 3.0 0.3\n",
+    )
+    .expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+    assert_eq!(parsed.actions.len(), 1);
+    match &parsed.actions[0] {
+        PlotAction::SetMinMax(mm) => {
+            assert_eq!(
+                mm.x,
+                Some(AxisBounds {
+                    min: -1.0,
+                    max: 1.0
+                })
+            );
+            assert_eq!(
+                mm.y,
+                Some(AxisBounds {
+                    min: -2.0,
+                    max: 2.0
+                })
+            );
+            assert_eq!(
+                mm.z,
+                Some(AxisBounds {
+                    min: -3.0,
+                    max: 3.0
+                })
+            );
+        }
+        action => panic!("expected SetMinMax action, got {:?}", action),
+    }
 }
