@@ -1664,15 +1664,22 @@ fn parse_view(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {
 }
 
 fn parse_vpoint(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {
-    // Check for /ANGLES qualifier to determine if spherical or Cartesian
-    const VPOINT_QUALIFIERS: &[&str] = &["XYZ", "ANGLES"];
+    // Accept any unambiguous abbreviation of ANGLES or XYZ as a qualifier
+    const VPOINT_QUALIFIERS: &[&str; 2] = &["XYZ", "ANGLES"];
 
     // Use new validation infrastructure to check for ambiguous/conflicting qualifiers
     let _parsed_quals = validate_qualifiers("VPOINT", args, VPOINT_QUALIFIERS, file, line, out);
 
+    // Accept any unambiguous prefix of ANGLES (e.g., /angle, /ang)
+    fn matches_abbrev(input: &str, target: &str) -> bool {
+        let input = input.to_ascii_uppercase();
+        let target = target.to_ascii_uppercase();
+        target.starts_with(&input) && !input.is_empty()
+    }
+
     let is_spherical = args.iter().any(|arg| {
         if let Some((raw_name, _)) = parse_qualifier(arg) {
-            resolve_qualifier_abbrev(&raw_name, VPOINT_QUALIFIERS) == "ANGLES"
+            matches_abbrev(&raw_name, "ANGLES")
         } else {
             false
         }
@@ -4524,12 +4531,12 @@ mod tests {
         assert_eq!(parsed.actions.len(), 1, "Expected 1 action");
         match &parsed.actions[0] {
             PlotAction::SetViewpoint(vp) => {
-                // φ=45°, θ=45°, r=10 should give approximately (5.0, 5.0, 7.07)
+                // φ=45°, θ=45°, r=10 should give approximately (5.0, 5.0, -7.07)
                 assert!((vp.x - 5.0).abs() < 0.01, "expected x ≈ 5.0, got {}", vp.x);
                 assert!((vp.y - 5.0).abs() < 0.01, "expected y ≈ 5.0, got {}", vp.y);
                 assert!(
-                    (vp.z - 7.07).abs() < 0.01,
-                    "expected z ≈ 7.07, got {}",
+                    (vp.z + 7.07).abs() < 0.01,
+                    "expected z ≈ -7.07, got {}",
                     vp.z
                 );
             }
@@ -4572,8 +4579,8 @@ mod tests {
                 assert!(vp.x.abs() < 1e-10, "x should be 0.0, got {}", vp.x);
                 assert!(vp.y.abs() < 1e-10, "y should be 0.0, got {}", vp.y);
                 assert!(
-                    (vp.z - 10.0).abs() < 1e-10,
-                    "z should be 10.0, got {}",
+                    (vp.z + 10.0).abs() < 1e-10,
+                    "z should be -10.0, got {}",
                     vp.z
                 );
             }
@@ -5549,15 +5556,15 @@ fn parse_script_with_vpoint_spherical_lookup_from_plot3d_md() {
     assert!(vp.is_some(), "expected SetViewpoint action");
 
     let vp = vp.unwrap();
-    // φ=30°, θ=45°, r=10 should give approximately (6.1, 3.5, 7.07)
+    // φ=30°, θ=45°, r=10 should give approximately (6.1, 3.5, -7.07)
     assert!(
         (vp.x - 6.1).abs() < 0.2,
         "x from spherical(30,45,10) should be ~6.1, got {}",
         vp.x
     );
     assert!(
-        (vp.z - 7.07).abs() < 0.1,
-        "z from spherical(30,45,10) should be ~7.07, got {}",
+        (vp.z + 7.07).abs() < 0.1,
+        "z from spherical(30,45,10) should be ~-7.07, got {}",
         vp.z
     );
 }

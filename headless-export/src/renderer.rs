@@ -30,24 +30,21 @@ fn draw_wall_overlays(
     slab_h: usize,
     state: &PlotState,
     margin: u32,
+    view_bounds: Option<(f32, f32, f32, f32)>,
     warnings: &mut Vec<String>,
 ) {
     if state.walls.is_empty() || slab_w == 0 || slab_h == 0 || uvs.is_empty() {
         return;
     }
 
-    let (min_u, max_u, min_v, max_v) = bbox(uvs);
-    let range_u = (max_u - min_u).max(1e-20);
-    let range_v = (max_v - min_v).max(1e-20);
-    let draw_w = img.width().saturating_sub(2 * margin) as f32;
-    let draw_h = img.height().saturating_sub(2 * margin) as f32;
-    if draw_w <= 0.0 || draw_h <= 0.0 {
+    let bounds = view_bounds.unwrap_or_else(|| bbox(uvs));
+    let Some(tf) = build_uv_screen_transform(img.width(), img.height(), margin, bounds) else {
         return;
-    }
+    };
 
     let uv_to_screen = |u: f32, v: f32| -> (i32, i32) {
-        let x = margin as f32 + (u - min_u) / range_u * draw_w;
-        let y = margin as f32 + (v - min_v) / range_v * draw_h;
+        let x = tf.origin_x + (u - tf.min_u) * tf.scale;
+        let y = tf.origin_y + (v - tf.min_v) * tf.scale;
         (x.round() as i32, y.round() as i32)
     };
 
@@ -108,6 +105,7 @@ fn draw_vector_overlays(
     snap: &SolutionSnapshot,
     state: &PlotState,
     margin: u32,
+    view_bounds: Option<(f32, f32, f32, f32)>,
     warnings: &mut Vec<String>,
 ) {
     let Some(vectors) = &state.vectors else {
@@ -288,19 +286,15 @@ fn draw_vector_overlays(
         return;
     }
 
-    let (min_u, max_u, min_v, max_v) = bbox(uvs);
-    let range_u = (max_u - min_u).max(1e-20);
-    let range_v = (max_v - min_v).max(1e-20);
-    let draw_w = img.width().saturating_sub(2 * margin) as f32;
-    let draw_h = img.height().saturating_sub(2 * margin) as f32;
-    if draw_w <= 0.0 || draw_h <= 0.0 {
+    let bounds = view_bounds.unwrap_or_else(|| bbox(uvs));
+    let Some(tf) = build_uv_screen_transform(img.width(), img.height(), margin, bounds) else {
         return;
-    }
+    };
 
     let uv_to_screen = |u: f32, v: f32| -> (f32, f32) {
         (
-            margin as f32 + (u - min_u) / range_u * draw_w,
-            margin as f32 + (v - min_v) / range_v * draw_h,
+            tf.origin_x + (u - tf.min_u) * tf.scale,
+            tf.origin_y + (v - tf.min_v) * tf.scale,
         )
     };
 
@@ -404,6 +398,7 @@ fn draw_rake_overlays(
     snap: &SolutionSnapshot,
     state: &PlotState,
     margin: u32,
+    view_bounds: Option<(f32, f32, f32, f32)>,
     warnings: &mut Vec<String>,
 ) {
     let Some(rakes) = &state.rakes else {
@@ -575,19 +570,15 @@ fn draw_rake_overlays(
         return;
     }
 
-    let (min_u, max_u, min_v, max_v) = bbox(uvs);
-    let range_u = (max_u - min_u).max(1e-20);
-    let range_v = (max_v - min_v).max(1e-20);
-    let draw_w = img.width().saturating_sub(2 * margin) as f32;
-    let draw_h = img.height().saturating_sub(2 * margin) as f32;
-    if draw_w <= 0.0 || draw_h <= 0.0 {
+    let bounds = view_bounds.unwrap_or_else(|| bbox(uvs));
+    let Some(tf) = build_uv_screen_transform(img.width(), img.height(), margin, bounds) else {
         return;
-    }
+    };
 
     let uv_to_screen = |u: f32, v: f32| -> (f32, f32) {
         (
-            margin as f32 + (u - min_u) / range_u * draw_w,
-            margin as f32 + (v - min_v) / range_v * draw_h,
+            tf.origin_x + (u - tf.min_u) * tf.scale,
+            tf.origin_y + (v - tf.min_v) * tf.scale,
         )
     };
 
@@ -990,7 +981,9 @@ pub fn render_multigrid_walls(
         return;
     }
 
-    let (min_u, max_u, min_v, max_v) = bbox(&points);
+    let (min_u, max_u, min_v, max_v) =
+        projected_minmax_bbox(state, camera, is_swapped_plane_view(state.axis_view))
+            .unwrap_or_else(|| bbox(&points));
     let range_u = (max_u - min_u).max(1e-20);
     let range_v = (max_v - min_v).max(1e-20);
     let draw_w = img.width().saturating_sub(2 * margin) as f32;
@@ -999,9 +992,16 @@ pub fn render_multigrid_walls(
         return;
     }
 
+    // Preserve isotropic scale so projected unit lengths are equal in U and V.
+    let scale = (draw_w / range_u).min(draw_h / range_v);
+    let used_w = range_u * scale;
+    let used_h = range_v * scale;
+    let pad_x = 0.5 * (draw_w - used_w).max(0.0);
+    let pad_y = 0.5 * (draw_h - used_h).max(0.0);
+
     let uv_to_screen = |u: f32, v: f32| -> (i32, i32) {
-        let x = margin as f32 + (u - min_u) / range_u * draw_w;
-        let y = margin as f32 + (v - min_v) / range_v * draw_h;
+        let x = margin as f32 + pad_x + (u - min_u) * scale;
+        let y = margin as f32 + pad_y + (v - min_v) * scale;
         (x.round() as i32, y.round() as i32)
     };
 
@@ -1196,15 +1196,23 @@ pub fn render_multigrid_subsets(
         return;
     }
 
-    let (min_u, max_u, min_v, max_v) = bbox(&all_uv);
+    let (min_u, max_u, min_v, max_v) =
+        projected_minmax_bbox(state, camera, swap).unwrap_or_else(|| bbox(&all_uv));
     let range_u = (max_u - min_u).max(1e-20);
     let range_v = (max_v - min_v).max(1e-20);
     let field_range = (field_max - field_min).max(1e-20);
 
+    // Preserve isotropic scale so projected unit lengths are equal in U and V.
+    let scale = (draw_w / range_u).min(draw_h / range_v);
+    let used_w = range_u * scale;
+    let used_h = range_v * scale;
+    let pad_x = 0.5 * (draw_w - used_w).max(0.0);
+    let pad_y = 0.5 * (draw_h - used_h).max(0.0);
+
     let uv_to_screen = |u: f32, v: f32| -> (f32, f32) {
         (
-            margin as f32 + (u - min_u) / range_u * draw_w,
-            margin as f32 + (v - min_v) / range_v * draw_h,
+            margin as f32 + pad_x + (u - min_u) * scale,
+            margin as f32 + pad_y + (v - min_v) * scale,
         )
     };
 
@@ -1636,9 +1644,21 @@ pub fn render_snapshot(
             Some(ParticleFunction::ParticleTraces)
         );
 
+        let camera = camera_basis_for_state(state, render_warnings);
+        let view_bounds =
+            projected_minmax_bbox(state, camera, is_swapped_plane_view(state.axis_view));
+
         if !is_particle_mode {
             rasterize_heatmap(
-                img, &uvs, &scalars, slab_w, slab_h, field_min, field_max, margin,
+                img,
+                &uvs,
+                &scalars,
+                slab_w,
+                slab_h,
+                field_min,
+                field_max,
+                margin,
+                view_bounds,
             );
 
             let levels = resolve_contour_levels(&state.contour_spec, field_min, field_max);
@@ -1654,11 +1674,21 @@ pub fn render_snapshot(
                     field_min,
                     field_max,
                     margin,
+                    view_bounds,
                 );
             }
         }
 
-        draw_wall_overlays(img, &uvs, slab_w, slab_h, state, margin, render_warnings);
+        draw_wall_overlays(
+            img,
+            &uvs,
+            slab_w,
+            slab_h,
+            state,
+            margin,
+            view_bounds,
+            render_warnings,
+        );
         draw_vector_overlays(
             img,
             &uvs,
@@ -1667,6 +1697,7 @@ pub fn render_snapshot(
             snapshot,
             state,
             margin,
+            view_bounds,
             render_warnings,
         );
         draw_rake_overlays(
@@ -1677,6 +1708,7 @@ pub fn render_snapshot(
             snapshot,
             state,
             margin,
+            view_bounds,
             render_warnings,
         );
     }
@@ -1794,18 +1826,15 @@ fn render_function_surface(
     let img_w = img.width();
     let img_h = img.height();
     let projected_uv: Vec<(f32, f32)> = projected.iter().map(|p| (p.0, p.1)).collect();
-    let (min_u, max_u, min_v, max_v) = bbox(&projected_uv);
-    let range_u = (max_u - min_u).max(1e-20);
-    let range_v = (max_v - min_v).max(1e-20);
-    let draw_w = img_w.saturating_sub(2 * margin) as f32;
-    let draw_h = img_h.saturating_sub(2 * margin) as f32;
-    if draw_w <= 0.0 || draw_h <= 0.0 {
+    let bounds = projected_minmax_bbox(state, camera, is_swapped_plane_view(state.axis_view))
+        .unwrap_or_else(|| bbox(&projected_uv));
+    let Some(tf) = build_uv_screen_transform(img_w, img_h, margin, bounds) else {
         return;
-    }
+    };
 
     let uv_to_screen = |u: f32, v: f32| -> (f32, f32) {
-        let sx = margin as f32 + (u - min_u) / range_u * draw_w;
-        let sy = margin as f32 + (v - min_v) / range_v * draw_h;
+        let sx = tf.origin_x + (u - tf.min_u) * tf.scale;
+        let sy = tf.origin_y + (v - tf.min_v) * tf.scale;
         (sx, sy)
     };
 
@@ -2250,7 +2279,8 @@ fn camera_basis_for_state(state: &PlotState, warnings: &mut Vec<String>) -> Came
         return if let Some(plot_up) = state.plot_up {
             camera_basis_from_viewpoint(vp, plot_up, true, warnings)
         } else {
-            camera_basis_from_viewpoint_default(vp)
+            // Legacy default for 3D camera orientation is /UP=Z when not overridden.
+            camera_basis_from_viewpoint(vp, PlotUpAxis::PositiveZ, false, warnings)
         };
     }
 
@@ -2810,32 +2840,42 @@ fn rasterize_heatmap(
     field_min: f32,
     field_max: f32,
     margin: u32,
+    view_bounds: Option<(f32, f32, f32, f32)>,
 ) {
     let img_w = img.width();
     let img_h = img.height();
-    let (min_u, max_u, min_v, max_v) = bbox(uvs);
-    let range_u = (max_u - min_u).max(1e-20);
-    let range_v = (max_v - min_v).max(1e-20);
-    let field_range = (field_max - field_min).max(1e-20);
-
-    let draw_w = img_w.saturating_sub(2 * margin) as f32;
-    let draw_h = img_h.saturating_sub(2 * margin) as f32;
-    if draw_w <= 0.0 || draw_h <= 0.0 {
+    let bounds = view_bounds.unwrap_or_else(|| bbox(uvs));
+    let Some(tf) = build_uv_screen_transform(img_w, img_h, margin, bounds) else {
         return;
-    }
+    };
+    let min_u = tf.min_u;
+    let max_u = tf.max_u;
+    let min_v = tf.min_v;
+    let max_v = tf.max_v;
+    let range_u = tf.range_u;
+    let range_v = tf.range_v;
+    let field_range = (field_max - field_min).max(1e-20);
 
     let sw = slab_w as f32;
     let sh = slab_h as f32;
 
     for py in margin..(img_h.saturating_sub(margin)) {
-        let v = min_v + (py - margin) as f32 / draw_h * range_v;
+        let pyf = py as f32;
+        let v = min_v + (pyf - tf.origin_y) / tf.scale;
+        if !(min_v..=max_v).contains(&v) {
+            continue;
+        }
         let fj = ((v - min_v) / range_v * (sh - 1.0)).clamp(0.0, sh - 1.001);
         let j0 = fj.floor() as usize;
         let j1 = (j0 + 1).min(slab_h - 1);
         let jt = fj - j0 as f32;
 
         for px in margin..(img_w.saturating_sub(margin)) {
-            let u = min_u + (px - margin) as f32 / draw_w * range_u;
+            let pxf = px as f32;
+            let u = min_u + (pxf - tf.origin_x) / tf.scale;
+            if !(min_u..=max_u).contains(&u) {
+                continue;
+            }
             let fi = ((u - min_u) / range_u * (sw - 1.0)).clamp(0.0, sw - 1.001);
             let i0 = fi.floor() as usize;
             let i1 = (i0 + 1).min(slab_w - 1);
@@ -2882,23 +2922,19 @@ fn draw_iso_features(
     field_min: f32,
     field_max: f32,
     margin: u32,
+    view_bounds: Option<(f32, f32, f32, f32)>,
 ) {
     let img_w = img.width();
     let img_h = img.height();
-    let (min_u, max_u, min_v, max_v) = bbox(uvs);
-    let range_u = (max_u - min_u).max(1e-20);
-    let range_v = (max_v - min_v).max(1e-20);
+    let bounds = view_bounds.unwrap_or_else(|| bbox(uvs));
+    let Some(tf) = build_uv_screen_transform(img_w, img_h, margin, bounds) else {
+        return;
+    };
     let field_range = (field_max - field_min).max(1e-20);
 
-    let draw_w = img_w.saturating_sub(2 * margin) as f32;
-    let draw_h = img_h.saturating_sub(2 * margin) as f32;
-    if draw_w <= 0.0 || draw_h <= 0.0 {
-        return;
-    }
-
     let uv_to_px = |u: f32, v: f32| -> (i32, i32) {
-        let px = margin as f32 + (u - min_u) / range_u * draw_w;
-        let py = margin as f32 + (v - min_v) / range_v * draw_h;
+        let px = tf.origin_x + (u - tf.min_u) * tf.scale;
+        let py = tf.origin_y + (v - tf.min_v) * tf.scale;
         (px.round() as i32, py.round() as i32)
     };
 
@@ -3082,6 +3118,81 @@ fn bbox(uvs: &[(f32, f32)]) -> (f32, f32, f32, f32) {
     (min_u, max_u, min_v, max_v)
 }
 
+fn projected_minmax_bbox(
+    state: &PlotState,
+    camera: CameraBasis,
+    swap_uv: bool,
+) -> Option<(f32, f32, f32, f32)> {
+    let xb = state.minmax.x.as_ref()?;
+    let yb = state.minmax.y.as_ref()?;
+    let zb = state.minmax.z.as_ref()?;
+
+    let mut uvs = Vec::with_capacity(8);
+    for &x in &[xb.min as f32, xb.max as f32] {
+        for &y in &[yb.min as f32, yb.max as f32] {
+            for &z in &[zb.min as f32, zb.max as f32] {
+                let mut p = project_point((x, y, z), camera);
+                if swap_uv {
+                    p = (p.1, p.0, p.2);
+                }
+                uvs.push((p.0, p.1));
+            }
+        }
+    }
+
+    Some(bbox(&uvs))
+}
+
+struct UvScreenTransform {
+    min_u: f32,
+    max_u: f32,
+    min_v: f32,
+    max_v: f32,
+    range_u: f32,
+    range_v: f32,
+    scale: f32,
+    origin_x: f32,
+    origin_y: f32,
+}
+
+fn build_uv_screen_transform(
+    img_w: u32,
+    img_h: u32,
+    margin: u32,
+    bounds: (f32, f32, f32, f32),
+) -> Option<UvScreenTransform> {
+    let (min_u, max_u, min_v, max_v) = bounds;
+    let range_u = (max_u - min_u).max(1e-20);
+    let range_v = (max_v - min_v).max(1e-20);
+    let draw_w = img_w.saturating_sub(2 * margin) as f32;
+    let draw_h = img_h.saturating_sub(2 * margin) as f32;
+    if draw_w <= 0.0 || draw_h <= 0.0 {
+        return None;
+    }
+
+    let scale = (draw_w / range_u).min(draw_h / range_v);
+    if !scale.is_finite() || scale <= 0.0 {
+        return None;
+    }
+
+    let used_w = range_u * scale;
+    let used_h = range_v * scale;
+    let origin_x = margin as f32 + 0.5 * (draw_w - used_w).max(0.0);
+    let origin_y = margin as f32 + 0.5 * (draw_h - used_h).max(0.0);
+
+    Some(UvScreenTransform {
+        min_u,
+        max_u,
+        min_v,
+        max_v,
+        range_u,
+        range_v,
+        scale,
+        origin_x,
+        origin_y,
+    })
+}
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -3245,6 +3356,7 @@ mod tests {
             0.0,
             2.0,
             0,
+            None,
         );
         // The rendered line must have at least one non-black pixel painted.
         let line_pixels: u32 = img
@@ -3258,6 +3370,22 @@ mod tests {
             })
             .sum();
         assert!(line_pixels > 0, "no contour line pixels painted");
+    }
+
+    #[test]
+    fn uv_screen_transform_preserves_isotropic_scale() {
+        // Wide UV bounds in U and narrow bounds in V should not stretch V.
+        let tf = build_uv_screen_transform(300, 200, 20, (0.0, 20.0, 0.0, 10.0))
+            .expect("transform should be valid");
+
+        // A world-space delta of 1.0 in U and V must map to the same pixel delta.
+        let du_px = (tf.origin_x + (1.0 - tf.min_u) * tf.scale)
+            - (tf.origin_x + (0.0 - tf.min_u) * tf.scale);
+        let dv_px = (tf.origin_y + (1.0 - tf.min_v) * tf.scale)
+            - (tf.origin_y + (0.0 - tf.min_v) * tf.scale);
+
+        assert!((du_px - dv_px).abs() < 1e-6, "isotropic scale violated");
+        assert!((tf.scale - 13.0).abs() < 1e-6, "unexpected fitted scale");
     }
 
     #[test]
@@ -3608,6 +3736,39 @@ mod tests {
         assert!(camera.1 .0 > camera.1 .1);
         assert!(camera.1 .0 > camera.1 .2);
         assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn camera_basis_custom_vpoint_defaults_to_z_up() {
+        let state = PlotState {
+            axis_view: AxisView::Custom,
+            viewpoint: Some(ViewPoint {
+                x: 3.0,
+                y: 2.0,
+                z: 1.0,
+            }),
+            plot_up: None,
+            ..PlotState::default()
+        };
+        let mut warnings = Vec::new();
+        let camera = camera_basis_for_state(&state, &mut warnings);
+        let expected = camera_basis_from_viewpoint(
+            state.viewpoint.as_ref().expect("viewpoint present"),
+            PlotUpAxis::PositiveZ,
+            false,
+            &mut Vec::new(),
+        );
+
+        assert!(warnings.is_empty());
+        assert!((camera.0 .0 - expected.0 .0).abs() < 1e-6);
+        assert!((camera.0 .1 - expected.0 .1).abs() < 1e-6);
+        assert!((camera.0 .2 - expected.0 .2).abs() < 1e-6);
+        assert!((camera.1 .0 - expected.1 .0).abs() < 1e-6);
+        assert!((camera.1 .1 - expected.1 .1).abs() < 1e-6);
+        assert!((camera.1 .2 - expected.1 .2).abs() < 1e-6);
+        assert!((camera.2 .0 - expected.2 .0).abs() < 1e-6);
+        assert!((camera.2 .1 - expected.2 .1).abs() < 1e-6);
+        assert!((camera.2 .2 - expected.2 .2).abs() < 1e-6);
     }
 
     #[test]

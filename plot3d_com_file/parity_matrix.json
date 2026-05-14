@@ -1,6 +1,6 @@
 {
     "schemaVersion": 1,
-    "lastUpdated": "2026-05-13",
+    "lastUpdated": "2026-05-14",
     "parityStates": [
         "supported",
         "script-only",
@@ -30,13 +30,13 @@
             "id": "VPOINT",
             "status": "supported",
             "ticket": "TKT-009",
-            "notes": "VPOINT camera behavior is implemented and covered by translation-layer and parity regression tests."
+            "notes": "VPOINT camera behavior is implemented and covered by translation-layer and parity regression tests. 2026-05-14: parser now accepts unambiguous /ANGLES qualifier abbreviations (e.g., /ANGLE), spherical conversion maps positive theta to legacy display-down Z for parity with reference views, and custom-VPOINT camera default UP is Z when PLOT/UP is unset."
         },
         {
             "id": "MINMAX",
             "status": "supported",
             "ticket": "TKT-002",
-            "notes": "MINMAX is represented in shared PlotState and exercised through parser/executor and GUI parity flows; Phase B hardening added malformed /INC shorthand and incomplete axis-pair diagnostic coverage. 2026-05-13: parser parity updates implemented `NOX/NOY/NOZ` axis-negation semantics and added legacy triplet support (`min max increment`) for both positional and axis-qualified forms while preserving deterministic min/max override behavior."
+            "notes": "MINMAX is represented in shared PlotState and exercised through parser/executor and GUI parity flows; Phase B hardening added malformed /INC shorthand and incomplete axis-pair diagnostic coverage. 2026-05-13: parser parity updates implemented `NOX/NOY/NOZ` axis-negation semantics and added legacy triplet support (`min max increment`) for both positional and axis-qualified forms while preserving deterministic min/max override behavior. 2026-05-14: headless renderer now uses MINMAX as a framing window (projected fit bounds) across render modes without clipping geometry, and applies isotropic UV-to-screen scaling to prevent axis squish."
         },
         {
             "id": "CONTOURS",
