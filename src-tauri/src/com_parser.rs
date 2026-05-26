@@ -1,10 +1,10 @@
 use crate::function_mapping::{map_function_number_to_action, map_legacy_function_number};
 use crate::plot_state::{
-    cap, spherical_to_cartesian, AxisBounds, AxisView, ContourAttribute, ContourEntry, ContourSpec,
-    DatasetRef, Diagnostic, DiagnosticSeverity, FsurfaceSpec, GridSubset, IndexRange,
-    MinMaxOverride, PlotAction, PlotFamily, PlotText, PlotUpAxis, RakeCoordinateMode, RakeIoMode,
-    RakeSettings, RakeTimeMode, ScalarField, VectorSettings, ViewPoint, WallColor, WallRenderMode,
-    WallStyle,
+    cap, spherical_to_cartesian, AutoOrValueF64, AutoOrValueMode, AxisBounds, AxisView,
+    ContourAttribute, ContourEntry, ContourSpec, DatasetRef, Diagnostic, DiagnosticSeverity,
+    FsurfaceDisplayMode, FsurfaceUpdate, GridSubset, IndexRange, MinMaxOverride, PlotAction,
+    PlotFamily, PlotText, PlotUpAxis, RakeCoordinateMode, RakeIoMode, RakeSettings, RakeTimeMode,
+    ScalarField, VectorSettings, ViewPoint, WallColor, WallRenderMode, WallStyle,
 };
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -1828,9 +1828,12 @@ fn normalize_minmax_bounds(
             Some(file.to_string_lossy().to_string()),
             Some(line),
             Some(1),
-            format!("MINMAX {} bounds reversed (min > max); swapping", axis),
+            format!(
+                "MINMAX {} bounds reversed (min > max); preserving input order for axis inversion",
+                axis
+            ),
         ));
-        AxisBounds { min: b, max: a }
+        AxisBounds { min: a, max: b }
     } else {
         AxisBounds { min: a, max: a }
     }
@@ -2582,10 +2585,6 @@ const FSURFACE_QUALIFIERS: &[&str] = &[
     "WALLS_ORIGIN",
     "CONTOUR",
     "GRID",
-    "X",
-    "Y",
-    "Z",
-    "AXIS",
 ];
 
 fn parse_fsurface(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) {
@@ -2596,26 +2595,30 @@ fn parse_fsurface(args: &[String], file: &Path, line: u32, out: &mut ParsedScrip
             Some(file.to_string_lossy().to_string()),
             Some(line),
             Some(1),
-            "FSURFACE currently expects an iso-level value or /NONE; legacy axis-property qualifiers are not implemented in this MVP.",
+            "FSURFACE expects at least one qualifier or positional value.",
         ));
         return;
     }
 
     let _parsed_quals = validate_qualifiers("FSURFACE", args, FSURFACE_QUALIFIERS, file, line, out);
 
-    let mut qualifier_values: HashMap<String, Option<String>> = HashMap::new();
+    let mut qualifier_values: Vec<(String, Option<String>)> = Vec::new();
     let mut positional: Vec<String> = Vec::new();
 
     for arg in args {
         if let Some((raw_name, value)) = parse_qualifier(arg) {
             let name = resolve_qualifier_abbrev(&raw_name, FSURFACE_QUALIFIERS);
-            qualifier_values.insert(name, value);
+            qualifier_values.push((name, value));
         } else {
             positional.push(arg.clone());
         }
     }
 
-    if qualifier_values.contains_key("NONE") || qualifier_values.contains_key("OFF") {
+    let has_none_or_off = qualifier_values
+        .iter()
+        .any(|(name, _)| name == "NONE" || name == "OFF");
+
+    if has_none_or_off {
         if qualifier_values.len() > 1 || !positional.is_empty() {
             out.diagnostics.push(diagnostic(
                 cap::FSURFACE,
@@ -2623,70 +2626,122 @@ fn parse_fsurface(args: &[String], file: &Path, line: u32, out: &mut ParsedScrip
                 Some(file.to_string_lossy().to_string()),
                 Some(line),
                 Some(1),
-                "FSURFACE /NONE or /OFF clears the current bounded-MVP iso-level spec; additional FSURFACE arguments were ignored.",
+                "FSURFACE /NONE or /OFF clears the current spec; additional FSURFACE arguments were ignored.",
             ));
         }
-        out.actions.push(PlotAction::SetFsurface(None));
+        out.actions.push(PlotAction::UpdateFsurface(FsurfaceUpdate {
+            clear_spec: true,
+            ..FsurfaceUpdate::default()
+        }));
         return;
     }
 
-    for qualifier in qualifier_values.keys() {
-        match qualifier.as_str() {
-            "SCALE_FACTOR" => out.diagnostics.push(diagnostic(
-                cap::FSURFACE,
-                DiagnosticSeverity::Warning,
-                Some(file.to_string_lossy().to_string()),
-                Some(line),
-                Some(1),
-                "Legacy FSURFACE /SCALE_FACTOR is not implemented; current FSURFACE stores an iso-level plus FUNCTION (scalar field).",
-            )),
-            "WALLS_ORIGIN" => out.diagnostics.push(diagnostic(
-                cap::FSURFACE,
-                DiagnosticSeverity::Warning,
-                Some(file.to_string_lossy().to_string()),
-                Some(line),
-                Some(1),
-                "Legacy FSURFACE /WALLS_ORIGIN is not implemented; current FSURFACE stores an iso-level plus FUNCTION (scalar field).",
-            )),
-            "GRID" | "CONTOUR" => out.diagnostics.push(diagnostic(
-                cap::FSURFACE,
-                DiagnosticSeverity::Warning,
-                Some(file.to_string_lossy().to_string()),
-                Some(line),
-                Some(1),
-                format!(
-                    "Legacy FSURFACE /{} is not implemented; current FSURFACE stores an iso-level plus FUNCTION (scalar field).",
-                    qualifier
-                ),
-            )),
-            _ => out.diagnostics.push(diagnostic(
-                cap::FSURFACE,
-                DiagnosticSeverity::Warning,
-                Some(file.to_string_lossy().to_string()),
-                Some(line),
-                Some(1),
-                format!("Unknown FSURFACE qualifier '/{}' ignored", qualifier),
-            )),
+    let mut update = FsurfaceUpdate::default();
+    let mut saw_effective_input = false;
+
+    for (name, value) in &qualifier_values {
+        match name.as_str() {
+            "SCALE_FACTOR" => {
+                saw_effective_input = true;
+                let Some(raw) = value.as_ref() else {
+                    out.diagnostics.push(diagnostic(
+                        cap::FSURFACE,
+                        DiagnosticSeverity::Warning,
+                        Some(file.to_string_lossy().to_string()),
+                        Some(line),
+                        Some(1),
+                        "FSURFACE /SCALE_FACTOR requires a value (real or AUTO)",
+                    ));
+                    continue;
+                };
+
+                if raw.eq_ignore_ascii_case("AUTO") {
+                    update.scale_factor = Some(AutoOrValueF64 {
+                        mode: AutoOrValueMode::Auto,
+                        value: 0.0,
+                    });
+                } else if let Some(v) = parse_f64(raw) {
+                    update.scale_factor = Some(AutoOrValueF64 {
+                        mode: AutoOrValueMode::Value,
+                        value: v,
+                    });
+                } else {
+                    out.diagnostics.push(diagnostic(
+                        cap::FSURFACE,
+                        DiagnosticSeverity::Warning,
+                        Some(file.to_string_lossy().to_string()),
+                        Some(line),
+                        Some(1),
+                        format!(
+                            "Invalid FSURFACE /SCALE_FACTOR value '{}'; expected real or AUTO",
+                            raw
+                        ),
+                    ));
+                }
+            }
+            "WALLS_ORIGIN" => {
+                saw_effective_input = true;
+                let Some(raw) = value.as_ref() else {
+                    out.diagnostics.push(diagnostic(
+                        cap::FSURFACE,
+                        DiagnosticSeverity::Warning,
+                        Some(file.to_string_lossy().to_string()),
+                        Some(line),
+                        Some(1),
+                        "FSURFACE /WALLS_ORIGIN requires a value (real or AUTO)",
+                    ));
+                    continue;
+                };
+
+                if raw.eq_ignore_ascii_case("AUTO") {
+                    update.walls_origin = Some(AutoOrValueF64 {
+                        mode: AutoOrValueMode::Auto,
+                        value: 0.0,
+                    });
+                } else if let Some(v) = parse_f64(raw) {
+                    update.walls_origin = Some(AutoOrValueF64 {
+                        mode: AutoOrValueMode::Value,
+                        value: v,
+                    });
+                } else {
+                    out.diagnostics.push(diagnostic(
+                        cap::FSURFACE,
+                        DiagnosticSeverity::Warning,
+                        Some(file.to_string_lossy().to_string()),
+                        Some(line),
+                        Some(1),
+                        format!(
+                            "Invalid FSURFACE /WALLS_ORIGIN value '{}'; expected real or AUTO",
+                            raw
+                        ),
+                    ));
+                }
+            }
+            "CONTOUR" => {
+                saw_effective_input = true;
+                update.display_mode = Some(FsurfaceDisplayMode::Contour);
+            }
+            "GRID" => {
+                saw_effective_input = true;
+                update.display_mode = Some(FsurfaceDisplayMode::Grid);
+            }
+            _ => {
+                out.diagnostics.push(diagnostic(
+                    cap::FSURFACE,
+                    DiagnosticSeverity::Warning,
+                    Some(file.to_string_lossy().to_string()),
+                    Some(line),
+                    Some(1),
+                    format!("Unknown FSURFACE qualifier '/{}' ignored", name),
+                ));
+            }
         }
     }
 
-    if positional.is_empty() {
-        if !qualifier_values.is_empty() {
-            return;
-        }
+    if let Some(value) = positional.first().and_then(|token| parse_f64(token)) {
+        saw_effective_input = true;
+        update.value = Some(value);
 
-        out.diagnostics.push(diagnostic(
-            cap::FSURFACE,
-            DiagnosticSeverity::Warning,
-            Some(file.to_string_lossy().to_string()),
-            Some(line),
-            Some(1),
-            "FSURFACE currently expects an iso-level value or /NONE; legacy axis-property qualifiers are not implemented in this MVP.",
-        ));
-        return;
-    }
-
-    if let Some(value) = parse_f64(&positional[0]) {
         let field = if let Some(number) = positional.get(1).and_then(|s| s.parse::<u16>().ok()) {
             let (mapped, mut diags) = map_legacy_function_number(number);
             for diag in &mut diags {
@@ -2699,6 +2754,7 @@ fn parse_fsurface(args: &[String], file: &Path, line: u32, out: &mut ParsedScrip
         } else {
             ScalarField::Pressure
         };
+        update.scalar_field = Some(field);
 
         if positional.len() > 2 {
             for extra in positional.iter().skip(2) {
@@ -2713,11 +2769,20 @@ fn parse_fsurface(args: &[String], file: &Path, line: u32, out: &mut ParsedScrip
             }
         }
 
-        out.actions.push(PlotAction::SetFsurface(Some(FsurfaceSpec {
-            value,
-            scalar_field: field,
-        })));
-    } else {
+        if positional.get(1).is_some() && positional[1].parse::<u16>().is_err() {
+            out.diagnostics.push(diagnostic(
+                cap::FSURFACE,
+                DiagnosticSeverity::Warning,
+                Some(file.to_string_lossy().to_string()),
+                Some(line),
+                Some(1),
+                format!(
+                    "Invalid FSURFACE FUNCTION selector '{}'; defaulting to pressure",
+                    positional[1]
+                ),
+            ));
+        }
+    } else if !positional.is_empty() {
         out.diagnostics.push(diagnostic(
             cap::FSURFACE,
             DiagnosticSeverity::Warning,
@@ -2725,11 +2790,25 @@ fn parse_fsurface(args: &[String], file: &Path, line: u32, out: &mut ParsedScrip
             Some(line),
             Some(1),
             format!(
-                "Invalid FSURFACE iso-level '{}'; current FSURFACE expects [value [FUNCTION]] or /NONE.",
+                "Invalid FSURFACE value '{}'; expected [value [FUNCTION]] with optional qualifiers.",
                 positional[0]
             ),
         ));
     }
+
+    if !saw_effective_input {
+        out.diagnostics.push(diagnostic(
+            cap::FSURFACE,
+            DiagnosticSeverity::Warning,
+            Some(file.to_string_lossy().to_string()),
+            Some(line),
+            Some(1),
+            "FSURFACE had no valid settings or values to apply.",
+        ));
+        return;
+    }
+
+    out.actions.push(PlotAction::UpdateFsurface(update));
 }
 
 fn parse_walls_or_subsets(
@@ -4386,42 +4465,58 @@ mod tests {
     }
 
     #[test]
-    fn fsurface_legacy_walls_origin_qualifier_emits_divergence_warning() {
+    fn fsurface_walls_origin_numeric_sets_legacy_setting() {
         let dir = tempfile::tempdir().expect("tempdir");
         let file = dir.path().join("fs.com");
         fs::write(&file, "FSURFACE /WALLS_ORIGIN=1\n").expect("write");
 
         let parsed = parse_com_file(&file).expect("parse");
 
-        assert!(parsed.actions.is_empty(), "expected no FSURFACE action");
-        assert!(parsed.diagnostics.iter().any(|d| d
-            .message
-            .contains("Legacy FSURFACE /WALLS_ORIGIN is not implemented")));
+        assert_eq!(parsed.actions.len(), 1);
+        match &parsed.actions[0] {
+            PlotAction::UpdateFsurface(update) => {
+                let walls = update.walls_origin.as_ref().expect("walls origin set");
+                assert_eq!(walls.mode, AutoOrValueMode::Value);
+                assert!((walls.value - 1.0).abs() < 1e-12);
+            }
+            action => panic!("expected UpdateFsurface action, got {:?}", action),
+        }
+        assert!(
+            !parsed
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("not implemented")),
+            "did not expect legacy divergence warnings: {:?}",
+            parsed.diagnostics
+        );
     }
 
     #[test]
-    fn fsurface_numeric_value_with_legacy_qualifier_warns_but_stores_spec() {
+    fn fsurface_numeric_value_with_qualifier_sets_value_field_and_scale() {
         let dir = tempfile::tempdir().expect("tempdir");
         let file = dir.path().join("fs.com");
         fs::write(&file, "FSURFACE /SCALE_FACTOR=2 0.5 154\n").expect("write");
 
         let parsed = parse_com_file(&file).expect("parse");
 
-        assert!(parsed.diagnostics.iter().any(|d| d
-            .message
-            .contains("Legacy FSURFACE /SCALE_FACTOR is not implemented")));
-        // FUNCTION 154 (MachNumber) is now Supported — no unimplemented warning.
-        assert!(!parsed
-            .diagnostics
-            .iter()
-            .any(|d| d.message.contains("recognized but not implemented")));
+        assert!(
+            !parsed
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("not implemented")),
+            "did not expect legacy divergence warnings: {:?}",
+            parsed.diagnostics
+        );
         assert_eq!(parsed.actions.len(), 1);
         match &parsed.actions[0] {
-            PlotAction::SetFsurface(Some(spec)) => {
-                assert!((spec.value - 0.5).abs() < 1e-9);
-                assert_eq!(spec.scalar_field, ScalarField::MachNumber);
+            PlotAction::UpdateFsurface(update) => {
+                assert!((update.value.expect("value") - 0.5).abs() < 1e-9);
+                assert_eq!(update.scalar_field, Some(ScalarField::MachNumber));
+                let scale = update.scale_factor.as_ref().expect("scale factor set");
+                assert_eq!(scale.mode, AutoOrValueMode::Value);
+                assert!((scale.value - 2.0).abs() < 1e-12);
             }
-            action => panic!("expected SetFsurface action, got {:?}", action),
+            action => panic!("expected UpdateFsurface action, got {:?}", action),
         }
     }
 
@@ -4435,9 +4530,12 @@ mod tests {
 
         assert!(parsed.diagnostics.iter().any(|d| d
             .message
-            .contains("FSURFACE /NONE or /OFF clears the current bounded-MVP iso-level spec")));
+            .contains("FSURFACE /NONE or /OFF clears the current spec")));
         assert_eq!(parsed.actions.len(), 1);
-        assert_eq!(parsed.actions[0], PlotAction::SetFsurface(None));
+        match &parsed.actions[0] {
+            PlotAction::UpdateFsurface(update) => assert!(update.clear_spec),
+            action => panic!("expected UpdateFsurface action, got {:?}", action),
+        }
     }
 
     #[test]
@@ -4450,13 +4548,16 @@ mod tests {
 
         assert!(parsed.diagnostics.iter().any(|d| d
             .message
-            .contains("FSURFACE /NONE or /OFF clears the current bounded-MVP iso-level spec")));
+            .contains("FSURFACE /NONE or /OFF clears the current spec")));
         assert_eq!(parsed.actions.len(), 1);
-        assert_eq!(parsed.actions[0], PlotAction::SetFsurface(None));
+        match &parsed.actions[0] {
+            PlotAction::UpdateFsurface(update) => assert!(update.clear_spec),
+            action => panic!("expected UpdateFsurface action, got {:?}", action),
+        }
     }
 
     #[test]
-    fn fsurface_mixed_legacy_qualifiers_with_value_warns_and_sets_spec() {
+    fn fsurface_mixed_legacy_qualifiers_with_value_sets_last_display_mode() {
         let dir = tempfile::tempdir().expect("tempdir");
         let file = dir.path().join("fs.com");
         fs::write(&file, "FSURFACE /GRID /CONTOUR 0.4 110 extra\n").expect("write");
@@ -4465,21 +4566,16 @@ mod tests {
 
         assert!(parsed.diagnostics.iter().any(|d| d
             .message
-            .contains("Legacy FSURFACE /GRID is not implemented")));
-        assert!(parsed.diagnostics.iter().any(|d| d
-            .message
-            .contains("Legacy FSURFACE /CONTOUR is not implemented")));
-        assert!(parsed.diagnostics.iter().any(|d| d
-            .message
             .contains("Extra FSURFACE argument 'extra' ignored")));
 
         assert_eq!(parsed.actions.len(), 1);
         match &parsed.actions[0] {
-            PlotAction::SetFsurface(Some(spec)) => {
-                assert!((spec.value - 0.4).abs() < 1e-9);
-                assert_eq!(spec.scalar_field, ScalarField::Pressure);
+            PlotAction::UpdateFsurface(update) => {
+                assert!((update.value.expect("value") - 0.4).abs() < 1e-9);
+                assert_eq!(update.scalar_field, Some(ScalarField::Pressure));
+                assert_eq!(update.display_mode, Some(FsurfaceDisplayMode::Contour));
             }
-            action => panic!("expected SetFsurface action, got {:?}", action),
+            action => panic!("expected UpdateFsurface action, got {:?}", action),
         }
     }
 
@@ -5376,8 +5472,9 @@ fn text_prompt_lines_are_consumed_as_annotation() {
 
 #[test]
 fn wbt_script_first_plot_setup_matches_legacy_intent() {
-    let file = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../demo/wbt/wbt.com");
-    let parsed = parse_com_file(&file).expect("parse wbt.com");
+    let file =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../demo/wbt/wbt_full.com");
+    let parsed = parse_com_file(&file).expect("parse wbt_full.com");
     let result = crate::execute_parsed_script(crate::PlotState::default(), &parsed);
 
     assert!(
@@ -5742,28 +5839,28 @@ fn empty_script_produces_no_actions_and_no_errors() {
 // ===== Phase 7 Edge-Case Hardening Tests =====
 
 #[test]
-fn minmax_reversed_bounds_are_swapped_with_warning() {
+fn minmax_reversed_bounds_are_preserved_with_warning() {
     let dir = tempfile::tempdir().expect("tempdir");
     let file = dir.path().join("minmax_reversed.com");
     fs::write(&file, "MINMAX 100.0 50.0\n").expect("write");
 
     let parsed = parse_com_file(&file).expect("parse");
 
-    // Check that we got a swap warning
+    // Check that we got a reversed-bounds warning.
     assert!(
         parsed
             .diagnostics
             .iter()
-            .any(|d| d.message.contains("reversed") && d.message.contains("swapping")),
+            .any(|d| d.message.contains("reversed") && d.message.contains("preserving")),
         "expected reversed bounds warning"
     );
 
-    // Check that the SetMinMax action has correct swapped bounds
+    // Check that the SetMinMax action preserves the authored axis order.
     assert!(
         parsed.actions.iter().any(|action| {
             if let PlotAction::SetMinMax(mm) = action {
                 if let Some(bounds) = &mm.x {
-                    bounds.min == 50.0 && bounds.max == 100.0
+                    bounds.min == 100.0 && bounds.max == 50.0
                 } else {
                     false
                 }
@@ -5771,7 +5868,7 @@ fn minmax_reversed_bounds_are_swapped_with_warning() {
                 false
             }
         }),
-        "expected swapped X bounds (50..100)"
+        "expected preserved X bounds (100..50)"
     );
 }
 

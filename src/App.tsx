@@ -2654,7 +2654,7 @@ const App = () => {
                   <div style={{ marginTop: '10px', background: '#0b1120', padding: '10px', borderRadius: '8px', fontSize: '11px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
                     <div style={{ fontWeight: 600 }}>FSURFACE</div>
                     <div style={{ fontSize: '10px', color: '#94a3b8' }}>
-                      Legacy note: this control currently sets an iso-level plus scalar field, not full legacy FSURFACE axis-property semantics.
+                      This panel sets FSURFACE value + scalar field; script execution also supports legacy FSURFACE qualifiers like SCALE_FACTOR, WALLS_ORIGIN, and CONTOUR/GRID.
                     </div>
                     <label style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                       <input

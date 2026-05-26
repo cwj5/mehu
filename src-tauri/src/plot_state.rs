@@ -386,7 +386,10 @@ pub enum PlotUpAxis {
 // MINMAX overrides
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// Inclusive axis bounds; `min` must be strictly less than `max`.
+/// Inclusive axis bounds.
+///
+/// `min` and `max` may be provided in either order to represent an
+/// intentionally inverted axis orientation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AxisBounds {
     pub min: f64,
@@ -467,13 +470,68 @@ pub struct GridSubset {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FsurfaceSpec {
-    /// Current bounded-MVP FSURFACE representation.
+    /// FSURFACE numeric payload used by script and GUI flows.
     ///
-    /// This stores an absolute iso-level plus FUNCTION (scalar field) selection,
-    /// not the full legacy FSURFACE axis-property controls such as
-    /// SCALE_FACTOR, WALLS_ORIGIN, or GRID/CONTOUR behavior.
+    /// Legacy axis-property qualifiers (SCALE_FACTOR, WALLS_ORIGIN,
+    /// CONTOUR/GRID) are represented separately in `FsurfaceSettings`.
     pub value: f64,
     pub scalar_field: ScalarField,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoOrValueMode {
+    #[default]
+    Auto,
+    Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AutoOrValueF64 {
+    pub mode: AutoOrValueMode,
+    pub value: f64,
+}
+
+impl Default for AutoOrValueF64 {
+    fn default() -> Self {
+        Self {
+            mode: AutoOrValueMode::Auto,
+            value: 0.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FsurfaceDisplayMode {
+    Contour,
+    Grid,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct FsurfaceSettings {
+    #[serde(default)]
+    pub scale_factor: AutoOrValueF64,
+    #[serde(default)]
+    pub walls_origin: AutoOrValueF64,
+    #[serde(default)]
+    pub display_mode: Option<FsurfaceDisplayMode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct FsurfaceUpdate {
+    #[serde(default)]
+    pub clear_spec: bool,
+    #[serde(default)]
+    pub value: Option<f64>,
+    #[serde(default)]
+    pub scalar_field: Option<ScalarField>,
+    #[serde(default)]
+    pub scale_factor: Option<AutoOrValueF64>,
+    #[serde(default)]
+    pub walls_origin: Option<AutoOrValueF64>,
+    #[serde(default)]
+    pub display_mode: Option<FsurfaceDisplayMode>,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -721,6 +779,8 @@ pub struct PlotState {
 
     // FSURFACE
     pub fsurface: Option<FsurfaceSpec>,
+    #[serde(default)]
+    pub fsurface_settings: FsurfaceSettings,
 
     // TEXT
     pub text_annotations: Vec<PlotText>,
@@ -804,8 +864,11 @@ pub enum PlotAction {
     // SUBSETS/ADD: append entries to the existing subsets list.
     AddSubsets(Vec<GridSubset>),
 
-    // FSURFACE: set or clear the bounded-MVP iso-level + FUNCTION spec.
+    // FSURFACE: set or clear the numeric value + FUNCTION payload.
     SetFsurface(Option<FsurfaceSpec>),
+    // FSURFACE: update legacy axis-property controls and optional iso spec
+    // fields in a single command.
+    UpdateFsurface(FsurfaceUpdate),
 
     // TEXT: append a text annotation.
     AddTextAnnotation(PlotText),
@@ -1008,22 +1071,23 @@ pub fn apply_action(mut state: PlotState, action: PlotAction) -> (PlotState, Vec
         }
 
         PlotAction::SetMinMax(mm) => {
-            let mut apply_axis =
-                |label: &str, bounds: Option<AxisBounds>, dest: &mut Option<AxisBounds>| {
-                    if let Some(ref b) = bounds {
-                        if b.min >= b.max {
-                            diags.push(Diagnostic::warning(
+            let mut apply_axis = |label: &str,
+                                  bounds: Option<AxisBounds>,
+                                  dest: &mut Option<AxisBounds>| {
+                if let Some(ref b) = bounds {
+                    if b.min == b.max {
+                        diags.push(Diagnostic::warning(
                                 cap::MINMAX,
                                 format!(
-                                "MINMAX {label}-axis min ({}) must be less than max ({}); ignored",
-                                b.min, b.max
+                                "MINMAX {label}-axis bounds are degenerate (min == max == {}); ignored",
+                                b.min
                             ),
                             ));
-                            return;
-                        }
+                        return;
                     }
-                    *dest = bounds;
-                };
+                }
+                *dest = bounds;
+            };
             apply_axis("x", mm.x, &mut state.minmax.x);
             apply_axis("y", mm.y, &mut state.minmax.y);
             apply_axis("z", mm.z, &mut state.minmax.z);
@@ -1075,6 +1139,36 @@ pub fn apply_action(mut state: PlotState, action: PlotAction) -> (PlotState, Vec
 
         PlotAction::SetFsurface(fs) => {
             state.fsurface = fs;
+        }
+
+        PlotAction::UpdateFsurface(update) => {
+            if update.clear_spec {
+                state.fsurface = None;
+            }
+
+            if let Some(scale_factor) = update.scale_factor {
+                state.fsurface_settings.scale_factor = scale_factor;
+            }
+            if let Some(walls_origin) = update.walls_origin {
+                state.fsurface_settings.walls_origin = walls_origin;
+            }
+            if let Some(display_mode) = update.display_mode {
+                state.fsurface_settings.display_mode = Some(display_mode);
+            }
+
+            if update.value.is_some() || update.scalar_field.is_some() {
+                let mut spec = state.fsurface.clone().unwrap_or(FsurfaceSpec {
+                    value: 0.0,
+                    scalar_field: ScalarField::Pressure,
+                });
+                if let Some(v) = update.value {
+                    spec.value = v;
+                }
+                if let Some(field) = update.scalar_field {
+                    spec.scalar_field = field;
+                }
+                state.fsurface = Some(spec);
+            }
         }
 
         PlotAction::AddTextAnnotation(text) => {
@@ -1349,19 +1443,16 @@ mod tests {
     }
 
     #[test]
-    fn set_minmax_rejects_inverted_range() {
+    fn set_minmax_accepts_inverted_range_for_axis_flip() {
         let state = default_state();
         let mm = MinMaxOverride {
             x: Some(AxisBounds { min: 5.0, max: 1.0 }),
             y: None,
             z: None,
         };
-        let (new_state, diags) = apply_action(state, PlotAction::SetMinMax(mm));
-        // State must be unchanged.
-        assert_eq!(new_state.minmax, MinMaxOverride::default());
-        assert_eq!(diags.len(), 1);
-        assert_eq!(diags[0].severity, DiagnosticSeverity::Warning);
-        assert_eq!(diags[0].capability, cap::MINMAX);
+        let (new_state, diags) = apply_action(state, PlotAction::SetMinMax(mm.clone()));
+        assert_eq!(new_state.minmax, mm);
+        assert!(diags.is_empty());
     }
 
     #[test]
@@ -1568,6 +1659,74 @@ mod tests {
         });
         let (new_state, diags) = apply_action(state, PlotAction::SetFsurface(None));
         assert!(new_state.fsurface.is_none());
+        assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn update_fsurface_updates_legacy_qualifiers_without_requiring_value() {
+        let state = default_state();
+        let (new_state, diags) = apply_action(
+            state,
+            PlotAction::UpdateFsurface(FsurfaceUpdate {
+                scale_factor: Some(AutoOrValueF64 {
+                    mode: AutoOrValueMode::Value,
+                    value: 1.5,
+                }),
+                walls_origin: Some(AutoOrValueF64 {
+                    mode: AutoOrValueMode::Value,
+                    value: 0.25,
+                }),
+                display_mode: Some(FsurfaceDisplayMode::Contour),
+                ..FsurfaceUpdate::default()
+            }),
+        );
+
+        assert!(new_state.fsurface.is_none());
+        assert_eq!(
+            new_state.fsurface_settings.scale_factor,
+            AutoOrValueF64 {
+                mode: AutoOrValueMode::Value,
+                value: 1.5,
+            }
+        );
+        assert_eq!(
+            new_state.fsurface_settings.walls_origin,
+            AutoOrValueF64 {
+                mode: AutoOrValueMode::Value,
+                value: 0.25,
+            }
+        );
+        assert_eq!(
+            new_state.fsurface_settings.display_mode,
+            Some(FsurfaceDisplayMode::Contour)
+        );
+        assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn update_fsurface_sets_value_and_scalar_field_on_existing_spec() {
+        let mut state = default_state();
+        state.fsurface = Some(FsurfaceSpec {
+            value: 0.1,
+            scalar_field: ScalarField::Pressure,
+        });
+
+        let (new_state, diags) = apply_action(
+            state,
+            PlotAction::UpdateFsurface(FsurfaceUpdate {
+                value: Some(0.6),
+                scalar_field: Some(ScalarField::MachNumber),
+                ..FsurfaceUpdate::default()
+            }),
+        );
+
+        assert_eq!(
+            new_state.fsurface,
+            Some(FsurfaceSpec {
+                value: 0.6,
+                scalar_field: ScalarField::MachNumber,
+            })
+        );
         assert!(diags.is_empty());
     }
 

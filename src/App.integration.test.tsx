@@ -854,16 +854,7 @@ describe('Cross-path parity (TKT-012C)', () => {
                         })
                     ),
                 ],
-                diagnostics: [
-                    {
-                        capability: 'FSURFACE',
-                        severity: 'warning',
-                        message: 'Legacy FSURFACE /GRID is not implemented; current FSURFACE stores an iso-level plus FUNCTION (scalar field).',
-                        file: 'tkt-012c-function-surface.com',
-                        line: 2,
-                        column: 1,
-                    },
-                ],
+                diagnostics: [],
             }
         ),
         '/tmp/tkt-012c-include-sequence.com': makeScriptResult(
@@ -974,14 +965,6 @@ describe('Cross-path parity (TKT-012C)', () => {
                         message: 'CONTOURS/LINEAR has no additional effect in the current implementation; contour extraction already uses LINEAR interpolation.',
                         file: 'all-divergences.com',
                         line: 1,
-                        column: 1,
-                    },
-                    {
-                        capability: 'FSURFACE',
-                        severity: 'warning',
-                        message: 'Legacy FSURFACE /SCALE_FACTOR is not implemented; current FSURFACE stores an iso-level plus FUNCTION (scalar field).',
-                        file: 'all-divergences.com',
-                        line: 2,
                         column: 1,
                     },
                     {
@@ -1338,7 +1321,7 @@ describe('Cross-path parity (TKT-012C)', () => {
         });
     });
 
-    it('shows FSURFACE divergence warnings in command sidebar output for .com execution', async () => {
+    it('supports FSURFACE qualifiers in command sidebar output without divergence warnings', async () => {
         render(<App />);
 
         const showCommandSidebarButton = await screen.findByRole('button', { name: 'Show Command Sidebar' });
@@ -1352,8 +1335,7 @@ describe('Cross-path parity (TKT-012C)', () => {
 
         await waitFor(() => {
             expect(invokeMock).toHaveBeenCalledWith('execute_com_script', { path: '/tmp/tkt-012c-function-surface.com' });
-            expect(screen.getByText(/Diagnostics:/)).toBeTruthy();
-            expect(screen.getByText(/\[warning\] FSURFACE: Legacy FSURFACE \/GRID is not implemented/)).toBeTruthy();
+            expect(screen.queryByText(/FSURFACE.*not implemented/i)).toBeNull();
         });
     });
 
@@ -1415,7 +1397,6 @@ describe('Cross-path parity (TKT-012C)', () => {
             const outputText = screen.getByText(/Diagnostics:/);
             expect(outputText).toBeTruthy();
             expect(screen.getByText(/CONTOURS.*LINEAR/)).toBeTruthy();
-            expect(screen.getByText(/FSURFACE.*SCALE_FACTOR/)).toBeTruthy();
             expect(screen.getByText(/VIEW.*FROM/)).toBeTruthy();
         });
     });
@@ -1467,7 +1448,7 @@ describe('Cross-path parity (TKT-012C)', () => {
         });
     });
 
-    it('regression: FSURFACE divergence message uses legacy terminology context', async () => {
+    it('regression: FSURFACE qualifiers do not emit divergence diagnostics', async () => {
         render(<App />);
 
         const showCommandSidebarButton = await screen.findByRole('button', { name: 'Show Command Sidebar' });
@@ -1479,10 +1460,9 @@ describe('Cross-path parity (TKT-012C)', () => {
         const executeComButton = await screen.findByRole('button', { name: 'Execute .com File' });
         fireEvent.click(executeComButton);
 
-        // Verify FSURFACE divergence message with legacy context
+        // Verify FSURFACE qualifiers no longer produce legacy divergence warnings.
         await waitFor(() => {
-            expect(screen.getByText(/FSURFACE.*GRID.*not implemented/i)).toBeTruthy();
-            expect(screen.getByText(/iso-level.*FUNCTION.*scalar field/i)).toBeTruthy();
+            expect(screen.queryByText(/FSURFACE.*not implemented/i)).toBeNull();
         });
     });
 
@@ -1498,10 +1478,9 @@ describe('Cross-path parity (TKT-012C)', () => {
         const executeComButton = await screen.findByRole('button', { name: 'Execute .com File' });
         fireEvent.click(executeComButton);
 
-        // Verify all deferred qualifiers show with consistent legacy terminology
+        // Verify deferred qualifiers from other commands still appear.
         await waitFor(() => {
             expect(screen.getByText(/CONTOURS.*LINEAR/)).toBeTruthy();
-            expect(screen.getByText(/FSURFACE.*SCALE_FACTOR/)).toBeTruthy();
             expect(screen.getByText(/VIEW.*FROM/)).toBeTruthy();
         });
     });

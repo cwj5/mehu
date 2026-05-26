@@ -3957,8 +3957,8 @@ fn set_plot_walls(walls: Vec<plot_state::GridSubset>) -> Result<ApplyActionResul
     apply_plot_action(PlotAction::SetWalls(resolved))
 }
 
-/// Convenience command: set or clear the bounded-MVP FSURFACE
-/// specification (iso-level + FUNCTION scalar field).
+/// Convenience command: set or clear the FSURFACE numeric
+/// specification (value + FUNCTION scalar field).
 #[tauri::command]
 fn set_plot_fsurface(
     fsurface: Option<plot_state::FsurfaceSpec>,

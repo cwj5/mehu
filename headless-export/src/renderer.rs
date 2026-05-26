@@ -18,8 +18,9 @@ use image::{Rgba, RgbaImage};
 use crate::colormap;
 use crate::plot3d::Plot3DGrid;
 use crate::plot_state::{
-    AxisView, ContourAttribute, ContourSpec, GridSubset, IndexRange, ParticleFunction, PlotFamily,
-    PlotState, PlotUpAxis, ViewPoint, WallColor, WallRenderMode,
+    AutoOrValueMode, AxisView, ContourAttribute, ContourSpec, FsurfaceDisplayMode, GridSubset,
+    IndexRange, ParticleFunction, PlotFamily, PlotState, PlotUpAxis, ViewPoint, WallColor,
+    WallRenderMode,
 };
 use crate::script_executor::SolutionSnapshot;
 
@@ -1057,10 +1058,12 @@ pub fn render_multigrid_subsets(
     // Each patch holds: projected (u, v, depth), scalar, slab_u, slab_v.
     // slab layout: index = u + v * slab_u
     struct Patch {
+        world: Vec<(f32, f32, f32)>,
         proj: Vec<(f32, f32, f32)>,
         scalars: Vec<f32>,
         slab_u: usize,
         slab_v: usize,
+        orientation: FunctionSurfaceOrientation,
     }
 
     let mut patches: Vec<Patch> = Vec::new();
@@ -1102,7 +1105,12 @@ pub fn render_multigrid_subsets(
         let k_indices = expand_index_range(k_range);
 
         // Prefer j_fixed > k_fixed > i_fixed; fall back to outer-K face for volume subsets.
-        let (slab_u, slab_v, idx_map): (usize, usize, Vec<usize>) = if j_indices.len() == 1 {
+        let (slab_u, slab_v, idx_map, orientation): (
+            usize,
+            usize,
+            Vec<usize>,
+            FunctionSurfaceOrientation,
+        ) = if j_indices.len() == 1 {
             let j = j_indices[0];
             let su = i_indices.len();
             let sv = k_indices.len();
@@ -1114,7 +1122,7 @@ pub fn render_multigrid_subsets(
                         .map(move |&i| (i - 1) + (j - 1) * ni + (k - 1) * ni * nj)
                 })
                 .collect();
-            (su, sv, map)
+            (su, sv, map, FunctionSurfaceOrientation::JPlane)
         } else if k_indices.len() == 1 {
             let k = k_indices[0];
             let su = i_indices.len();
@@ -1127,7 +1135,7 @@ pub fn render_multigrid_subsets(
                         .map(move |&i| (i - 1) + (j - 1) * ni + (k - 1) * ni * nj)
                 })
                 .collect();
-            (su, sv, map)
+            (su, sv, map, FunctionSurfaceOrientation::KPlane)
         } else if i_indices.len() == 1 {
             let i = i_indices[0];
             let su = j_indices.len();
@@ -1140,7 +1148,7 @@ pub fn render_multigrid_subsets(
                         .map(move |&j| (i - 1) + (j - 1) * ni + (k - 1) * ni * nj)
                 })
                 .collect();
-            (su, sv, map)
+            (su, sv, map, FunctionSurfaceOrientation::IPlane)
         } else {
             // Volume subset — expose the low-K face as a representative surface.
             let k = *k_indices.first().unwrap();
@@ -1154,7 +1162,7 @@ pub fn render_multigrid_subsets(
                         .map(move |&i| (i - 1) + (j - 1) * ni + (k - 1) * ni * nj)
                 })
                 .collect();
-            (su, sv, map)
+            (su, sv, map, FunctionSurfaceOrientation::KPlane)
         };
 
         if slab_u < 2 || slab_v < 2 {
@@ -1168,10 +1176,12 @@ pub fn render_multigrid_subsets(
             continue;
         }
 
+        let mut world = Vec::with_capacity(slab_u * slab_v);
         let mut proj = Vec::with_capacity(slab_u * slab_v);
         let mut sc = Vec::with_capacity(slab_u * slab_v);
         for &wi in &idx_map {
             let wp = (grid.x_coords[wi], grid.y_coords[wi], grid.z_coords[wi]);
+            world.push(wp);
             let mut p = project_point(wp, camera);
             if swap {
                 p = (p.1, p.0, p.2);
@@ -1181,10 +1191,12 @@ pub fn render_multigrid_subsets(
             sc.push(scalars[wi]);
         }
         patches.push(Patch {
+            world,
             proj,
             scalars: sc,
             slab_u,
             slab_v,
+            orientation,
         });
     }
 
@@ -1217,13 +1229,74 @@ pub fn render_multigrid_subsets(
     };
 
     if matches!(state.plot_family, PlotFamily::FunctionSurface) {
-        // Legacy multigrid function-surface frames (e.g., WBT Cp plot) need an
-        // elevated scalar wireframe across all active subset patches.
-        let field_range_inv = 1.0 / field_range;
-        let height_scale_px = draw_h * 0.34;
+        // Use the same FSURFACE displacement semantics as the single-snapshot
+        // renderer so multigrid subset mode and snapshot mode remain aligned.
+
+        struct LiftedPatch {
+            projected: Vec<(f32, f32, f32)>,
+            scalars: Vec<f32>,
+            slab_u: usize,
+            slab_v: usize,
+        }
+
+        let mut lifted_patches: Vec<LiftedPatch> = Vec::new();
+
+        for patch in &patches {
+            let axis_bounds = function_surface_axis_bounds(state, patch.orientation);
+            let has_axis_bounds = axis_bounds.is_some();
+            let height_bounds = axis_bounds
+                .map(|(min_h, max_h)| (min_h as f32, max_h as f32))
+                .filter(|(min_h, max_h)| (max_h - min_h).abs() > 1e-12)
+                .unwrap_or_else(|| {
+                    let e =
+                        function_surface_extent_from_world_points(&patch.world, patch.orientation)
+                            .max(1e-3)
+                            * 0.75;
+                    (-e, e)
+                });
+
+            let domain_scale =
+                function_surface_extent_from_world_points(&patch.world, patch.orientation)
+                    .max(1e-3)
+                    * 0.75;
+            let (origin, scale) = resolve_function_surface_origin_and_scale(
+                state,
+                height_bounds,
+                has_axis_bounds,
+                field_min,
+                field_max,
+                domain_scale,
+            );
+
+            let mut projected = Vec::with_capacity(patch.world.len());
+            for (idx, &wp) in patch.world.iter().enumerate() {
+                let scalar = patch.scalars[idx];
+                let height = origin + scale * scalar;
+                let lifted_world = match patch.orientation {
+                    FunctionSurfaceOrientation::KPlane => (wp.0, wp.1, height),
+                    FunctionSurfaceOrientation::IPlane => (height, wp.1, wp.2),
+                    FunctionSurfaceOrientation::JPlane => (wp.0, height, wp.2),
+                };
+                let mut p = project_point(lifted_world, camera);
+                if swap {
+                    p = (p.1, p.0, p.2);
+                }
+                projected.push(p);
+            }
+
+            lifted_patches.push(LiftedPatch {
+                projected,
+                scalars: patch.scalars.clone(),
+                slab_u: patch.slab_u,
+                slab_v: patch.slab_v,
+            });
+        }
+
+        // Reuse the flat-geometry screen transform.  The function-axis
+        // displacement changes *where* lifted points project in the same
+        // spatial coordinate system; the spatial scale (x-y) must not change.
 
         struct WireSeg {
-            depth: f32,
             x0: i32,
             y0: i32,
             x1: i32,
@@ -1233,15 +1306,14 @@ pub fn render_multigrid_subsets(
 
         let mut segments: Vec<WireSeg> = Vec::new();
 
-        for patch in &patches {
+        for patch in &lifted_patches {
             let su = patch.slab_u;
             let sv = patch.slab_v;
 
             let vertex_screen = |idx: usize| -> (f32, f32, f32, f32) {
-                let (sx, sy) = uv_to_screen(patch.proj[idx].0, patch.proj[idx].1);
-                let t = ((patch.scalars[idx] - field_min) * field_range_inv).clamp(0.0, 1.0);
-                let y = sy - t * height_scale_px;
-                (sx, y, patch.proj[idx].2, t)
+                let (sx, sy) = uv_to_screen(patch.projected[idx].0, patch.projected[idx].1);
+                let t = ((patch.scalars[idx] - field_min) / field_range).clamp(0.0, 1.0);
+                (sx, sy, patch.projected[idx].2, t)
             };
 
             for v in 0..sv {
@@ -1255,7 +1327,6 @@ pub fn render_multigrid_subsets(
                         let t_mid = ((a.3 + b.3) * 0.5).clamp(0.0, 1.0);
                         let rgb = colormap::apply(t_mid);
                         segments.push(WireSeg {
-                            depth: 0.5 * (a.2 + b.2),
                             x0: a.0.round() as i32,
                             y0: a.1.round() as i32,
                             x1: b.0.round() as i32,
@@ -1271,7 +1342,6 @@ pub fn render_multigrid_subsets(
                         let t_mid = ((a.3 + b.3) * 0.5).clamp(0.0, 1.0);
                         let rgb = colormap::apply(t_mid);
                         segments.push(WireSeg {
-                            depth: 0.5 * (a.2 + b.2),
                             x0: a.0.round() as i32,
                             y0: a.1.round() as i32,
                             x1: b.0.round() as i32,
@@ -1283,18 +1353,8 @@ pub fn render_multigrid_subsets(
             }
         }
 
-        segments.sort_by(|a, b| {
-            b.depth
-                .partial_cmp(&a.depth)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-
-        for seg in segments {
-            draw_line(img, seg.x0, seg.y0, seg.x1, seg.y1, seg.color);
-        }
-
-        // Overlay wall outlines in the same projected space used for subset
-        // patches so legacy Cp frames retain their red/green wall guides.
+        // Draw WALLS first; FSURFACE subset segments are then painted in the
+        // order they were specified.
         let mut skipped_wall_entry = false;
         for wall in &state.walls {
             // Respect legacy wall style semantics: line overlays should appear
@@ -1434,6 +1494,10 @@ pub fn render_multigrid_subsets(
                     }
                 }
             }
+        }
+
+        for seg in segments {
+            draw_line(img, seg.x0, seg.y0, seg.x1, seg.y1, seg.color);
         }
 
         if skipped_wall_entry {
@@ -1739,7 +1803,20 @@ fn render_function_surface(
     }
 
     let domain_scale = function_surface_extent(snap, orientation).max(1e-3) * 0.75;
-    let field_span = (field_max - field_min).max(1e-20);
+    let axis_bounds = function_surface_axis_bounds(state, orientation);
+    let height_bounds = axis_bounds
+        .map(|(min_h, max_h)| (min_h as f32, max_h as f32))
+        .filter(|(min_h, max_h)| (max_h - min_h).abs() > 1e-12)
+        .unwrap_or((-domain_scale, domain_scale));
+    let (origin, scale) = resolve_function_surface_origin_and_scale(
+        state,
+        height_bounds,
+        axis_bounds.is_some(),
+        field_min,
+        field_max,
+        domain_scale,
+    );
+    let surface_attr = effective_function_surface_attribute(state);
 
     let oblique_fallback = state.viewpoint.is_none()
         && (matches!(state.axis_view, AxisView::Custom)
@@ -1801,8 +1878,7 @@ fn render_function_surface(
     for v in 0..v_dim {
         for u in 0..u_dim {
             let idx = function_surface_index(orientation, u, v, ni, nj, nk);
-            let t = ((snap.scalar[idx] - field_min) / field_span).clamp(0.0, 1.0);
-            let height = (t - 0.5) * 2.0 * domain_scale;
+            let height = origin + scale * snap.scalar[idx];
             let point = function_surface_world_point(snap, orientation, idx, height);
             world_points.push(point);
             let mut p = if use_perspective {
@@ -1866,7 +1942,7 @@ fn render_function_surface(
                 screen_verts[a],
                 screen_verts[b],
                 screen_verts[d],
-                &state.contour_attribute,
+                &surface_attr,
                 field_min,
                 field_max,
                 i0,
@@ -1879,7 +1955,7 @@ fn render_function_surface(
                 screen_verts[a],
                 screen_verts[d],
                 screen_verts[c],
-                &state.contour_attribute,
+                &surface_attr,
                 field_min,
                 field_max,
                 i1,
@@ -1889,7 +1965,7 @@ fn render_function_surface(
 
     // Attribute-specific overlays.
     if matches!(
-        state.contour_attribute,
+        surface_attr,
         ContourAttribute::Line | ContourAttribute::Grid
     ) {
         for v in 0..v_dim {
@@ -1897,7 +1973,7 @@ fn render_function_surface(
                 let a = u + v * u_dim;
                 let b = (u + 1) + v * u_dim;
                 let color = surface_segment_color(
-                    &state.contour_attribute,
+                    &surface_attr,
                     0.5 * (scalars[a] + scalars[b]),
                     field_min,
                     field_max,
@@ -1917,7 +1993,7 @@ fn render_function_surface(
                 let a = u + v * u_dim;
                 let b = u + (v + 1) * u_dim;
                 let color = surface_segment_color(
-                    &state.contour_attribute,
+                    &surface_attr,
                     0.5 * (scalars[a] + scalars[b]),
                     field_min,
                     field_max,
@@ -1934,12 +2010,83 @@ fn render_function_surface(
         }
     }
 
-    if matches!(state.contour_attribute, ContourAttribute::Dots) {
+    if matches!(surface_attr, ContourAttribute::Dots) {
         for (idx, vtx) in screen_verts.iter().enumerate() {
-            let color =
-                surface_segment_color(&state.contour_attribute, scalars[idx], field_min, field_max);
+            let color = surface_segment_color(&surface_attr, scalars[idx], field_min, field_max);
             paint_dot(img, vtx.x.round() as i32, vtx.y.round() as i32, color);
         }
+    }
+}
+
+fn effective_function_surface_attribute(state: &PlotState) -> ContourAttribute {
+    match state.fsurface_settings.display_mode {
+        Some(FsurfaceDisplayMode::Contour) => ContourAttribute::Line,
+        Some(FsurfaceDisplayMode::Grid) => ContourAttribute::Grid,
+        None => state.contour_attribute,
+    }
+}
+
+fn resolve_function_surface_origin_and_scale(
+    state: &PlotState,
+    height_bounds: (f32, f32),
+    has_axis_bounds: bool,
+    field_min: f32,
+    field_max: f32,
+    domain_scale: f32,
+) -> (f32, f32) {
+    let span = (field_max - field_min).max(1e-20);
+    // axis_sign is -1 when the MINMAX bounds are reversed (min > max), which
+    // flips the direction of positive scalar displacement in world space.
+    let axis_sign = if height_bounds.0 > height_bounds.1 {
+        -1.0f32
+    } else {
+        1.0f32
+    };
+    let auto_from_bounds = {
+        // Map field_min → height_bounds.0, field_max → height_bounds.1.
+        // Subtracting (rather than adding) height_bounds.0 and solving gives:
+        //   auto_scale = (bounds.1 - bounds.0) / span
+        //   auto_origin = bounds.0 - auto_scale * field_min
+        let auto_scale = (height_bounds.1 - height_bounds.0) / span;
+        let auto_origin = height_bounds.0 - auto_scale * field_min;
+        (auto_origin, auto_scale)
+    };
+    let auto_from_domain = {
+        let auto_scale = (2.0 * domain_scale) / span;
+        let mid = 0.5 * (field_min + field_max);
+        let auto_origin = auto_scale * mid;
+        (auto_origin, auto_scale)
+    };
+    let (auto_origin, auto_scale) = if has_axis_bounds {
+        auto_from_bounds
+    } else {
+        auto_from_domain
+    };
+
+    let scale = match state.fsurface_settings.scale_factor.mode {
+        AutoOrValueMode::Auto => auto_scale,
+        AutoOrValueMode::Value => state.fsurface_settings.scale_factor.value as f32,
+    };
+
+    let origin = match state.fsurface_settings.walls_origin.mode {
+        AutoOrValueMode::Auto => auto_origin,
+        // When the MINMAX axis is reversed (axis_sign == -1) the user-supplied
+        // origin is expressed in the reversed display axis, so negate it to
+        // obtain the correct world-space height.
+        AutoOrValueMode::Value => axis_sign * state.fsurface_settings.walls_origin.value as f32,
+    };
+
+    (origin, scale)
+}
+
+fn function_surface_axis_bounds(
+    state: &PlotState,
+    orientation: FunctionSurfaceOrientation,
+) -> Option<(f64, f64)> {
+    match orientation {
+        FunctionSurfaceOrientation::KPlane => state.minmax.z.as_ref().map(|b| (b.min, b.max)),
+        FunctionSurfaceOrientation::IPlane => state.minmax.x.as_ref().map(|b| (b.min, b.max)),
+        FunctionSurfaceOrientation::JPlane => state.minmax.y.as_ref().map(|b| (b.min, b.max)),
     }
 }
 
@@ -2032,6 +2179,32 @@ fn function_surface_world_point(
         FunctionSurfaceOrientation::KPlane => (snap.x[idx], snap.y[idx], height),
         FunctionSurfaceOrientation::IPlane => (height, snap.y[idx], snap.z[idx]),
         FunctionSurfaceOrientation::JPlane => (snap.x[idx], height, snap.z[idx]),
+    }
+}
+
+fn function_surface_extent_from_world_points(
+    points: &[(f32, f32, f32)],
+    orientation: FunctionSurfaceOrientation,
+) -> f32 {
+    let mut extent = 0.0f32;
+    for &(x, y, z) in points {
+        let (u, v) = match orientation {
+            FunctionSurfaceOrientation::KPlane => (x, y),
+            FunctionSurfaceOrientation::IPlane => (y, z),
+            FunctionSurfaceOrientation::JPlane => (x, z),
+        };
+        extent = extent.max(u.abs()).max(v.abs());
+    }
+    extent
+}
+
+fn clamp_function_surface_height(height: f32, axis_bounds: Option<(f64, f64)>) -> f32 {
+    if let Some((a, b)) = axis_bounds {
+        let min_h = (a as f32).min(b as f32);
+        let max_h = (a as f32).max(b as f32);
+        height.clamp(min_h, max_h)
+    } else {
+        height
     }
 }
 
