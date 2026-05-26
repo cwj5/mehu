@@ -1,4 +1,5 @@
 use clap::{Parser, ValueEnum};
+use font8x8::UnicodeFonts;
 use glob::glob;
 use image::{ImageFormat, Rgba, RgbaImage};
 use std::collections::hash_map::DefaultHasher;
@@ -420,6 +421,7 @@ fn render_intent_image_for_cmd(
     cmd_dir: Option<&Path>,
 ) -> RgbaImage {
     let mut img = RgbaImage::new(width, height);
+    let mut rendered = false;
 
     if intent.state.scalar_field == ScalarField::None && !intent.state.walls.is_empty() {
         if let Some(base_dir) = cmd_dir {
@@ -434,7 +436,7 @@ fn render_intent_image_for_cmd(
                 for w in render_warnings {
                     eprintln!("[Warning] renderer: {w}");
                 }
-                return img;
+                rendered = true;
             }
         }
     }
@@ -444,7 +446,8 @@ fn render_intent_image_for_cmd(
     // patch with the scalar colormap.  Skip this path when overlays (rakes or
     // vectors) are active — those need the single-snapshot path so the overlay
     // drawing code can access velocity data.
-    if !intent.state.subsets.is_empty()
+    if !rendered
+        && !intent.state.subsets.is_empty()
         && intent.state.scalar_field != ScalarField::None
         && intent.state.rakes.is_none()
         && intent.state.vectors.is_none()
@@ -466,25 +469,115 @@ fn render_intent_image_for_cmd(
                 for w in render_warnings {
                     eprintln!("[Warning] renderer: {w}");
                 }
-                return img;
+                rendered = true;
             }
         }
     }
 
-    if let Some(ref snapshot) = intent.snapshot {
-        // Real data available — use the projection-based renderer.
-        let mut render_warnings: Vec<String> = Vec::new();
-        renderer::render_snapshot(&mut img, snapshot, &intent.state, &mut render_warnings);
-        for w in render_warnings {
-            eprintln!("[Warning] renderer: {w}");
+    if !rendered {
+        if let Some(ref snapshot) = intent.snapshot {
+            // Real data available — use the projection-based renderer.
+            let mut render_warnings: Vec<String> = Vec::new();
+            renderer::render_snapshot(&mut img, snapshot, &intent.state, &mut render_warnings);
+            for w in render_warnings {
+                eprintln!("[Warning] renderer: {w}");
+            }
+        } else {
+            // No solution data — fall back to the deterministic placeholder so
+            // the smoke-test and unit-test paths still produce PNG output.
+            render_placeholder(&mut img, intent);
         }
-    } else {
-        // No solution data — fall back to the deterministic placeholder so
-        // the smoke-test and unit-test paths still produce PNG output.
-        render_placeholder(&mut img, intent);
     }
 
+    draw_text_annotations(&mut img, &intent.state.text_annotations);
+
     img
+}
+
+fn draw_text_annotations(img: &mut RgbaImage, annotations: &[plot_state::PlotText]) {
+    if img.width() == 0 || img.height() == 0 || annotations.is_empty() {
+        return;
+    }
+
+    // Legacy screenshots use smaller/lighter annotation text than the initial
+    // MVP overlay; keep exports conservative unless rendering very large frames.
+    let scale = if img.height() >= 1000 { 3i32 } else { 2i32 };
+    let text_color = if scale >= 3 {
+        Rgba([245, 245, 245, 255])
+    } else {
+        Rgba([232, 232, 232, 255])
+    };
+    let shadow_color = Rgba([0, 0, 0, 180]);
+    let draw_shadow = scale >= 3;
+    let glyph_w = 8i32 * scale;
+    let glyph_h = 8i32 * scale;
+    let line_gap = scale;
+
+    for text in annotations {
+        if text.content.trim().is_empty() {
+            continue;
+        }
+
+        let x = text.x.clamp(0.0, 1.0);
+        let y = text.y.clamp(0.0, 1.0);
+
+        let mut pen_x = (x * (img.width().saturating_sub(1)) as f64).round() as i32;
+        let mut pen_y = ((1.0 - y) * (img.height().saturating_sub(1)) as f64).round() as i32;
+        let origin_x = pen_x;
+
+        for ch in text.content.chars() {
+            if ch == '\n' {
+                pen_x = origin_x;
+                pen_y += glyph_h + line_gap;
+                continue;
+            }
+
+            let glyph = font8x8::BASIC_FONTS
+                .get(ch)
+                .or_else(|| font8x8::BASIC_FONTS.get('?'));
+
+            if let Some(bitmap) = glyph {
+                if draw_shadow {
+                    draw_glyph_bitmap(img, pen_x + 1, pen_y + 1, scale, bitmap, shadow_color);
+                }
+                draw_glyph_bitmap(img, pen_x, pen_y, scale, bitmap, text_color);
+            }
+
+            pen_x += glyph_w;
+        }
+    }
+}
+
+fn draw_glyph_bitmap(
+    img: &mut RgbaImage,
+    x0: i32,
+    y0: i32,
+    scale: i32,
+    bitmap: [u8; 8],
+    color: Rgba<u8>,
+) {
+    for (row, bits) in bitmap.iter().enumerate() {
+        let row_i32 = row as i32;
+        for col in 0..8 {
+            if (bits & (1u8 << col)) == 0 {
+                continue;
+            }
+
+            let x = x0 + (col as i32) * scale;
+            let y = y0 + row_i32 * scale;
+
+            for dy in 0..scale {
+                for dx in 0..scale {
+                    let px = x + dx;
+                    let py = y + dy;
+                    if px >= 0 && py >= 0 && (px as u32) < img.width() && (py as u32) < img.height()
+                    {
+                        img.put_pixel(px as u32, py as u32, color);
+                    }
+                }
+            }
+        }
+    }
 }
 
 // ─── Placeholder renderer (used when no solution data is available) ───────────

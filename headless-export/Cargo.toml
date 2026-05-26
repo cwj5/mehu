@@ -17,6 +17,7 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 serde = { version = "1", features = ["derive"] }
 rayon = "1"
 glob = "0.3"
+font8x8 = "0.3"
 
 [dev-dependencies]
 tempfile = "3"
