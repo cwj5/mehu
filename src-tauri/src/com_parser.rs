@@ -29,9 +29,9 @@ struct LegacyWallsSubsetsState {
     walls: bool,
     grid: u32,
     stage: LegacyWallsSubsetsAxisStage,
-    pending_i: Option<IndexRange>,
-    pending_j: Option<IndexRange>,
-    axis_tokens: Vec<String>,
+    pending_i: Vec<IndexRange>,
+    pending_j: Vec<IndexRange>,
+    pending_k: Vec<IndexRange>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -413,9 +413,9 @@ fn parse_file_internal(
                 walls: command == "WALLS",
                 grid,
                 stage: LegacyWallsSubsetsAxisStage::I,
-                pending_i: None,
-                pending_j: None,
-                axis_tokens: Vec::new(),
+                pending_i: Vec::new(),
+                pending_j: Vec::new(),
+                pending_k: Vec::new(),
             });
             continue;
         }
@@ -632,51 +632,65 @@ fn parse_walls_subsets_continuation(
     match state.stage {
         LegacyWallsSubsetsAxisStage::I => {
             if tokens.is_empty() {
-                if let Some(range) = parse_walls_subsets_prompt_range(&state.axis_tokens) {
-                    state.pending_i = Some(range);
+                if !state.pending_i.is_empty() {
                     state.stage = LegacyWallsSubsetsAxisStage::J;
                 }
-                state.axis_tokens.clear();
-            } else {
-                state.axis_tokens.extend(tokens.iter().cloned());
+            } else if let Some(range) = parse_walls_subsets_prompt_range(tokens) {
+                state.pending_i.push(range);
             }
         }
         LegacyWallsSubsetsAxisStage::J => {
             if tokens.is_empty() {
-                if let Some(range) = parse_walls_subsets_prompt_range(&state.axis_tokens) {
-                    state.pending_j = Some(range);
+                if !state.pending_j.is_empty() {
                     state.stage = LegacyWallsSubsetsAxisStage::K;
                 }
-                state.axis_tokens.clear();
-            } else {
-                state.axis_tokens.extend(tokens.iter().cloned());
+            } else if let Some(range) = parse_walls_subsets_prompt_range(tokens) {
+                state.pending_j.push(range);
             }
         }
         LegacyWallsSubsetsAxisStage::K => {
             if tokens.is_empty() {
-                if let Some(k_range) = parse_walls_subsets_prompt_range(&state.axis_tokens) {
-                    let subset = GridSubset {
-                        grid: state.grid,
-                        gui_managed: false,
-                        i_range: state.pending_i.clone(),
-                        j_range: state.pending_j.clone(),
-                        k_range: Some(k_range),
-                        style: WallStyle::default(),
+                if !state.pending_i.is_empty()
+                    && !state.pending_j.is_empty()
+                    && !state.pending_k.is_empty()
+                {
+                    let subsets = if state.walls {
+                        build_legacy_prompt_subsets(
+                            state.grid,
+                            &state.pending_i,
+                            &state.pending_j,
+                            &state.pending_k,
+                        )
+                    } else {
+                        let i_range = collapse_prompt_axis(&state.pending_i)
+                            .expect("pending_i must be non-empty");
+                        let j_range = collapse_prompt_axis(&state.pending_j)
+                            .expect("pending_j must be non-empty");
+                        let k_range = collapse_prompt_axis(&state.pending_k)
+                            .expect("pending_k must be non-empty");
+                        vec![GridSubset {
+                            grid: state.grid,
+                            gui_managed: false,
+                            i_range: Some(i_range),
+                            j_range: Some(j_range),
+                            k_range: Some(k_range),
+                            style: WallStyle::default(),
+                        }]
                     };
 
                     if state.walls {
-                        out.actions.push(PlotAction::AddWalls(vec![subset]));
+                        out.actions.push(PlotAction::AddWalls(subsets));
                     } else {
-                        out.actions.push(PlotAction::AddSubsets(vec![subset]));
+                        out.actions.push(PlotAction::AddSubsets(subsets));
                     }
 
-                    state.pending_i = None;
-                    state.pending_j = None;
+                    state.pending_i.clear();
+                    state.pending_j.clear();
+                    state.pending_k.clear();
                     state.stage = LegacyWallsSubsetsAxisStage::Style;
                 }
-                state.axis_tokens.clear();
-            } else {
-                state.axis_tokens.extend(tokens.iter().cloned());
+            } else if let Some(range) = parse_walls_subsets_prompt_range(tokens) {
+                state.pending_k.push(range);
             }
         }
         LegacyWallsSubsetsAxisStage::Style => {
@@ -684,10 +698,12 @@ fn parse_walls_subsets_continuation(
                 return;
             }
             if looks_like_walls_subsets_prompt_range_start(tokens) {
-                state.axis_tokens.clear();
-                state.axis_tokens.extend(tokens.iter().cloned());
-                state.pending_i = None;
-                state.pending_j = None;
+                state.pending_i.clear();
+                state.pending_j.clear();
+                state.pending_k.clear();
+                if let Some(range) = parse_walls_subsets_prompt_range(tokens) {
+                    state.pending_i.push(range);
+                }
                 state.stage = LegacyWallsSubsetsAxisStage::I;
             } else if let Some(first) = tokens.first() {
                 let token = first.to_uppercase();
@@ -714,38 +730,245 @@ fn parse_walls_subsets_continuation(
     }
 }
 
+fn is_singleton_range(range: &IndexRange) -> bool {
+    range.end.unwrap_or(range.start) == range.start
+}
+
+fn singleton_from_start(range: &IndexRange) -> IndexRange {
+    IndexRange {
+        start: range.start,
+        end: Some(range.start),
+        step: 1,
+    }
+}
+
+fn span_from_adjacent(a: &IndexRange, b: &IndexRange) -> IndexRange {
+    IndexRange {
+        start: a.start,
+        end: Some(b.start),
+        step: 1,
+    }
+}
+
+fn axis_points(ranges: &[IndexRange]) -> Vec<IndexRange> {
+    ranges.iter().map(singleton_from_start).collect()
+}
+
+fn axis_spans(ranges: &[IndexRange]) -> Vec<IndexRange> {
+    if ranges.is_empty() {
+        return Vec::new();
+    }
+
+    if ranges.len() == 1 {
+        return vec![ranges[0].clone()];
+    }
+
+    if ranges.iter().all(is_singleton_range) {
+        let mut spans = Vec::new();
+        for pair in ranges.windows(2) {
+            spans.push(span_from_adjacent(&pair[0], &pair[1]));
+        }
+        if spans.is_empty() {
+            spans.push(ranges[0].clone());
+        }
+        return spans;
+    }
+
+    let first = &ranges[0];
+    let last = &ranges[ranges.len() - 1];
+    vec![IndexRange {
+        start: first.start,
+        end: Some(last.end.unwrap_or(last.start)),
+        step: 1,
+    }]
+}
+
+fn collapse_prompt_axis(ranges: &[IndexRange]) -> Option<IndexRange> {
+    let first = ranges.first()?;
+    let last = ranges.last()?;
+    Some(IndexRange {
+        start: first.start,
+        end: Some(last.end.unwrap_or(last.start)),
+        step: 1,
+    })
+}
+
+fn build_legacy_prompt_subsets(
+    grid: u32,
+    i_ranges: &[IndexRange],
+    j_ranges: &[IndexRange],
+    k_ranges: &[IndexRange],
+) -> Vec<GridSubset> {
+    let i_points = axis_points(i_ranges);
+    let j_points = axis_points(j_ranges);
+    let k_points = axis_points(k_ranges);
+    let i_spans = axis_spans(i_ranges);
+    let j_spans = axis_spans(j_ranges);
+    let k_spans = axis_spans(k_ranges);
+
+    let mut subsets = Vec::new();
+
+    // Lines along I.
+    for j in &j_points {
+        for k in &k_points {
+            for i in &i_spans {
+                if is_singleton_range(i) {
+                    continue;
+                }
+                subsets.push(GridSubset {
+                    grid,
+                    gui_managed: false,
+                    i_range: Some(i.clone()),
+                    j_range: Some(j.clone()),
+                    k_range: Some(k.clone()),
+                    style: WallStyle::default(),
+                });
+            }
+        }
+    }
+
+    // Lines along J.
+    for i in &i_points {
+        for k in &k_points {
+            for j in &j_spans {
+                if is_singleton_range(j) {
+                    continue;
+                }
+                subsets.push(GridSubset {
+                    grid,
+                    gui_managed: false,
+                    i_range: Some(i.clone()),
+                    j_range: Some(j.clone()),
+                    k_range: Some(k.clone()),
+                    style: WallStyle::default(),
+                });
+            }
+        }
+    }
+
+    // Lines along K.
+    for i in &i_points {
+        for j in &j_points {
+            for k in &k_spans {
+                if is_singleton_range(k) {
+                    continue;
+                }
+                subsets.push(GridSubset {
+                    grid,
+                    gui_managed: false,
+                    i_range: Some(i.clone()),
+                    j_range: Some(j.clone()),
+                    k_range: Some(k.clone()),
+                    style: WallStyle::default(),
+                });
+            }
+        }
+    }
+
+    if subsets.is_empty() {
+        for i in &i_points {
+            for j in &j_points {
+                for k in &k_points {
+                    subsets.push(GridSubset {
+                        grid,
+                        gui_managed: false,
+                        i_range: Some(i.clone()),
+                        j_range: Some(j.clone()),
+                        k_range: Some(k.clone()),
+                        style: WallStyle::default(),
+                    });
+                }
+            }
+        }
+    }
+
+    subsets
+}
+
 fn apply_walls_subsets_style_payload(
     out: &mut ParsedScript,
     walls: bool,
     tokens: &[String],
 ) -> bool {
-    let Some(subset) = out
+    let Some(subsets) = out
         .actions
         .iter_mut()
         .rev()
         .find_map(|action| match action {
-            PlotAction::AddWalls(items) if walls => items.last_mut(),
-            PlotAction::AddSubsets(items) if !walls => items.last_mut(),
+            PlotAction::AddWalls(items) if walls => Some(items),
+            PlotAction::AddSubsets(items) if !walls => Some(items),
             _ => None,
         })
     else {
         return false;
     };
 
+    if subsets.is_empty() {
+        return false;
+    }
+
     let token = tokens[0].to_uppercase();
     match token.as_str() {
-        "LINE" | "L" => subset.style.mode = Some(WallRenderMode::Line),
-        "SHADED" | "SH" => subset.style.mode = Some(WallRenderMode::Shaded),
-        "HIDDEN_LINES" => subset.style.mode = Some(WallRenderMode::HiddenLines),
-        "POINTS" => subset.style.mode = Some(WallRenderMode::Points),
-        "WHITE" => subset.style.color = Some(WallColor::White),
-        "RED" => subset.style.color = Some(WallColor::Red),
-        "GREEN" => subset.style.color = Some(WallColor::Green),
-        "BLUE" => subset.style.color = Some(WallColor::Blue),
-        "CYAN" => subset.style.color = Some(WallColor::Cyan),
-        "MAGENTA" => subset.style.color = Some(WallColor::Magenta),
-        "YELLOW" => subset.style.color = Some(WallColor::Yellow),
-        "BLACK" => subset.style.color = Some(WallColor::Black),
+        "LINE" | "L" => {
+            for subset in subsets.iter_mut() {
+                subset.style.mode = Some(WallRenderMode::Line);
+            }
+        }
+        "SHADED" | "SH" => {
+            for subset in subsets.iter_mut() {
+                subset.style.mode = Some(WallRenderMode::Shaded);
+            }
+        }
+        "HIDDEN_LINES" => {
+            for subset in subsets.iter_mut() {
+                subset.style.mode = Some(WallRenderMode::HiddenLines);
+            }
+        }
+        "POINTS" => {
+            for subset in subsets.iter_mut() {
+                subset.style.mode = Some(WallRenderMode::Points);
+            }
+        }
+        "WHITE" => {
+            for subset in subsets.iter_mut() {
+                subset.style.color = Some(WallColor::White);
+            }
+        }
+        "RED" => {
+            for subset in subsets.iter_mut() {
+                subset.style.color = Some(WallColor::Red);
+            }
+        }
+        "GREEN" => {
+            for subset in subsets.iter_mut() {
+                subset.style.color = Some(WallColor::Green);
+            }
+        }
+        "BLUE" => {
+            for subset in subsets.iter_mut() {
+                subset.style.color = Some(WallColor::Blue);
+            }
+        }
+        "CYAN" => {
+            for subset in subsets.iter_mut() {
+                subset.style.color = Some(WallColor::Cyan);
+            }
+        }
+        "MAGENTA" => {
+            for subset in subsets.iter_mut() {
+                subset.style.color = Some(WallColor::Magenta);
+            }
+        }
+        "YELLOW" => {
+            for subset in subsets.iter_mut() {
+                subset.style.color = Some(WallColor::Yellow);
+            }
+        }
+        "BLACK" => {
+            for subset in subsets.iter_mut() {
+                subset.style.color = Some(WallColor::Black);
+            }
+        }
         "RGB" => {
             let parse_component = |idx: usize| {
                 tokens
@@ -756,7 +979,9 @@ fn apply_walls_subsets_style_payload(
             if let (Some(r), Some(g), Some(b)) =
                 (parse_component(1), parse_component(2), parse_component(3))
             {
-                subset.style.color = Some(WallColor::Rgb { r, g, b });
+                for subset in subsets.iter_mut() {
+                    subset.style.color = Some(WallColor::Rgb { r, g, b });
+                }
             } else {
                 return false;
             }
@@ -832,12 +1057,22 @@ fn parse_walls_subsets_prompt_range(tokens: &[String]) -> Option<IndexRange> {
     let first_upper = tokens[0].to_uppercase();
     if first_upper == "ALL" || first_upper == "A" {
         let end = tokens.get(1).and_then(|s| s.parse::<i32>().ok()).or(None);
-        return Some(IndexRange { start: 1, end });
+        let step = tokens
+            .get(2)
+            .and_then(|s| s.parse::<usize>().ok())
+            .filter(|&step| step > 0)
+            .unwrap_or(1);
+        return Some(IndexRange {
+            start: 1,
+            end,
+            step,
+        });
     }
     if first_upper == "LAST" || first_upper == "L" {
         return Some(IndexRange {
             start: -1,
             end: Some(-1),
+            step: 1,
         });
     }
 
@@ -852,9 +1087,15 @@ fn parse_walls_subsets_prompt_range(tokens: &[String]) -> Option<IndexRange> {
             .get(1)
             .and_then(|s| parse_prompt_index_token(s))
             .unwrap_or(start);
+        let step = tokens
+            .get(2)
+            .and_then(|s| s.parse::<usize>().ok())
+            .filter(|&step| step > 0)
+            .unwrap_or(1);
         return Some(IndexRange {
             start,
             end: Some(end),
+            step,
         });
     }
 
@@ -3014,6 +3255,7 @@ fn parse_walls_or_subsets(
             subset.i_range = Some(IndexRange {
                 start: i_start,
                 end: Some(i_end),
+                step: 1,
             });
         } else {
             out.diagnostics.push(diagnostic(
@@ -3032,6 +3274,7 @@ fn parse_walls_or_subsets(
             subset.j_range = Some(IndexRange {
                 start: j_start,
                 end: Some(j_end),
+                step: 1,
             });
         } else {
             out.diagnostics.push(diagnostic(
@@ -3050,6 +3293,7 @@ fn parse_walls_or_subsets(
             subset.k_range = Some(IndexRange {
                 start: k_start,
                 end: Some(k_end),
+                step: 1,
             });
         } else {
             out.diagnostics.push(diagnostic(
@@ -3788,9 +4032,17 @@ fn parse_index_range(token: &str) -> Option<IndexRange> {
         if values.len() >= 2 {
             let start = values[0] as i32;
             let end = values[1] as i32;
+            let step = values
+                .get(2)
+                .copied()
+                .map(|value| value as i32)
+                .filter(|&value| value > 0)
+                .and_then(|value| usize::try_from(value).ok())
+                .unwrap_or(1);
             return Some(IndexRange {
                 start,
                 end: Some(end),
+                step,
             });
         }
     }
@@ -3802,13 +4054,18 @@ fn parse_index_range(token: &str) -> Option<IndexRange> {
         } else {
             Some(b.trim().parse::<i32>().ok()?)
         };
-        return Some(IndexRange { start, end });
+        return Some(IndexRange {
+            start,
+            end,
+            step: 1,
+        });
     }
 
     if let Ok(single) = t.parse::<i32>() {
         return Some(IndexRange {
             start: single,
             end: Some(single),
+            step: 1,
         });
     }
 
@@ -5350,30 +5607,161 @@ fn walls_interactive_prompt_lines_produce_add_actions() {
         Some(34)
     );
     assert_eq!(add_walls[0][0].k_range.as_ref().map(|r| r.start), Some(1));
-    assert!(add_walls[0][0]
-        .k_range
-        .as_ref()
-        .and_then(|r| r.end)
-        .is_none());
+    assert_eq!(
+        add_walls[0][0].k_range.as_ref().and_then(|r| r.end),
+        Some(1)
+    );
 
     assert_eq!(add_walls[1][0].grid, 2);
     assert_eq!(add_walls[1][0].i_range.as_ref().map(|r| r.start), Some(1));
-    assert!(add_walls[1][0]
-        .i_range
-        .as_ref()
-        .and_then(|r| r.end)
-        .is_none());
+    assert_eq!(
+        add_walls[1][0].i_range.as_ref().and_then(|r| r.end),
+        Some(1)
+    );
     assert_eq!(add_walls[1][0].j_range.as_ref().map(|r| r.start), Some(34));
     assert_eq!(
         add_walls[1][0].j_range.as_ref().and_then(|r| r.end),
         Some(34)
     );
     assert_eq!(add_walls[1][0].k_range.as_ref().map(|r| r.start), Some(1));
-    assert!(add_walls[1][0]
-        .k_range
-        .as_ref()
-        .and_then(|r| r.end)
-        .is_none());
+    assert_eq!(
+        add_walls[1][0].k_range.as_ref().and_then(|r| r.end),
+        Some(1)
+    );
+}
+
+#[test]
+fn walls_getxsa_multi_entry_axes_expand_into_legacy_line_set() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("walls_getxsa_lines.com");
+    fs::write(&file, "WALLS/GRID=9\n1\n5\n\n2\n8\n\n1\n\nLINE\nRED\n").expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+
+    let add_walls: Vec<&Vec<GridSubset>> = parsed
+        .actions
+        .iter()
+        .filter_map(|action| {
+            if let PlotAction::AddWalls(walls) = action {
+                Some(walls)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    assert_eq!(add_walls.len(), 1);
+    let first = add_walls[0];
+    assert_eq!(first.len(), 4);
+
+    let actual: std::collections::BTreeSet<(i32, i32, i32, i32, i32, i32)> = first
+        .iter()
+        .map(|subset| {
+            (
+                subset.i_range.as_ref().map(|r| r.start).unwrap_or_default(),
+                subset
+                    .i_range
+                    .as_ref()
+                    .and_then(|r| r.end)
+                    .unwrap_or_default(),
+                subset.j_range.as_ref().map(|r| r.start).unwrap_or_default(),
+                subset
+                    .j_range
+                    .as_ref()
+                    .and_then(|r| r.end)
+                    .unwrap_or_default(),
+                subset.k_range.as_ref().map(|r| r.start).unwrap_or_default(),
+                subset
+                    .k_range
+                    .as_ref()
+                    .and_then(|r| r.end)
+                    .unwrap_or_default(),
+            )
+        })
+        .collect();
+
+    let expected: std::collections::BTreeSet<(i32, i32, i32, i32, i32, i32)> = [
+        (1, 5, 2, 2, 1, 1),
+        (1, 5, 8, 8, 1, 1),
+        (1, 1, 2, 8, 1, 1),
+        (5, 5, 2, 8, 1, 1),
+    ]
+    .into_iter()
+    .collect();
+
+    assert_eq!(actual, expected);
+    assert!(first.iter().all(|subset| subset.grid == 9));
+    assert!(first
+        .iter()
+        .all(|subset| subset.style.mode == Some(WallRenderMode::Line)));
+    assert!(first
+        .iter()
+        .all(|subset| subset.style.color == Some(WallColor::Red)));
+}
+
+#[test]
+fn subsets_getxsa_multi_entry_axes_collapse_into_single_patch() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("subsets_getxsa_patch.com");
+    fs::write(
+        &file,
+        "SUBSETS/GRID=7\n3\n33\n\n1\n21\n\n1\n\nLINE\nGREEN\n",
+    )
+    .expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+
+    let add_subsets: Vec<&Vec<GridSubset>> = parsed
+        .actions
+        .iter()
+        .filter_map(|action| {
+            if let PlotAction::AddSubsets(subsets) = action {
+                Some(subsets)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    assert_eq!(add_subsets.len(), 1);
+    assert_eq!(add_subsets[0].len(), 1);
+
+    let subset = &add_subsets[0][0];
+    assert_eq!(subset.grid, 7);
+    assert_eq!(subset.i_range.as_ref().map(|r| r.start), Some(3));
+    assert_eq!(subset.i_range.as_ref().and_then(|r| r.end), Some(33));
+    assert_eq!(subset.j_range.as_ref().map(|r| r.start), Some(1));
+    assert_eq!(subset.j_range.as_ref().and_then(|r| r.end), Some(21));
+    assert_eq!(subset.k_range.as_ref().map(|r| r.start), Some(1));
+    assert_eq!(subset.k_range.as_ref().and_then(|r| r.end), Some(1));
+    assert_eq!(subset.style.mode, Some(WallRenderMode::Line));
+    assert_eq!(subset.style.color, Some(WallColor::Green));
+}
+
+#[test]
+fn walls_getxsa_all_end_step_preserves_step_on_expanded_lines() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("walls_getxsa_step.com");
+    fs::write(&file, "WALLS/GRID=2\nALL 9 2\n\n2\n4\n\n1\n\nLINE\nWHITE\n").expect("write");
+
+    let parsed = parse_com_file(&file).expect("parse");
+
+    let add_walls = parsed
+        .actions
+        .iter()
+        .find_map(|action| {
+            if let PlotAction::AddWalls(walls) = action {
+                Some(walls)
+            } else {
+                None
+            }
+        })
+        .expect("expected AddWalls action");
+
+    assert!(!add_walls.is_empty());
+    assert!(add_walls
+        .iter()
+        .any(|subset| subset.i_range.as_ref().map(|r| r.step) == Some(2)));
 }
 
 #[test]

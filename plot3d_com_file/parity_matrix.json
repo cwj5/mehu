@@ -54,13 +54,13 @@
             "id": "WALLS",
             "status": "supported",
             "ticket": "TKT-008",
-            "notes": "Range-based WALLS model and GUI controls are implemented with shared PlotState integration. 2026-05-01: Viewer range application now passes backend WALLS to Viewer3D and applies WALLS ranges as effective geometry limits when GUI slicing is off, preserving script-driven wall-only rendering semantics. 2026-05-02: GridSubset extended with WallStyle (WallColor, WallRenderMode); headless renderer uses per-wall color from WallStyle; multi-grid wall-only render path reads all grids."
+            "notes": "Range-based WALLS model and GUI controls are implemented with shared PlotState integration. 2026-05-01: Viewer range application now passes backend WALLS to Viewer3D and applies WALLS ranges as effective geometry limits when GUI slicing is off, preserving script-driven wall-only rendering semantics. 2026-05-02: GridSubset extended with WallStyle (WallColor, WallRenderMode); headless renderer uses per-wall color from WallStyle; multi-grid wall-only render path reads all grids. 2026-05-26: legacy interactive GETXSA-style multi-entry axis capture is modeled explicitly for WALLS; parser now expands axis-set prompts into boundary line subsets and regression tests cover multi-entry axis parsing, style propagation, and step handling."
         },
         {
             "id": "SUBSETS",
             "status": "supported",
             "ticket": "TKT-008",
-            "notes": "Range-based SUBSETS model and GUI controls are implemented with shared PlotState integration. 2026-05-02: headless export now renders multi-grid subset scalar surfaces using read_all_q_for_grids + render_multigrid_subsets; triangle fill with z-buffer and marching-squares iso-contour overlay are both implemented; global scalar range computed across all grids."
+            "notes": "Range-based SUBSETS model and GUI controls are implemented with shared PlotState integration. 2026-05-02: headless export now renders multi-grid subset scalar surfaces using read_all_q_for_grids + render_multigrid_subsets; triangle fill with z-buffer and marching-squares iso-contour overlay are both implemented; global scalar range computed across all grids. 2026-05-26: legacy interactive GETXSA-style multi-entry axis input is parsed and collapsed into contiguous subset patches (rather than line expansion), with dedicated parser regression tests for multi-entry axis accumulation and style payload application."
         },
         {
             "id": "FSURFACE",

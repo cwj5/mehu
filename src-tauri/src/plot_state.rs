@@ -418,6 +418,13 @@ pub struct IndexRange {
     pub start: i32,
     /// 1-based inclusive end index; `None` means "to the end". Negative values count from the end.
     pub end: Option<i32>,
+    /// Positive increment between selected indices; defaults to 1.
+    #[serde(default = "default_index_range_step")]
+    pub step: usize,
+}
+
+fn default_index_range_step() -> usize {
+    1
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1574,6 +1581,7 @@ mod tests {
             i_range: Some(IndexRange {
                 start: 1,
                 end: Some(10),
+                step: 1,
             }),
             j_range: None,
             k_range: None,
@@ -1594,6 +1602,7 @@ mod tests {
             j_range: Some(IndexRange {
                 start: 5,
                 end: None,
+                step: 1,
             }),
             k_range: None,
             style: WallStyle::default(),
@@ -1612,6 +1621,7 @@ mod tests {
             i_range: Some(IndexRange {
                 start: 1,
                 end: Some(1),
+                step: 1,
             }),
             j_range: None,
             k_range: None,
@@ -1625,6 +1635,7 @@ mod tests {
             j_range: Some(IndexRange {
                 start: 5,
                 end: Some(5),
+                step: 1,
             }),
             k_range: None,
             style: WallStyle::default(),

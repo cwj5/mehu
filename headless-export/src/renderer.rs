@@ -837,6 +837,31 @@ fn resolve_index_range(range: Option<&IndexRange>, dim: usize) -> Option<(usize,
     })
 }
 
+fn resolve_index_values(range: Option<&IndexRange>, dim: usize) -> Option<Vec<usize>> {
+    let Some(range) = range else {
+        return Some((1..=dim).collect());
+    };
+
+    let (start, end) = resolve_index_range(Some(range), dim)?;
+    let step = range.step.max(1);
+
+    let mut values = Vec::new();
+    let mut current = start;
+    loop {
+        values.push(current);
+        if current >= end {
+            break;
+        }
+        let next = current.saturating_add(step);
+        if next <= current {
+            break;
+        }
+        current = next.min(end);
+    }
+
+    Some(values)
+}
+
 fn wall_style_rgba(wall: &GridSubset) -> Rgba<u8> {
     match wall.style.color.as_ref() {
         Some(WallColor::White) => Rgba([240, 240, 240, 255]),
@@ -868,15 +893,6 @@ pub fn render_multigrid_walls(
     let mut points: Vec<(f32, f32)> = Vec::new();
     let mut skipped_missing_grid = false;
 
-    // Helper to expand an IndexRange into a Vec<usize> (1-based inclusive)
-    fn expand_index_range(range: (usize, usize)) -> Vec<usize> {
-        if range.0 <= range.1 {
-            (range.0..=range.1).collect()
-        } else {
-            (range.1..=range.0).rev().collect()
-        }
-    }
-
     for wall in &state.walls {
         let segment_color = wall_style_rgba(wall);
         let Some(grid) = wall
@@ -892,19 +908,15 @@ pub fn render_multigrid_walls(
         let nj = grid.dimensions.j as usize;
         let nk = grid.dimensions.k as usize;
 
-        let Some(i_range) = resolve_index_range(wall.i_range.as_ref(), ni) else {
+        let Some(i_indices) = resolve_index_values(wall.i_range.as_ref(), ni) else {
             continue;
         };
-        let Some(j_range) = resolve_index_range(wall.j_range.as_ref(), nj) else {
+        let Some(j_indices) = resolve_index_values(wall.j_range.as_ref(), nj) else {
             continue;
         };
-        let Some(k_range) = resolve_index_range(wall.k_range.as_ref(), nk) else {
+        let Some(k_indices) = resolve_index_values(wall.k_range.as_ref(), nk) else {
             continue;
         };
-
-        let i_indices = expand_index_range(i_range);
-        let j_indices = expand_index_range(j_range);
-        let k_indices = expand_index_range(k_range);
 
         let add_segment = |segments: &mut Vec<((f32, f32), (f32, f32), Rgba<u8>)>,
                            points: &mut Vec<(f32, f32)>,
@@ -1082,27 +1094,14 @@ pub fn render_multigrid_subsets(
         let nj = grid.dimensions.j as usize;
         let nk = grid.dimensions.k as usize;
 
-        let Some(i_range) = resolve_index_range(subset.i_range.as_ref(), ni) else {
-            continue;
-        };
-        let Some(j_range) = resolve_index_range(subset.j_range.as_ref(), nj) else {
-            continue;
-        };
-        let Some(k_range) = resolve_index_range(subset.k_range.as_ref(), nk) else {
-            continue;
-        };
+        let i_indices = resolve_index_values(subset.i_range.as_ref(), ni);
+        let j_indices = resolve_index_values(subset.j_range.as_ref(), nj);
+        let k_indices = resolve_index_values(subset.k_range.as_ref(), nk);
 
-        // Use the same index expansion logic as for walls
-        fn expand_index_range(range: (usize, usize)) -> Vec<usize> {
-            if range.0 <= range.1 {
-                (range.0..=range.1).collect()
-            } else {
-                (range.1..=range.0).rev().collect()
-            }
-        }
-        let i_indices = expand_index_range(i_range);
-        let j_indices = expand_index_range(j_range);
-        let k_indices = expand_index_range(k_range);
+        let (Some(i_indices), Some(j_indices), Some(k_indices)) = (i_indices, j_indices, k_indices)
+        else {
+            continue;
+        };
 
         // Prefer j_fixed > k_fixed > i_fixed; fall back to outer-K face for volume subsets.
         let (slab_u, slab_v, idx_map, orientation): (
@@ -1380,19 +1379,19 @@ pub fn render_multigrid_subsets(
             let nj = grid.dimensions.j as usize;
             let nk = grid.dimensions.k as usize;
 
-            let Some(i_range) = resolve_index_range(wall.i_range.as_ref(), ni) else {
+            let Some(i_values) = resolve_index_values(wall.i_range.as_ref(), ni) else {
                 continue;
             };
-            let Some(j_range) = resolve_index_range(wall.j_range.as_ref(), nj) else {
+            let Some(j_values) = resolve_index_values(wall.j_range.as_ref(), nj) else {
                 continue;
             };
-            let Some(k_range) = resolve_index_range(wall.k_range.as_ref(), nk) else {
+            let Some(k_values) = resolve_index_values(wall.k_range.as_ref(), nk) else {
                 continue;
             };
 
-            let i_fixed = i_range.0 == i_range.1;
-            let j_fixed = j_range.0 == j_range.1;
-            let k_fixed = k_range.0 == k_range.1;
+            let i_fixed = i_values.len() == 1;
+            let j_fixed = j_values.len() == 1;
+            let k_fixed = k_values.len() == 1;
             if !(i_fixed || j_fixed || k_fixed) {
                 skipped_wall_entry = true;
                 continue;
@@ -1428,67 +1427,67 @@ pub fn render_multigrid_subsets(
                 };
 
             if i_fixed {
-                let i = i_range.0;
-                for j in j_range.0..=j_range.1 {
-                    for k in k_range.0..k_range.1 {
+                let i = i_values[0];
+                for &j in &j_values {
+                    for pair in k_values.windows(2) {
                         draw_wall_segment(
                             img,
-                            world_point(i, j, k),
-                            world_point(i, j, k + 1),
+                            world_point(i, j, pair[0]),
+                            world_point(i, j, pair[1]),
                             segment_color,
                         );
                     }
                 }
-                for k in k_range.0..=k_range.1 {
-                    for j in j_range.0..j_range.1 {
+                for &k in &k_values {
+                    for pair in j_values.windows(2) {
                         draw_wall_segment(
                             img,
-                            world_point(i, j, k),
-                            world_point(i, j + 1, k),
+                            world_point(i, pair[0], k),
+                            world_point(i, pair[1], k),
                             segment_color,
                         );
                     }
                 }
             } else if j_fixed {
-                let j = j_range.0;
-                for i in i_range.0..=i_range.1 {
-                    for k in k_range.0..k_range.1 {
+                let j = j_values[0];
+                for &i in &i_values {
+                    for pair in k_values.windows(2) {
                         draw_wall_segment(
                             img,
-                            world_point(i, j, k),
-                            world_point(i, j, k + 1),
+                            world_point(i, j, pair[0]),
+                            world_point(i, j, pair[1]),
                             segment_color,
                         );
                     }
                 }
-                for k in k_range.0..=k_range.1 {
-                    for i in i_range.0..i_range.1 {
+                for &k in &k_values {
+                    for pair in i_values.windows(2) {
                         draw_wall_segment(
                             img,
-                            world_point(i, j, k),
-                            world_point(i + 1, j, k),
+                            world_point(pair[0], j, k),
+                            world_point(pair[1], j, k),
                             segment_color,
                         );
                     }
                 }
             } else {
-                let k = k_range.0;
-                for i in i_range.0..=i_range.1 {
-                    for j in j_range.0..j_range.1 {
+                let k = k_values[0];
+                for &i in &i_values {
+                    for pair in j_values.windows(2) {
                         draw_wall_segment(
                             img,
-                            world_point(i, j, k),
-                            world_point(i, j + 1, k),
+                            world_point(i, pair[0], k),
+                            world_point(i, pair[1], k),
                             segment_color,
                         );
                     }
                 }
-                for j in j_range.0..=j_range.1 {
-                    for i in i_range.0..i_range.1 {
+                for &j in &j_values {
+                    for pair in i_values.windows(2) {
                         draw_wall_segment(
                             img,
-                            world_point(i, j, k),
-                            world_point(i + 1, j, k),
+                            world_point(pair[0], j, k),
+                            world_point(pair[1], j, k),
                             segment_color,
                         );
                     }
@@ -2196,16 +2195,6 @@ fn function_surface_extent_from_world_points(
         extent = extent.max(u.abs()).max(v.abs());
     }
     extent
-}
-
-fn clamp_function_surface_height(height: f32, axis_bounds: Option<(f64, f64)>) -> f32 {
-    if let Some((a, b)) = axis_bounds {
-        let min_h = (a as f32).min(b as f32);
-        let max_h = (a as f32).max(b as f32);
-        height.clamp(min_h, max_h)
-    } else {
-        height
-    }
 }
 
 fn function_surface_height_axis(orientation: FunctionSurfaceOrientation) -> SpatialAxis {

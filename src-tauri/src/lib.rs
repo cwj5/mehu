@@ -3898,6 +3898,7 @@ fn resolve_index_range(range: &plot_state::IndexRange, dim: u32) -> plot_state::
     plot_state::IndexRange {
         start: resolve(range.start),
         end: range.end.map(resolve),
+        step: range.step,
     }
 }
 
