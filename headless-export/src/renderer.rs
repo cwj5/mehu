@@ -14,15 +14,169 @@
 /// - Iso-contour lines are not drawn on function-surface meshes; `ContourSpec`
 ///   is ignored with a warning in `FunctionSurface` mode (§ 3.10)
 use image::{Rgba, RgbaImage};
+use std::collections::HashSet;
 
 use crate::colormap;
 use crate::plot3d::Plot3DGrid;
 use crate::plot_state::{
     AutoOrValueMode, AxisView, ContourAttribute, ContourSpec, FsurfaceDisplayMode, GridSubset,
-    IndexRange, ParticleFunction, PlotFamily, PlotState, PlotUpAxis, ViewPoint, WallColor,
-    WallRenderMode,
+    IndexRange, ParticleFunction, PlotFamily, PlotState, PlotUpAxis, RakeInteractivePayload,
+    ViewPoint, WallColor, WallRenderMode,
 };
 use crate::script_executor::SolutionSnapshot;
+
+#[derive(Clone, Copy)]
+struct LineSegment {
+    depth: f32,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+    color: Rgba<u8>,
+}
+
+#[derive(Clone, Copy)]
+pub struct FlowSamplePoint {
+    pub grid_id: usize,
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub u: f32,
+    pub v: f32,
+    pub w: f32,
+    pub iblank: Option<i32>,
+}
+
+fn queue_line_segment(
+    segments: &mut Vec<LineSegment>,
+    depth: f32,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+    color: Rgba<u8>,
+) {
+    segments.push(LineSegment {
+        depth,
+        x0,
+        y0,
+        x1,
+        y1,
+        color,
+    });
+}
+
+fn flush_line_segments(img: &mut RgbaImage, segments: &mut Vec<LineSegment>) {
+    // Smaller projected depth is closer in our camera convention; draw far -> near.
+    segments.sort_by(|a, b| b.depth.total_cmp(&a.depth));
+    for seg in segments.drain(..) {
+        draw_line(img, seg.x0, seg.y0, seg.x1, seg.y1, seg.color);
+    }
+}
+
+fn orient2d(ax: f32, ay: f32, bx: f32, by: f32, cx: f32, cy: f32) -> f32 {
+    (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
+}
+
+fn on_segment_2d(ax: f32, ay: f32, bx: f32, by: f32, px: f32, py: f32) -> bool {
+    let min_x = ax.min(bx) - 1e-6;
+    let max_x = ax.max(bx) + 1e-6;
+    let min_y = ay.min(by) - 1e-6;
+    let max_y = ay.max(by) + 1e-6;
+    px >= min_x && px <= max_x && py >= min_y && py <= max_y
+}
+
+fn segments_intersect_2d(a0: (f32, f32), a1: (f32, f32), b0: (f32, f32), b1: (f32, f32)) -> bool {
+    let o1 = orient2d(a0.0, a0.1, a1.0, a1.1, b0.0, b0.1);
+    let o2 = orient2d(a0.0, a0.1, a1.0, a1.1, b1.0, b1.1);
+    let o3 = orient2d(b0.0, b0.1, b1.0, b1.1, a0.0, a0.1);
+    let o4 = orient2d(b0.0, b0.1, b1.0, b1.1, a1.0, a1.1);
+
+    if (o1 > 0.0) != (o2 > 0.0) && (o3 > 0.0) != (o4 > 0.0) {
+        return true;
+    }
+
+    (o1.abs() <= 1e-6 && on_segment_2d(a0.0, a0.1, a1.0, a1.1, b0.0, b0.1))
+        || (o2.abs() <= 1e-6 && on_segment_2d(a0.0, a0.1, a1.0, a1.1, b1.0, b1.1))
+        || (o3.abs() <= 1e-6 && on_segment_2d(b0.0, b0.1, b1.0, b1.1, a0.0, a0.1))
+        || (o4.abs() <= 1e-6 && on_segment_2d(b0.0, b0.1, b1.0, b1.1, a1.0, a1.1))
+}
+
+fn parse_rake_axis_values(lines: &[Vec<String>]) -> Vec<f32> {
+    let mut values = Vec::new();
+    for line in lines {
+        let nums: Vec<f32> = line
+            .iter()
+            .filter_map(|token| token.parse::<f32>().ok())
+            .collect();
+        if nums.is_empty() {
+            continue;
+        }
+        if nums.len() == 1 {
+            values.push(nums[0]);
+            continue;
+        }
+
+        let start = nums[0];
+        let end = nums[1];
+        let mut step = if nums.len() >= 3 {
+            nums[2]
+        } else if end >= start {
+            1.0
+        } else {
+            -1.0
+        };
+        if !step.is_finite() || step.abs() <= 1e-20 {
+            step = if end >= start { 1.0 } else { -1.0 };
+        }
+
+        let mut current = start;
+        let mut guard = 0usize;
+        loop {
+            values.push(current);
+            guard += 1;
+            if guard > 4096 {
+                break;
+            }
+            let done = if step > 0.0 {
+                current >= end - 1e-6
+            } else {
+                current <= end + 1e-6
+            };
+            if done {
+                break;
+            }
+            current += step;
+        }
+    }
+    values
+}
+
+fn expand_rake_xyz_seed_points(payload: &RakeInteractivePayload) -> Vec<(f32, f32, f32)> {
+    if !payload.is_xyz {
+        return Vec::new();
+    }
+
+    let mut seeds = Vec::new();
+    for entry in &payload.entries {
+        let xs = parse_rake_axis_values(&entry.axis1_lines);
+        let ys = parse_rake_axis_values(&entry.axis2_lines);
+        let zs = parse_rake_axis_values(&entry.axis3_lines);
+        if xs.is_empty() || ys.is_empty() || zs.is_empty() {
+            continue;
+        }
+
+        for &x in &xs {
+            for &y in &ys {
+                for &z in &zs {
+                    seeds.push((x, y, z));
+                }
+            }
+        }
+    }
+
+    seeds
+}
 
 fn draw_wall_overlays(
     img: &mut RgbaImage,
@@ -33,6 +187,7 @@ fn draw_wall_overlays(
     margin: u32,
     view_bounds: Option<(f32, f32, f32, f32)>,
     warnings: &mut Vec<String>,
+    segments: &mut Vec<LineSegment>,
 ) {
     if state.walls.is_empty() || slab_w == 0 || slab_h == 0 || uvs.is_empty() {
         return;
@@ -50,16 +205,8 @@ fn draw_wall_overlays(
     };
 
     let wall_color = Rgba([240, 240, 240, 255]);
-    let mut skipped_non_primary_grid = false;
 
     for wall in &state.walls {
-        // Headless snapshot currently holds one resolved grid. Keep parity deterministic by
-        // drawing only walls for grid 1 (or unspecified default behavior).
-        if wall.grid > 1 {
-            skipped_non_primary_grid = true;
-            continue;
-        }
-
         let Some(((u_start, u_end), (v_start, v_end))) =
             wall_ranges_for_view(wall, state, slab_w, slab_h, warnings)
         else {
@@ -76,17 +223,200 @@ fn draw_wall_overlays(
         let (x2, y2) = uv_to_screen(bottom_right.0, bottom_right.1);
         let (x3, y3) = uv_to_screen(bottom_left.0, bottom_left.1);
 
-        draw_line(img, x0, y0, x1, y1, wall_color);
-        draw_line(img, x1, y1, x2, y2, wall_color);
-        draw_line(img, x2, y2, x3, y3, wall_color);
-        draw_line(img, x3, y3, x0, y0, wall_color);
+        queue_line_segment(segments, 0.0, x0, y0, x1, y1, wall_color);
+        queue_line_segment(segments, 0.0, x1, y1, x2, y2, wall_color);
+        queue_line_segment(segments, 0.0, x2, y2, x3, y3, wall_color);
+        queue_line_segment(segments, 0.0, x3, y3, x0, y0, wall_color);
+    }
+}
+
+fn draw_multigrid_wall_overlays(
+    img: &mut RgbaImage,
+    grids: &[Plot3DGrid],
+    state: &PlotState,
+    margin: u32,
+    bounds: (f32, f32, f32, f32),
+    warnings: &mut Vec<String>,
+    segments_out: &mut Vec<LineSegment>,
+    wall_segments_out: Option<&mut Vec<(f32, f32, f32, f32)>>,
+) {
+    if state.walls.is_empty() {
+        return;
     }
 
-    if skipped_non_primary_grid {
+    let Some(tf) = build_uv_screen_transform(img.width(), img.height(), margin, bounds) else {
+        return;
+    };
+    let camera = camera_basis_for_state(state, warnings);
+    let swap = is_swapped_plane_view(state.axis_view);
+
+    let uv_to_screen = |u: f32, v: f32| -> (i32, i32) {
+        let x = tf.origin_x + (u - tf.min_u) * tf.scale;
+        let y = tf.origin_y + (v - tf.min_v) * tf.scale;
+        (x.round() as i32, y.round() as i32)
+    };
+
+    let mut skipped_missing_grid = false;
+
+    let mut wall_segments_out = wall_segments_out;
+
+    for wall in &state.walls {
+        let segment_color = wall_style_rgba(wall);
+        let Some(grid) = wall
+            .grid
+            .checked_sub(1)
+            .and_then(|idx| grids.get(idx as usize))
+        else {
+            skipped_missing_grid = true;
+            continue;
+        };
+
+        let ni = grid.dimensions.i as usize;
+        let nj = grid.dimensions.j as usize;
+        let nk = grid.dimensions.k as usize;
+
+        let Some(i_indices) = resolve_index_values(wall.i_range.as_ref(), ni) else {
+            continue;
+        };
+        let Some(j_indices) = resolve_index_values(wall.j_range.as_ref(), nj) else {
+            continue;
+        };
+        let Some(k_indices) = resolve_index_values(wall.k_range.as_ref(), nk) else {
+            continue;
+        };
+
+        let world_point = |i1: usize, j1: usize, k1: usize| -> (f32, f32, f32) {
+            let i0 = i1.saturating_sub(1);
+            let j0 = j1.saturating_sub(1);
+            let k0 = k1.saturating_sub(1);
+            let idx = i0 + j0 * ni + k0 * ni * nj;
+            (grid.x_coords[idx], grid.y_coords[idx], grid.z_coords[idx])
+        };
+
+        let mut add_segment = |a: (f32, f32, f32), b: (f32, f32, f32)| {
+            let mut pa = project_point(a, camera);
+            let mut pb = project_point(b, camera);
+            if swap {
+                pa = (pa.1, pa.0, pa.2);
+                pb = (pb.1, pb.0, pb.2);
+            }
+            let depth = 0.5 * (pa.2 + pb.2);
+            let (x0, y0) = uv_to_screen(pa.0, pa.1);
+            let (x1, y1) = uv_to_screen(pb.0, pb.1);
+            queue_line_segment(segments_out, depth, x0, y0, x1, y1, segment_color);
+            if let Some(out) = wall_segments_out.as_deref_mut() {
+                out.push((pa.0, pa.1, pb.0, pb.1));
+            }
+        };
+
+        for &j in &j_indices {
+            for &k in &k_indices {
+                for w in i_indices.windows(2) {
+                    add_segment(world_point(w[0], j, k), world_point(w[1], j, k));
+                }
+            }
+        }
+        for &i in &i_indices {
+            for &k in &k_indices {
+                for w in j_indices.windows(2) {
+                    add_segment(world_point(i, w[0], k), world_point(i, w[1], k));
+                }
+            }
+        }
+        for &i in &i_indices {
+            for &j in &j_indices {
+                for w in k_indices.windows(2) {
+                    add_segment(world_point(i, j, w[0]), world_point(i, j, w[1]));
+                }
+            }
+        }
+    }
+
+    if skipped_missing_grid {
         warnings.push(
-            "Renderer: WALLS entries for grid > 1 are skipped in single-grid snapshot mode"
+            "Renderer: some wall entries reference unavailable grids in multigrid wall overlay"
                 .to_string(),
         );
+    }
+}
+
+fn multigrid_wall_projected_bounds(
+    grids: &[Plot3DGrid],
+    state: &PlotState,
+    camera: ((f32, f32, f32), (f32, f32, f32), (f32, f32, f32)),
+    swap: bool,
+) -> Option<(f32, f32, f32, f32)> {
+    let mut pts: Vec<(f32, f32)> = Vec::new();
+
+    for wall in &state.walls {
+        let Some(grid) = wall
+            .grid
+            .checked_sub(1)
+            .and_then(|idx| grids.get(idx as usize))
+        else {
+            continue;
+        };
+
+        let ni = grid.dimensions.i as usize;
+        let nj = grid.dimensions.j as usize;
+        let nk = grid.dimensions.k as usize;
+
+        let Some(i_indices) = resolve_index_values(wall.i_range.as_ref(), ni) else {
+            continue;
+        };
+        let Some(j_indices) = resolve_index_values(wall.j_range.as_ref(), nj) else {
+            continue;
+        };
+        let Some(k_indices) = resolve_index_values(wall.k_range.as_ref(), nk) else {
+            continue;
+        };
+
+        let world_point = |i1: usize, j1: usize, k1: usize| -> (f32, f32, f32) {
+            let i0 = i1.saturating_sub(1);
+            let j0 = j1.saturating_sub(1);
+            let k0 = k1.saturating_sub(1);
+            let idx = i0 + j0 * ni + k0 * ni * nj;
+            (grid.x_coords[idx], grid.y_coords[idx], grid.z_coords[idx])
+        };
+
+        let mut push_point = |p: (f32, f32, f32)| {
+            let mut q = project_point(p, camera);
+            if swap {
+                q = (q.1, q.0, q.2);
+            }
+            pts.push((q.0, q.1));
+        };
+
+        for &j in &j_indices {
+            for &k in &k_indices {
+                for w in i_indices.windows(2) {
+                    push_point(world_point(w[0], j, k));
+                    push_point(world_point(w[1], j, k));
+                }
+            }
+        }
+        for &i in &i_indices {
+            for &k in &k_indices {
+                for w in j_indices.windows(2) {
+                    push_point(world_point(i, w[0], k));
+                    push_point(world_point(i, w[1], k));
+                }
+            }
+        }
+        for &i in &i_indices {
+            for &j in &j_indices {
+                for w in k_indices.windows(2) {
+                    push_point(world_point(i, j, w[0]));
+                    push_point(world_point(i, j, w[1]));
+                }
+            }
+        }
+    }
+
+    if pts.is_empty() {
+        None
+    } else {
+        Some(bbox(&pts))
     }
 }
 
@@ -108,6 +438,7 @@ fn draw_vector_overlays(
     margin: u32,
     view_bounds: Option<(f32, f32, f32, f32)>,
     warnings: &mut Vec<String>,
+    segments: &mut Vec<LineSegment>,
 ) {
     let Some(vectors) = &state.vectors else {
         return;
@@ -353,14 +684,11 @@ fn draw_vector_overlays(
             Rgba([255, 191, 0, 255])
         };
 
-        draw_line(
-            img,
-            x0.round() as i32,
-            y0.round() as i32,
-            x1.round() as i32,
-            y1.round() as i32,
-            color,
-        );
+        let x0i = x0.round() as i32;
+        let y0i = y0.round() as i32;
+        let x1i = x1.round() as i32;
+        let y1i = y1.round() as i32;
+        queue_line_segment(segments, 0.0, x0i, y0i, x1i, y1i, color);
 
         let perp_x = -dir_y;
         let perp_y = dir_x;
@@ -372,23 +700,432 @@ fn draw_vector_overlays(
         let rx = back_x - perp_x * wing;
         let ry = back_y - perp_y * wing;
 
-        draw_line(
-            img,
-            x1.round() as i32,
-            y1.round() as i32,
+        queue_line_segment(
+            segments,
+            0.0,
+            x1i,
+            y1i,
             lx.round() as i32,
             ly.round() as i32,
             color,
         );
-        draw_line(
-            img,
-            x1.round() as i32,
-            y1.round() as i32,
+        queue_line_segment(
+            segments,
+            0.0,
+            x1i,
+            y1i,
             rx.round() as i32,
             ry.round() as i32,
             color,
         );
     }
+}
+
+fn draw_payload_rake_traces(
+    img: &mut RgbaImage,
+    snap: &SolutionSnapshot,
+    multigrid_flow: Option<&[FlowSamplePoint]>,
+    state: &PlotState,
+    margin: u32,
+    warnings: &mut Vec<String>,
+    segments: &mut Vec<LineSegment>,
+    wall_hit_segments: Option<&[(f32, f32, f32, f32)]>,
+) -> bool {
+    let Some(rakes) = &state.rakes else {
+        return false;
+    };
+    let payload = rakes.interactive_payload.as_ref();
+    if let Some(payload) = payload {
+        if !payload.is_xyz {
+            // IJK payload replay is not yet implemented in headless mode.
+            return false;
+        }
+    }
+
+    let total_points = (snap.ni as usize) * (snap.nj as usize) * (snap.nk as usize);
+    if snap.u.len() != total_points || snap.v.len() != total_points || snap.w.len() != total_points
+    {
+        warnings.push(
+            "Renderer: skipping RAKES payload traces because velocity component lengths do not match snapshot dimensions"
+                .to_string(),
+        );
+        return false;
+    }
+
+    let camera = camera_basis_for_state(state, warnings);
+    let swap = is_swapped_plane_view(state.axis_view);
+
+    let mut projected_points: Vec<(f32, f32)> = Vec::with_capacity(total_points);
+    let mut world_points: Vec<(f32, f32, f32)> = Vec::with_capacity(total_points);
+    let mut min_u = f32::INFINITY;
+    let mut max_u = f32::NEG_INFINITY;
+    let mut min_v = f32::INFINITY;
+    let mut max_v = f32::NEG_INFINITY;
+
+    for idx in 0..total_points {
+        let mut p = project_point((snap.x[idx], snap.y[idx], snap.z[idx]), camera);
+        if swap {
+            p = (p.1, p.0, p.2);
+        }
+        projected_points.push((p.0, p.1));
+        world_points.push((snap.x[idx], snap.y[idx], snap.z[idx]));
+        min_u = min_u.min(p.0);
+        max_u = max_u.max(p.0);
+        min_v = min_v.min(p.1);
+        max_v = max_v.max(p.1);
+    }
+
+    if projected_points.is_empty() {
+        return false;
+    }
+
+    let bounds =
+        projected_minmax_bbox(state, camera, swap).unwrap_or_else(|| (min_u, max_u, min_v, max_v));
+    let Some(tf) = build_uv_screen_transform(img.width(), img.height(), margin, bounds) else {
+        return false;
+    };
+
+    let uv_to_screen = |u: f32, v: f32| -> (f32, f32) {
+        (
+            tf.origin_x + (u - tf.min_u) * tf.scale,
+            tf.origin_y + (v - tf.min_v) * tf.scale,
+        )
+    };
+
+    let sampled: Vec<(f32, f32, f32, f32, f32, f32, f32, Option<i32>)> =
+        if let Some(flow) = multigrid_flow.filter(|f| !f.is_empty()) {
+            flow.iter()
+                .map(|p| {
+                    let mag = (p.u * p.u + p.v * p.v + p.w * p.w).sqrt();
+                    (p.x, p.y, p.z, p.u, p.v, p.w, mag.max(0.0), p.iblank)
+                })
+                .collect()
+        } else {
+            (0..total_points)
+                .map(|idx| {
+                    let vx = snap.u[idx];
+                    let vy = snap.v[idx];
+                    let vz = snap.w[idx];
+                    let mag = (vx * vx + vy * vy + vz * vz).sqrt();
+                    (
+                        world_points[idx].0,
+                        world_points[idx].1,
+                        world_points[idx].2,
+                        vx,
+                        vy,
+                        vz,
+                        mag.max(0.0),
+                        snap.iblank.as_ref().and_then(|vals| vals.get(idx)).copied(),
+                    )
+                })
+                .collect()
+        };
+    let sampled_grid: Vec<usize> = if let Some(flow) = multigrid_flow.filter(|f| !f.is_empty()) {
+        flow.iter().map(|p| p.grid_id).collect()
+    } else {
+        vec![0usize; sampled.len()]
+    };
+
+    let mut max_mag = 0.0f32;
+    let mut min_mag = f32::INFINITY;
+    for &(_, _, _, vx, vy, vz, mag, _) in &sampled {
+        let mag = if mag.is_finite() {
+            mag
+        } else {
+            (vx * vx + vy * vy + vz * vz).sqrt()
+        };
+        if mag.is_finite() && mag > 1e-10 {
+            max_mag = max_mag.max(mag);
+            min_mag = min_mag.min(mag);
+        }
+    }
+    if max_mag <= 0.0 || !max_mag.is_finite() {
+        warnings
+            .push("Renderer: RAKES payload traces have no measurable velocity field".to_string());
+        return false;
+    }
+
+    let sample_velocity_at = |x: f32, y: f32, z: f32| -> Option<(f32, f32, f32, f32, usize)> {
+        let mut nearest: Vec<(f32, usize)> = Vec::new();
+        for (idx, &(px, py, pz, _, _, _, _, _)) in sampled.iter().enumerate() {
+            let dx = px - x;
+            let dy = py - y;
+            let dz = pz - z;
+            let d2 = dx * dx + dy * dy + dz * dz;
+            if !d2.is_finite() {
+                continue;
+            }
+            if nearest.len() < 64 {
+                nearest.push((d2, idx));
+                nearest.sort_by(|a, b| a.0.total_cmp(&b.0));
+            } else if d2 < nearest[63].0 {
+                nearest[63] = (d2, idx);
+                nearest.sort_by(|a, b| a.0.total_cmp(&b.0));
+            }
+        }
+
+        if nearest.is_empty() {
+            return None;
+        }
+
+        // Prefer active donor cells (IBLANK=1) if they are reasonably close
+        // to the local neighborhood; this helps traces transfer across overset
+        // interfaces instead of staying in hole/fringe samples.
+        let base_d2 = nearest[0].0.max(1e-12);
+        let active_radius_d2 = base_d2 * 36.0;
+        let mut active_nearest: Vec<(f32, usize)> = nearest
+            .iter()
+            .copied()
+            .filter(|(d2, idx)| {
+                *d2 <= active_radius_d2 && sampled[*idx].7.is_some_and(|ibl| ibl == 1)
+            })
+            .collect();
+        active_nearest.sort_by(|a, b| a.0.total_cmp(&b.0));
+
+        let active_used = !active_nearest.is_empty();
+        let candidates: Vec<(f32, usize)> = if active_used {
+            active_nearest.into_iter().take(12).collect()
+        } else {
+            nearest.into_iter().take(12).collect()
+        };
+
+        let donor_grid = candidates
+            .iter()
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(_, idx)| sampled_grid[*idx])
+            .unwrap_or(0);
+
+        let mut w_sum = 0.0f32;
+        let mut vx = 0.0f32;
+        let mut vy = 0.0f32;
+        let mut vz = 0.0f32;
+        for (d2, idx) in candidates {
+            let weight = 1.0 / d2.max(1e-12);
+            w_sum += weight;
+            vx += sampled[idx].3 * weight;
+            vy += sampled[idx].4 * weight;
+            vz += sampled[idx].5 * weight;
+        }
+
+        if w_sum <= 0.0 || !w_sum.is_finite() {
+            return None;
+        }
+
+        vx /= w_sum;
+        vy /= w_sum;
+        vz /= w_sum;
+        let mag = (vx * vx + vy * vy + vz * vz).sqrt();
+        if !mag.is_finite() || mag <= 1e-10 {
+            return None;
+        }
+        Some((vx, vy, vz, mag, donor_grid))
+    };
+
+    let style_color = |entry: &crate::plot_state::RakeInteractiveEntry| -> Option<Rgba<u8>> {
+        for line in &entry.style_lines {
+            for token in line {
+                match token.to_ascii_lowercase().as_str() {
+                    "black" => return Some(Rgba([0, 0, 0, 255])),
+                    "white" => return Some(Rgba([240, 240, 240, 255])),
+                    "red" => return Some(Rgba([255, 48, 48, 255])),
+                    "green" => return Some(Rgba([0, 255, 0, 255])),
+                    "blue" => return Some(Rgba([64, 128, 255, 255])),
+                    "cyan" => return Some(Rgba([64, 224, 224, 255])),
+                    "magenta" => return Some(Rgba([255, 64, 224, 255])),
+                    "yellow" => return Some(Rgba([255, 255, 64, 255])),
+                    _ => {}
+                }
+            }
+        }
+        None
+    };
+
+    let directions: &[f32] = match rakes.time_mode {
+        Some(crate::plot_state::RakeTimeMode::Minus) => &[-1.0],
+        Some(crate::plot_state::RakeTimeMode::PlusMinus) => &[1.0, -1.0],
+        _ => &[1.0],
+    };
+    let use_attributes = rakes.attributes_enabled.unwrap_or(true);
+    let seed_scale = rakes.max_points.unwrap_or(120).clamp(8, 600) as f32 / 120.0;
+    // Legacy rake traces are integrated over many small advection steps.
+    // Use a generous cap so trajectories do not terminate at an artificial,
+    // uniform step cutoff in larger chimera scenes.
+    let step_count = ((rakes.max_points.unwrap_or(120) as f32) * 8.0)
+        .clamp(256.0, 4000.0)
+        .round() as usize;
+    let span_u = (max_u - min_u).abs();
+    let span_v = (max_v - min_v).abs();
+    let domain_extent = (span_u * span_u + span_v * span_v).sqrt().max(1e-3);
+    let base_step_length = ((domain_extent / 420.0) * seed_scale).max(0.002);
+
+    let mut world_min_x = f32::INFINITY;
+    let mut world_max_x = f32::NEG_INFINITY;
+    let mut world_min_y = f32::INFINITY;
+    let mut world_max_y = f32::NEG_INFINITY;
+    let mut world_min_z = f32::INFINITY;
+    let mut world_max_z = f32::NEG_INFINITY;
+    for &(x, y, z, _, _, _, _, _) in &sampled {
+        world_min_x = world_min_x.min(x);
+        world_max_x = world_max_x.max(x);
+        world_min_y = world_min_y.min(y);
+        world_max_y = world_max_y.max(y);
+        world_min_z = world_min_z.min(z);
+        world_max_z = world_max_z.max(z);
+    }
+    let world_dx = (world_max_x - world_min_x).abs().max(1e-6);
+    let world_dy = (world_max_y - world_min_y).abs().max(1e-6);
+    let world_dz = (world_max_z - world_min_z).abs().max(1e-6);
+    let world_diag = (world_dx * world_dx + world_dy * world_dy + world_dz * world_dz)
+        .sqrt()
+        .max(1e-6);
+    let target_trace_length = world_diag * 10.0;
+
+    let mut seed_specs: Vec<((f32, f32, f32), Option<Rgba<u8>>)> = Vec::new();
+    let mut seen_seed_specs: HashSet<(u32, u32, u32)> = HashSet::new();
+    let mut total_seed_points = 0usize;
+
+    if let Some(payload) = payload.filter(|payload| payload.is_xyz) {
+        for entry in &payload.entries {
+            let xs = parse_rake_axis_values(&entry.axis1_lines);
+            let ys = parse_rake_axis_values(&entry.axis2_lines);
+            let zs = parse_rake_axis_values(&entry.axis3_lines);
+            if xs.is_empty() || ys.is_empty() || zs.is_empty() {
+                continue;
+            }
+
+            let entry_color = style_color(entry);
+            for &x in &xs {
+                for &y in &ys {
+                    for &z in &zs {
+                        let key = (x.to_bits(), y.to_bits(), z.to_bits());
+                        if seen_seed_specs.insert(key) {
+                            seed_specs.push(((x, y, z), entry_color));
+                            total_seed_points += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if seed_specs.is_empty() {
+        let max_seeds = rakes.max_points.unwrap_or(120).clamp(8, 600) as usize;
+        let seed_stride = ((sampled.len() as f32 / max_seeds as f32).ceil() as usize).max(1);
+        for (idx, &(x, y, z, _, _, _, _, _)) in sampled.iter().enumerate().step_by(seed_stride) {
+            let _ = idx;
+            seed_specs.push(((x, y, z), None));
+            total_seed_points += 1;
+        }
+    }
+
+    let mut drew_any = false;
+    let mut donor_steps = 0usize;
+    let mut donor_switches = 0usize;
+    for ((x, y, z), entry_color) in seed_specs {
+        for direction in directions {
+            let mut px = x;
+            let mut py = y;
+            let mut pz = z;
+            let mut traveled = 0.0f32;
+            let mut last_donor_grid: Option<usize> = None;
+
+            for _ in 0..step_count {
+                let Some((vx1, vy1, vz1, mag1, _donor1)) = sample_velocity_at(px, py, pz) else {
+                    break;
+                };
+                let inv1 = 1.0 / mag1;
+                let h = base_step_length * (0.35 + 0.65 * (mag1 / max_mag));
+
+                let mid_x = px + direction * vx1 * inv1 * h * 0.5;
+                let mid_y = py + direction * vy1 * inv1 * h * 0.5;
+                let mid_z = pz + direction * vz1 * inv1 * h * 0.5;
+
+                let Some((vx2, vy2, vz2, mag2, donor2)) = sample_velocity_at(mid_x, mid_y, mid_z)
+                else {
+                    break;
+                };
+                donor_steps += 1;
+                if let Some(prev) = last_donor_grid {
+                    if prev != donor2 {
+                        donor_switches += 1;
+                    }
+                }
+                last_donor_grid = Some(donor2);
+                let inv2 = 1.0 / mag2;
+                let nx = px + direction * vx2 * inv2 * h;
+                let ny = py + direction * vy2 * inv2 * h;
+                let nz = pz + direction * vz2 * inv2 * h;
+
+                if nx < world_min_x
+                    || nx > world_max_x
+                    || ny < world_min_y
+                    || ny > world_max_y
+                    || nz < world_min_z
+                    || nz > world_max_z
+                {
+                    break;
+                }
+
+                let from = project_point((px, py, pz), camera);
+                let mut to = project_point((nx, ny, nz), camera);
+                let mut from = from;
+                if swap {
+                    from = (from.1, from.0, from.2);
+                    to = (to.1, to.0, to.2);
+                }
+
+                let _ = wall_hit_segments;
+
+                let (x0, y0) = uv_to_screen(from.0, from.1);
+                let (x1, y1) = uv_to_screen(to.0, to.1);
+
+                let color = if let Some(color) = entry_color {
+                    color
+                } else if use_attributes {
+                    let t = ((mag2 - min_mag) / (max_mag - min_mag).max(1e-20)).clamp(0.0, 1.0);
+                    let [r, g, b] = colormap::apply(t);
+                    Rgba([r, g, b, 255])
+                } else {
+                    Rgba([64, 255, 160, 255])
+                };
+
+                queue_line_segment(
+                    segments,
+                    0.5 * (from.2 + to.2),
+                    x0.round() as i32,
+                    y0.round() as i32,
+                    x1.round() as i32,
+                    y1.round() as i32,
+                    color,
+                );
+
+                drew_any = true;
+                let seg_len =
+                    ((nx - px) * (nx - px) + (ny - py) * (ny - py) + (nz - pz) * (nz - pz)).sqrt();
+                if seg_len.is_finite() {
+                    traveled += seg_len;
+                }
+                px = nx;
+                py = ny;
+                pz = nz;
+                if traveled >= target_trace_length {
+                    break;
+                }
+            }
+        }
+    }
+
+    if !drew_any {
+        warnings.push(format!(
+            "Renderer: RAKES payload parsed {total_seed_points} seed point(s) but produced no drawable segments"
+        ));
+    } else if multigrid_flow.is_some() && donor_steps > 0 {
+        warnings.push(format!(
+            "Renderer: RAKES payload donor-grid switches {donor_switches}/{donor_steps} advection steps"
+        ));
+    }
+
+    drew_any
 }
 
 fn draw_rake_overlays(
@@ -397,14 +1134,30 @@ fn draw_rake_overlays(
     slab_w: usize,
     slab_h: usize,
     snap: &SolutionSnapshot,
+    multigrid_flow: Option<&[FlowSamplePoint]>,
     state: &PlotState,
     margin: u32,
     view_bounds: Option<(f32, f32, f32, f32)>,
     warnings: &mut Vec<String>,
+    segments: &mut Vec<LineSegment>,
+    wall_hit_segments: Option<&[(f32, f32, f32, f32)]>,
 ) {
     let Some(rakes) = &state.rakes else {
         return;
     };
+
+    if draw_payload_rake_traces(
+        img,
+        snap,
+        multigrid_flow,
+        state,
+        margin,
+        warnings,
+        segments,
+        wall_hit_segments,
+    ) {
+        return;
+    }
 
     if uvs.is_empty() || slab_w == 0 || slab_h == 0 {
         return;
@@ -668,8 +1421,17 @@ fn draw_rake_overlays(
         _ => &[1.0],
     };
 
-    let step_count = 14usize;
+    // Legacy/non-payload rake mode previously used a very short fixed budget
+    // (14 RK2 steps), causing visible uniform truncation. Scale the budget by
+    // MAXPOINTS and cap it conservatively for performance.
+    let step_count = ((rakes.max_points.unwrap_or(120) as f32) * 8.0)
+        .clamp(128.0, 3000.0)
+        .round() as usize;
     let step_idx = 0.85f32;
+    let slab_diag = ((slab_w as f32).powi(2) + (slab_h as f32).powi(2))
+        .sqrt()
+        .max(1.0);
+    let target_trace_length = slab_diag * 2.5;
 
     for slab_idx in (0..projected.len()).step_by(seed_stride) {
         let seed_i = (slab_idx % slab_w) as f32;
@@ -678,6 +1440,7 @@ fn draw_rake_overlays(
         for direction in directions {
             let mut ci = seed_i;
             let mut cj = seed_j;
+            let mut traveled = 0.0f32;
             for _ in 0..step_count {
                 let Some((vx1, vy1, mag1)) = sample_vec(ci, cj) else {
                     break;
@@ -715,8 +1478,9 @@ fn draw_rake_overlays(
                     Rgba([64, 255, 160, 255])
                 };
 
-                draw_line(
-                    img,
+                queue_line_segment(
+                    segments,
+                    0.0,
                     x0.round() as i32,
                     y0.round() as i32,
                     x1.round() as i32,
@@ -724,8 +1488,15 @@ fn draw_rake_overlays(
                     color,
                 );
 
+                let seg_len = ((ni - ci) * (ni - ci) + (nj - cj) * (nj - cj)).sqrt();
+                if seg_len.is_finite() {
+                    traveled += seg_len;
+                }
                 ci = ni;
                 cj = nj;
+                if traveled >= target_trace_length {
+                    break;
+                }
             }
         }
     }
@@ -881,10 +1652,13 @@ pub fn render_multigrid_walls(
     img: &mut RgbaImage,
     grids: &[Plot3DGrid],
     state: &PlotState,
+    clear_background: bool,
     render_warnings: &mut Vec<String>,
 ) {
-    for pixel in img.pixels_mut() {
-        *pixel = Rgba([0, 0, 0, 255]);
+    if clear_background {
+        for pixel in img.pixels_mut() {
+            *pixel = Rgba([0, 0, 0, 255]);
+        }
     }
 
     let margin = 20u32;
@@ -1646,9 +2420,11 @@ pub fn render_multigrid_subsets(
 
 /// Render `snapshot` into `img` according to the visualization settings in
 /// `state`.  Any renderer warnings are appended to `render_warnings`.
-pub fn render_snapshot(
+fn render_snapshot_impl(
     img: &mut RgbaImage,
     snapshot: &SolutionSnapshot,
+    multigrid_walls: Option<&[Plot3DGrid]>,
+    multigrid_flow: Option<&[FlowSamplePoint]>,
     state: &PlotState,
     render_warnings: &mut Vec<String>,
 ) {
@@ -1701,15 +2477,42 @@ pub fn render_snapshot(
         }
 
         // Particle-trace plots (FUNCTION 300+) show only overlays on a black
-        // background — skip the heatmap and iso-features.
+        // background — skip the heatmap and iso-features. Legacy RAKE demos
+        // without an explicit FUNCTION 300 still need that mode when the rake
+        // payload is present.
         let is_particle_mode = matches!(
             state.particle_function,
             Some(ParticleFunction::ParticleTraces)
-        );
+        ) || (state.particle_function.is_none()
+            && state
+                .rakes
+                .as_ref()
+                .and_then(|rakes| rakes.interactive_payload.as_ref())
+                .is_some());
 
         let camera = camera_basis_for_state(state, render_warnings);
-        let view_bounds =
-            projected_minmax_bbox(state, camera, is_swapped_plane_view(state.axis_view));
+        let swap = is_swapped_plane_view(state.axis_view);
+        let slab_bounds = bbox(&uvs);
+        let mut combined_bounds = slab_bounds;
+        if let Some((smin_u, smax_u, smin_v, smax_v)) = projected_minmax_bbox(state, camera, swap) {
+            combined_bounds = (
+                combined_bounds.0.min(smin_u),
+                combined_bounds.1.max(smax_u),
+                combined_bounds.2.min(smin_v),
+                combined_bounds.3.max(smax_v),
+            );
+        }
+        if let Some((wmin_u, wmax_u, wmin_v, wmax_v)) = multigrid_walls
+            .and_then(|grids| multigrid_wall_projected_bounds(grids, state, camera, swap))
+        {
+            combined_bounds = (
+                combined_bounds.0.min(wmin_u),
+                combined_bounds.1.max(wmax_u),
+                combined_bounds.2.min(wmin_v),
+                combined_bounds.3.max(wmax_v),
+            );
+        }
+        let view_bounds = Some(combined_bounds);
 
         if !is_particle_mode {
             rasterize_heatmap(
@@ -1742,16 +2545,33 @@ pub fn render_snapshot(
             }
         }
 
-        draw_wall_overlays(
-            img,
-            &uvs,
-            slab_w,
-            slab_h,
-            state,
-            margin,
-            view_bounds,
-            render_warnings,
-        );
+        let mut line_segments: Vec<LineSegment> = Vec::new();
+        let mut wall_hit_segments: Vec<(f32, f32, f32, f32)> = Vec::new();
+        let resolved_bounds = view_bounds.unwrap_or_else(|| bbox(&uvs));
+        if let Some(grids) = multigrid_walls {
+            draw_multigrid_wall_overlays(
+                img,
+                grids,
+                state,
+                margin,
+                resolved_bounds,
+                render_warnings,
+                &mut line_segments,
+                Some(&mut wall_hit_segments),
+            );
+        } else {
+            draw_wall_overlays(
+                img,
+                &uvs,
+                slab_w,
+                slab_h,
+                state,
+                margin,
+                Some(resolved_bounds),
+                render_warnings,
+                &mut line_segments,
+            );
+        }
         draw_vector_overlays(
             img,
             &uvs,
@@ -1762,6 +2582,7 @@ pub fn render_snapshot(
             margin,
             view_bounds,
             render_warnings,
+            &mut line_segments,
         );
         draw_rake_overlays(
             img,
@@ -1769,14 +2590,39 @@ pub fn render_snapshot(
             slab_w,
             slab_h,
             snapshot,
+            multigrid_flow,
             state,
             margin,
             view_bounds,
             render_warnings,
+            &mut line_segments,
+            Some(&wall_hit_segments),
         );
+
+        flush_line_segments(img, &mut line_segments);
     }
 
     draw_frame_border(img);
+}
+
+pub fn render_snapshot(
+    img: &mut RgbaImage,
+    snapshot: &SolutionSnapshot,
+    state: &PlotState,
+    render_warnings: &mut Vec<String>,
+) {
+    render_snapshot_impl(img, snapshot, None, None, state, render_warnings);
+}
+
+pub fn render_snapshot_with_multigrid_walls(
+    img: &mut RgbaImage,
+    snapshot: &SolutionSnapshot,
+    grids: &[Plot3DGrid],
+    flow: Option<&[FlowSamplePoint]>,
+    state: &PlotState,
+    render_warnings: &mut Vec<String>,
+) {
+    render_snapshot_impl(img, snapshot, Some(grids), flow, state, render_warnings);
 }
 
 // ─── Function-surface filled MVP (depth-buffer) ─────────────────────────────
@@ -3361,7 +4207,8 @@ fn build_uv_screen_transform(
 mod tests {
     use super::*;
     use crate::plot_state::{
-        ContourEntry, ContourSpec, PlotFamily, PlotUpAxis, RakeSettings, RakeTimeMode,
+        ContourEntry, ContourSpec, PlotFamily, PlotUpAxis, RakeInteractiveEntry,
+        RakeInteractivePayload, RakeSettings, RakeTimeMode,
     };
     use crate::script_executor::SolutionSnapshot;
 
@@ -3400,6 +4247,7 @@ mod tests {
             x,
             y,
             z,
+            iblank: None,
             scalar,
             u: vec![0.0; n],
             v: vec![0.0; n],
@@ -3491,6 +4339,55 @@ mod tests {
     }
 
     #[test]
+    fn rake_xyz_seed_expansion_matches_wbt_groups() {
+        let payload = RakeInteractivePayload {
+            is_xyz: true,
+            entries: vec![
+                RakeInteractiveEntry {
+                    grid_lines: vec![vec!["2".to_string()]],
+                    axis1_lines: vec![vec!["-1".to_string()]],
+                    axis2_lines: vec![vec!["2".to_string()]],
+                    axis3_lines: vec![vec!["-1".to_string(), ".5".to_string(), ".1".to_string()]],
+                    style_lines: vec![vec!["lines".to_string()], vec!["green".to_string()]],
+                },
+                RakeInteractiveEntry {
+                    grid_lines: vec![vec!["2".to_string()]],
+                    axis1_lines: vec![vec!["-1".to_string()]],
+                    axis2_lines: vec![vec!["4".to_string()]],
+                    axis3_lines: vec![vec!["-1".to_string(), ".5".to_string(), ".1".to_string()]],
+                    style_lines: vec![vec!["lines".to_string()], vec!["cyan".to_string()]],
+                },
+            ],
+        };
+
+        let seeds = expand_rake_xyz_seed_points(&payload);
+        assert_eq!(seeds.len(), 32, "expected 16 seeds per rake row");
+
+        let y2 = seeds
+            .iter()
+            .filter(|(_, y, _)| (*y - 2.0).abs() < 1e-6)
+            .count();
+        let y4 = seeds
+            .iter()
+            .filter(|(_, y, _)| (*y - 4.0).abs() < 1e-6)
+            .count();
+        assert_eq!(y2, 16, "expected 16 seeds at y=2");
+        assert_eq!(y4, 16, "expected 16 seeds at y=4");
+
+        assert!(seeds.iter().all(|(x, _, _)| (*x + 1.0).abs() < 1e-6));
+        let min_z = seeds
+            .iter()
+            .map(|(_, _, z)| *z)
+            .fold(f32::INFINITY, f32::min);
+        let max_z = seeds
+            .iter()
+            .map(|(_, _, z)| *z)
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert!((min_z + 1.0).abs() < 1e-6);
+        assert!((max_z - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
     fn resolve_contour_levels_none_returns_empty() {
         let levels = resolve_contour_levels(&ContourSpec::None, 0.0, 1.0);
         assert!(levels.is_empty());
@@ -3560,6 +4457,7 @@ mod tests {
             x: vec![0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0],
             y: vec![0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0],
             z: vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+            iblank: None,
             scalar: vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
             u: vec![0.0; 8],
             v: vec![0.0; 8],
@@ -3741,6 +4639,7 @@ mod tests {
             x: vec![10.0, 20.0, 30.0, 40.0],
             y: vec![1.0, 2.0, 3.0, 4.0],
             z: vec![0.0, 0.0, 0.0, 0.0],
+            iblank: None,
             scalar: vec![0.0, 1.0, 2.0, 3.0],
             u: vec![0.0; 4],
             v: vec![0.0; 4],
@@ -3771,6 +4670,7 @@ mod tests {
             x: vec![0.0, 1.0, 0.0, 1.0, 10.0, 20.0, 30.0, 40.0],
             y: vec![0.0, 0.0, 1.0, 1.0, 5.0, 5.0, 5.0, 5.0],
             z: vec![7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0],
+            iblank: None,
             scalar: vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
             u: vec![0.0; 8],
             v: vec![0.0; 8],
@@ -3801,6 +4701,7 @@ mod tests {
             x: vec![0.0, 99.0, 0.0, 99.0, 10.0, 20.0, 30.0, 40.0],
             y: vec![1.0, 2.0, 3.0, 4.0, 11.0, 12.0, 13.0, 14.0],
             z: vec![5.0, 6.0, 7.0, 8.0, 15.0, 16.0, 17.0, 18.0],
+            iblank: None,
             scalar: vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
             u: vec![0.0; 8],
             v: vec![0.0; 8],
@@ -3831,6 +4732,7 @@ mod tests {
             x: vec![10.0, 20.0, 30.0, 40.0],
             y: vec![1.0, 2.0, 3.0, 4.0],
             z: vec![0.0, 0.0, 0.0, 0.0],
+            iblank: None,
             scalar: vec![0.0, 1.0, 2.0, 3.0],
             u: vec![0.0; 4],
             v: vec![0.0; 4],
@@ -3860,6 +4762,7 @@ mod tests {
             x: vec![10.0, 20.0, 30.0, 40.0],
             y: vec![1.0, 2.0, 3.0, 4.0],
             z: vec![0.0, 0.0, 0.0, 0.0],
+            iblank: None,
             scalar: vec![0.0, 1.0, 2.0, 3.0],
             u: vec![0.0; 4],
             v: vec![0.0; 4],
@@ -3942,6 +4845,7 @@ mod tests {
             x: vec![0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0],
             y: vec![0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0],
             z: vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+            iblank: None,
             scalar: vec![10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0],
             u: vec![0.0; 8],
             v: vec![0.0; 8],
@@ -3976,6 +4880,7 @@ mod tests {
             x: vec![0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0],
             y: vec![0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0],
             z: vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+            iblank: None,
             scalar: vec![10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0],
             u: vec![0.0; 8],
             v: vec![0.0; 8],
@@ -4011,6 +4916,7 @@ mod tests {
             x: vec![0.0, 1.0, 0.0, 1.0],
             y: vec![0.0, 0.0, 1.0, 1.0],
             z: vec![0.0, 0.0, 0.0, 0.0],
+            iblank: None,
             scalar: vec![20.0, 21.0, 22.0, 23.0],
             u: vec![0.0; 4],
             v: vec![0.0; 4],

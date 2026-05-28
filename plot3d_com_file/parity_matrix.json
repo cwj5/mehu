@@ -1,6 +1,6 @@
 {
     "schemaVersion": 1,
-    "lastUpdated": "2026-05-26",
+    "lastUpdated": "2026-05-28",
     "parityStates": [
         "supported",
         "script-only",
@@ -91,7 +91,7 @@
             "id": "RAKES",
             "status": "script-only",
             "ticket": "TKT-013",
-            "notes": "Parser maps RAKES qualifiers into deterministic PlotState mutations via SetRakes (coordinate mode, add/attribute toggles, read/write path, time mode, max points, scalar function), with diagnostics for missing/invalid typed values. Rendering is now available as rake-line overlays in the interactive viewer and headless contour snapshots; dedicated GUI controls remain deferred.",
+            "notes": "Parser maps RAKES qualifiers into deterministic PlotState mutations via SetRakes (coordinate mode, add/attribute toggles, read/write path, time mode, max points, scalar function), with diagnostics for missing/invalid typed values. Rendering is now available as rake-line overlays in the interactive viewer and headless contour snapshots; dedicated GUI controls remain deferred. 2026-05-28: parity fixture coverage refreshed for /READ-backed rake seeds (fixture-local seed file + expected-state normalization), preserving deterministic parser/executor behavior without warning drift.",
             "rationale": "Script compatibility and deterministic command replay remain primary; RAKES now render from script/state, while direct GUI editing controls are deferred to a follow-up parity phase."
         }
     ],

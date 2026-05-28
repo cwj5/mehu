@@ -29,8 +29,8 @@
         },
         "rakes": {
             "coordinate_mode": "xyz",
-            "add": true,
-            "attributes_enabled": null,
+            "add": false,
+            "attributes_enabled": true,
             "io_mode": {
                 "kind": "read",
                 "path": "seeds.dat"

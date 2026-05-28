@@ -29,6 +29,15 @@ pub fn read_grid_n(
     path: &Path,
     grid_index: usize,
 ) -> io::Result<(u32, u32, u32, Vec<f32>, Vec<f32>, Vec<f32>)> {
+    let (ni, nj, nk, x, y, z, _) = read_grid_n_with_iblank(path, grid_index)?;
+    Ok((ni, nj, nk, x, y, z))
+}
+
+/// Read the `grid_index`-th grid (0-based) and optional IBLANK array.
+pub fn read_grid_n_with_iblank(
+    path: &Path,
+    grid_index: usize,
+) -> io::Result<(u32, u32, u32, Vec<f32>, Vec<f32>, Vec<f32>, Option<Vec<i32>>)> {
     let grids = match crate::plot3d::read_plot3d_grid(path) {
         Ok(v) => v,
         Err(binary_err) => crate::plot3d::read_plot3d_grid_ascii(path).map_err(|ascii_err| {
@@ -52,6 +61,7 @@ pub fn read_grid_n(
         grid.x_coords,
         grid.y_coords,
         grid.z_coords,
+        grid.iblank,
     ))
 }
 

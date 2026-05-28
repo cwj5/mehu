@@ -42,6 +42,8 @@ pub struct SolutionSnapshot {
     pub y: Vec<f32>,
     /// Flat grid Z coordinates, same length as `x`.
     pub z: Vec<f32>,
+    /// Optional IBLANK flags, same length as `x` when present.
+    pub iblank: Option<Vec<i32>>,
     /// Computed scalar field values, same length as `x`.
     pub scalar: Vec<f32>,
     /// Velocity component along X, same length as `x`.

@@ -3,8 +3,9 @@ use crate::plot_state::{
     cap, spherical_to_cartesian, AutoOrValueF64, AutoOrValueMode, AxisBounds, AxisView,
     ContourAttribute, ContourEntry, ContourSpec, DatasetRef, Diagnostic, DiagnosticSeverity,
     FsurfaceDisplayMode, FsurfaceUpdate, GridSubset, IndexRange, MinMaxOverride, PlotAction,
-    PlotFamily, PlotText, PlotUpAxis, RakeCoordinateMode, RakeIoMode, RakeSettings, RakeTimeMode,
-    ScalarField, VectorSettings, ViewPoint, WallColor, WallRenderMode, WallStyle,
+    PlotFamily, PlotText, PlotUpAxis, RakeCoordinateMode, RakeInteractiveEntry,
+    RakeInteractivePayload, RakeIoMode, RakeSettings, RakeTimeMode, ScalarField, VectorSettings,
+    ViewPoint, WallColor, WallRenderMode, WallStyle,
 };
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -43,17 +44,10 @@ struct LegacyTextState {
 #[allow(dead_code)]
 enum LegacyRakeStage {
     Grid,
-    Dimension,
-    Range1Start,
-    Range1End,
-    Range2Start,
-    Range2End,
-    Range3Start,
-    Range3End,
-    Count,
-    LineType,
-    Color,
-    Thickness,
+    Axis1,
+    Axis2,
+    Axis3,
+    Style,
 }
 
 #[derive(Debug, Clone)]
@@ -61,9 +55,9 @@ enum LegacyRakeStage {
 struct LegacyRakeState {
     is_xyz: bool, // false=IJK, true=XYZ
     stage: LegacyRakeStage,
-    grids: Vec<u32>,
-    current_grid: Option<u32>,
-    current_max_points: Option<u32>,
+    style_blank_run: usize,
+    current: RakeInteractiveEntry,
+    entries: Vec<RakeInteractiveEntry>,
     parsed_line_number: u32,
 }
 
@@ -203,6 +197,13 @@ fn parse_file_internal(
             }
         }
 
+        if let Some(state) = rake_state.as_mut() {
+            if raw_trimmed.is_empty() {
+                parse_rake_continuation(state, &[]);
+                continue;
+            }
+        }
+
         let stripped = strip_comments(raw_line);
         let trimmed = stripped.trim();
         if trimmed.is_empty() {
@@ -330,14 +331,16 @@ fn parse_file_internal(
         // Legacy RAKE also uses interactive follow-on responses.
         // Consume non-command lines as command-owned payload until a clear
         // next command token appears.
-        if let Some(_state) = rake_state.as_mut() {
+        if let Some(state) = rake_state.as_mut() {
             let continuation_tokens = tokenize_line(trimmed);
-            if !continuation_tokens.is_empty() && !looks_like_command_start(&continuation_tokens[0])
+            if !continuation_tokens.is_empty()
+                && (!looks_like_command_start(&continuation_tokens[0])
+                    || rake_token_belongs_to_prompt(state, &continuation_tokens))
             {
-                // For now, just consume the continuation lines as payload
-                // TODO: Parse rake paths, colors, line types according to stage
+                parse_rake_continuation(state, &continuation_tokens);
                 continue;
             }
+            flush_rake_state_into_actions(state, &mut out.actions);
             rake_state = None;
         }
 
@@ -422,6 +425,18 @@ fn parse_file_internal(
 
         if command == "RAKE" || command == "RAKES" {
             if rake_is_interactive_request(&args_with_inline) {
+                // Even in legacy interactive continuation mode, capture the
+                // command-level RAKES qualifiers/defaults deterministically.
+                parse_rakes(&args_with_inline, &canonical, line_number, &mut out);
+                out.diagnostics.push(diagnostic(
+                    cap::RAKES,
+                    DiagnosticSeverity::Info,
+                    Some(canonical.to_string_lossy().to_string()),
+                    Some(line_number),
+                    Some(1),
+                    "Interactive RAKE continuation payload is partially supported; command-level RAKES settings were captured",
+                ));
+
                 let is_xyz = args_with_inline.iter().any(|arg| {
                     let (name, _) = parse_qualifier(arg).unwrap_or(("".to_string(), None));
                     resolve_qualifier_abbrev(&name, &["IJK", "XYZ"]).to_uppercase() == "XYZ"
@@ -429,9 +444,9 @@ fn parse_file_internal(
                 rake_state = Some(LegacyRakeState {
                     is_xyz,
                     stage: LegacyRakeStage::Grid,
-                    grids: Vec::new(),
-                    current_grid: None,
-                    current_max_points: None,
+                    style_blank_run: 0,
+                    current: RakeInteractiveEntry::default(),
+                    entries: Vec::new(),
                     parsed_line_number: line_number,
                 });
                 continue;
@@ -467,8 +482,149 @@ fn parse_file_internal(
         walls_subsets_state = None;
     }
 
+    if let Some(state) = rake_state.as_mut() {
+        flush_rake_state_into_actions(state, &mut out.actions);
+    }
+
     visited.remove(&canonical);
     Ok(out)
+}
+
+fn push_current_rake_entry(state: &mut LegacyRakeState) {
+    let has_content = !state.current.grid_lines.is_empty()
+        || !state.current.axis1_lines.is_empty()
+        || !state.current.axis2_lines.is_empty()
+        || !state.current.axis3_lines.is_empty()
+        || !state.current.style_lines.is_empty();
+
+    if has_content {
+        state.entries.push(state.current.clone());
+        state.current = RakeInteractiveEntry::default();
+    }
+}
+
+fn flush_rake_state_into_actions(state: &mut LegacyRakeState, actions: &mut [PlotAction]) {
+    push_current_rake_entry(state);
+    let payload = RakeInteractivePayload {
+        is_xyz: state.is_xyz,
+        entries: state.entries.clone(),
+    };
+
+    if payload.entries.is_empty() {
+        return;
+    }
+
+    for action in actions.iter_mut().rev() {
+        if let PlotAction::SetRakes(settings) = action {
+            settings.interactive_payload = Some(payload.clone());
+            break;
+        }
+    }
+}
+
+fn parse_rake_continuation(state: &mut LegacyRakeState, tokens: &[String]) {
+    if tokens.is_empty() {
+        match state.stage {
+            LegacyRakeStage::Grid => {
+                if !state.current.grid_lines.is_empty() {
+                    state.stage = LegacyRakeStage::Axis1;
+                }
+            }
+            LegacyRakeStage::Axis1 => {
+                if !state.current.axis1_lines.is_empty() {
+                    state.stage = LegacyRakeStage::Axis2;
+                }
+            }
+            LegacyRakeStage::Axis2 => {
+                if !state.current.axis2_lines.is_empty() {
+                    state.stage = LegacyRakeStage::Axis3;
+                }
+            }
+            LegacyRakeStage::Axis3 => {
+                if !state.current.axis3_lines.is_empty() {
+                    state.stage = LegacyRakeStage::Style;
+                    state.style_blank_run = 0;
+                }
+            }
+            LegacyRakeStage::Style => {
+                // Legacy scripts can have a blank line between style color and
+                // line-width input. Require two separator blanks before ending
+                // the current rake entry.
+                if !state.current.style_lines.is_empty() {
+                    state.style_blank_run += 1;
+                    if state.style_blank_run >= 2 {
+                        push_current_rake_entry(state);
+                        state.stage = LegacyRakeStage::Grid;
+                        state.style_blank_run = 0;
+                    }
+                }
+            }
+        }
+        return;
+    }
+
+    if matches!(state.stage, LegacyRakeStage::Style) {
+        state.style_blank_run = 0;
+    }
+
+    // Legacy XYZ prompt flow records grid selection first, then axis1 input
+    // on the next non-blank line. Keep only one grid line per rake entry.
+    if matches!(state.stage, LegacyRakeStage::Grid) && !state.current.grid_lines.is_empty() {
+        state.stage = LegacyRakeStage::Axis1;
+    }
+
+    match state.stage {
+        LegacyRakeStage::Grid => state.current.grid_lines.push(tokens.to_vec()),
+        LegacyRakeStage::Axis1 => state.current.axis1_lines.push(tokens.to_vec()),
+        LegacyRakeStage::Axis2 => state.current.axis2_lines.push(tokens.to_vec()),
+        LegacyRakeStage::Axis3 => state.current.axis3_lines.push(tokens.to_vec()),
+        LegacyRakeStage::Style => state.current.style_lines.push(tokens.to_vec()),
+    }
+}
+
+fn rake_token_belongs_to_prompt(state: &LegacyRakeState, tokens: &[String]) -> bool {
+    let Some(first) = tokens.first() else {
+        return false;
+    };
+    let upper = first.to_uppercase();
+
+    match state.stage {
+        LegacyRakeStage::Grid
+        | LegacyRakeStage::Axis1
+        | LegacyRakeStage::Axis2
+        | LegacyRakeStage::Axis3 => {
+            first.parse::<f64>().is_ok() || upper == "ALL" || upper == "LAST" || upper == "FIRST"
+        }
+        LegacyRakeStage::Style => {
+            if first.parse::<f64>().is_ok() {
+                return true;
+            }
+            matches!(
+                upper.as_str(),
+                "LINE"
+                    | "LINES"
+                    | "DOT"
+                    | "DOTS"
+                    | "SOLID"
+                    | "DASHED"
+                    | "DOTTED"
+                    | "CHAINDASH"
+                    | "CHAINDOT"
+                    | "NONE"
+                    | "BLACK"
+                    | "MAGENTA"
+                    | "RED"
+                    | "YELLOW"
+                    | "GREEN"
+                    | "CYAN"
+                    | "BLUE"
+                    | "WHITE"
+                    | "RGB"
+                    | "SHADED"
+                    | "SH"
+            )
+        }
+    }
 }
 
 fn flush_text_state(state: &mut LegacyTextState, out: &mut ParsedScript) {
@@ -1548,8 +1704,32 @@ fn parse_rakes(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) 
 
     let _parsed_quals = validate_qualifiers("RAKES", args, RAKES_QUALIFIERS, file, line, out);
 
-    let mut settings = RakeSettings::default();
+    // Legacy defaults from RAKCMD/RAKCM1: /IJK, /ATTRIBUTES, /+TIME,
+    // /MAXPOINTS=2000, and /NOSCALAR_FUNCTION.
+    let mut settings = RakeSettings {
+        coordinate_mode: Some(RakeCoordinateMode::Ijk),
+        attributes_enabled: Some(true),
+        time_mode: Some(RakeTimeMode::Plus),
+        max_points: Some(2000),
+        scalar_function: None,
+        scalar_function_disabled: true,
+        ..RakeSettings::default()
+    };
     let mut positional = Vec::new();
+    let mut saw_read = false;
+    let mut saw_write = false;
+
+    let normalize_rake_path = |raw: &str| -> String {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return String::new();
+        }
+        if Path::new(trimmed).extension().is_none() {
+            format!("{trimmed}.PAR")
+        } else {
+            trimmed.to_string()
+        }
+    };
 
     for arg in args {
         if let Some((raw_name, value)) = parse_qualifier(arg) {
@@ -1582,17 +1762,61 @@ fn parse_rakes(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) 
 
                     match name.as_str() {
                         "READ" => {
-                            settings.io_mode = Some(RakeIoMode::Read(
-                                value.expect("checked above").trim().to_string(),
-                            ));
+                            saw_read = true;
+                            let normalized = normalize_rake_path(&value.expect("checked above"));
+                            let read_path = {
+                                let p = PathBuf::from(&normalized);
+                                if p.is_absolute() {
+                                    p
+                                } else {
+                                    file.parent().unwrap_or_else(|| Path::new(".")).join(p)
+                                }
+                            };
+                            if !read_path.exists() {
+                                out.diagnostics.push(diagnostic(
+                                    cap::RAKES,
+                                    DiagnosticSeverity::Warning,
+                                    Some(file.to_string_lossy().to_string()),
+                                    Some(line),
+                                    Some(1),
+                                    format!(
+                                        "RAKES /READ file '{}' does not exist",
+                                        read_path.display()
+                                    ),
+                                ));
+                            }
+                            settings.io_mode = Some(RakeIoMode::Read(normalized));
                         }
                         "WRITE" => {
-                            settings.io_mode = Some(RakeIoMode::Write(
-                                value.expect("checked above").trim().to_string(),
-                            ));
+                            saw_write = true;
+                            settings.io_mode = Some(RakeIoMode::Write(normalize_rake_path(
+                                &value.expect("checked above"),
+                            )));
                         }
-                        "MAXPOINTS" => match value.expect("checked above").trim().parse::<u32>() {
-                            Ok(v) => settings.max_points = Some(v),
+                        "MAXPOINTS" => match value.expect("checked above").trim().parse::<i32>() {
+                            Ok(v) if v < 0 => out.diagnostics.push(diagnostic(
+                                cap::RAKES,
+                                DiagnosticSeverity::Warning,
+                                Some(file.to_string_lossy().to_string()),
+                                Some(line),
+                                Some(1),
+                                format!("RAKES /MAXPOINTS must be non-negative, got '{}'", v),
+                            )),
+                            Ok(v) if v > 4000 => {
+                                out.diagnostics.push(diagnostic(
+                                    cap::RAKES,
+                                    DiagnosticSeverity::Warning,
+                                    Some(file.to_string_lossy().to_string()),
+                                    Some(line),
+                                    Some(1),
+                                    format!(
+                                        "RAKES /MAXPOINTS={} exceeds legacy max 4000; clamped",
+                                        v
+                                    ),
+                                ));
+                                settings.max_points = Some(4000);
+                            }
+                            Ok(v) => settings.max_points = Some(v as u32),
                             Err(_) => out.diagnostics.push(diagnostic(
                                 cap::RAKES,
                                 DiagnosticSeverity::Warning,
@@ -1608,8 +1832,22 @@ fn parse_rakes(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) 
                             .parse::<u16>()
                         {
                             Ok(v) => {
-                                settings.scalar_function = Some(v);
-                                settings.scalar_function_disabled = false;
+                                if (100..200).contains(&v) {
+                                    settings.scalar_function = Some(v);
+                                    settings.scalar_function_disabled = false;
+                                } else {
+                                    out.diagnostics.push(diagnostic(
+                                        cap::RAKES,
+                                        DiagnosticSeverity::Warning,
+                                        Some(file.to_string_lossy().to_string()),
+                                        Some(line),
+                                        Some(1),
+                                        format!(
+                                            "RAKES /SCALAR_FUNCTION={} is not a scalar FUNCTION (expected 100-199)",
+                                            v
+                                        ),
+                                    ));
+                                }
                             }
                             Err(_) => out.diagnostics.push(diagnostic(
                                 cap::RAKES,
@@ -1635,6 +1873,17 @@ fn parse_rakes(args: &[String], file: &Path, line: u32, out: &mut ParsedScript) 
         } else {
             positional.push(arg.clone());
         }
+    }
+
+    if saw_read && saw_write {
+        out.diagnostics.push(diagnostic(
+            cap::RAKES,
+            DiagnosticSeverity::Warning,
+            Some(file.to_string_lossy().to_string()),
+            Some(line),
+            Some(1),
+            "RAKES /READ and /WRITE were both provided; last one wins",
+        ));
     }
 
     if !positional.is_empty() {
@@ -4353,6 +4602,243 @@ mod tests {
             settings.io_mode,
             Some(RakeIoMode::Read("seeds.dat".to_string()))
         );
+        assert_eq!(settings.attributes_enabled, Some(true));
+        assert!(!settings.scalar_function_disabled);
+    }
+
+    #[test]
+    fn rakes_defaults_match_legacy_command_defaults() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("rakes_defaults.com");
+        fs::write(&file, "RAKES/MAXPOINTS=2000\n").expect("write script");
+
+        let parsed = parse_com_file(&file).expect("parse script");
+        let settings = parsed.actions.iter().find_map(|action| {
+            if let PlotAction::SetRakes(settings) = action {
+                Some(settings)
+            } else {
+                None
+            }
+        });
+
+        let settings = settings.expect("expected SetRakes action");
+        assert_eq!(settings.coordinate_mode, Some(RakeCoordinateMode::Ijk));
+        assert_eq!(settings.attributes_enabled, Some(true));
+        assert_eq!(settings.time_mode, Some(RakeTimeMode::Plus));
+        assert_eq!(settings.max_points, Some(2000));
+        assert_eq!(settings.scalar_function, None);
+        assert!(settings.scalar_function_disabled);
+    }
+
+    #[test]
+    fn rakes_read_write_conflict_warns_and_last_wins() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("rakes_rw.com");
+        fs::write(&file, "RAKES/READ=seed/WRITE=out.par\n").expect("write script");
+
+        let parsed = parse_com_file(&file).expect("parse script");
+        assert!(parsed
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("/READ and /WRITE were both provided")));
+
+        let settings = parsed.actions.iter().find_map(|action| {
+            if let PlotAction::SetRakes(settings) = action {
+                Some(settings)
+            } else {
+                None
+            }
+        });
+
+        let settings = settings.expect("expected SetRakes action");
+        assert_eq!(
+            settings.io_mode,
+            Some(RakeIoMode::Write("out.par".to_string()))
+        );
+    }
+
+    #[test]
+    fn rakes_maxpoints_is_clamped_to_legacy_limit() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("rakes_max.com");
+        fs::write(&file, "RAKES/MAXPOINTS=9000\n").expect("write script");
+
+        let parsed = parse_com_file(&file).expect("parse script");
+        assert!(parsed
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("clamped")));
+
+        let settings = parsed.actions.iter().find_map(|action| {
+            if let PlotAction::SetRakes(settings) = action {
+                Some(settings)
+            } else {
+                None
+            }
+        });
+        let settings = settings.expect("expected SetRakes action");
+        assert_eq!(settings.max_points, Some(4000));
+    }
+
+    #[test]
+    fn rakes_scalar_function_outside_scalar_range_warns() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("rakes_scalar_bad.com");
+        fs::write(&file, "RAKES/SCALAR_FUNCTION=300\n").expect("write script");
+
+        let parsed = parse_com_file(&file).expect("parse script");
+        assert!(parsed
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("expected 100-199")));
+
+        let settings = parsed.actions.iter().find_map(|action| {
+            if let PlotAction::SetRakes(settings) = action {
+                Some(settings)
+            } else {
+                None
+            }
+        });
+        let settings = settings.expect("expected SetRakes action");
+        assert_eq!(settings.scalar_function, None);
+        assert!(settings.scalar_function_disabled);
+    }
+
+    #[test]
+    fn rakes_read_without_extension_gets_par_suffix() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("rakes_read_suffix.com");
+        fs::write(&file, "RAKES/READ=seeds\n").expect("write script");
+
+        let parsed = parse_com_file(&file).expect("parse script");
+        assert!(parsed
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("/READ file") && d.message.contains("does not exist")));
+        let settings = parsed.actions.iter().find_map(|action| {
+            if let PlotAction::SetRakes(settings) = action {
+                Some(settings)
+            } else {
+                None
+            }
+        });
+        let settings = settings.expect("expected SetRakes action");
+        assert_eq!(
+            settings.io_mode,
+            Some(RakeIoMode::Read("seeds.PAR".to_string()))
+        );
+    }
+
+    #[test]
+    fn rakes_read_existing_file_does_not_warn_missing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("rakes_read_existing.com");
+        fs::write(dir.path().join("seedtrace.PAR"), "").expect("write seed file");
+        fs::write(&file, "RAKES/READ=seedtrace\n").expect("write script");
+
+        let parsed = parse_com_file(&file).expect("parse script");
+        assert!(!parsed
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("/READ file") && d.message.contains("does not exist")));
+    }
+
+    #[test]
+    fn interactive_rake_command_captures_rakes_settings() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("interactive_rake.com");
+        fs::write(
+            &file,
+            "RAKE\n3\n64\n\n2 21\n\n2\n\nlines\nyellow\n2\n\nPLOT\n",
+        )
+        .expect("write script");
+
+        let parsed = parse_com_file(&file).expect("parse script");
+        let settings = parsed.actions.iter().find_map(|action| {
+            if let PlotAction::SetRakes(settings) = action {
+                Some(settings)
+            } else {
+                None
+            }
+        });
+        let settings = settings.expect("expected SetRakes action");
+        let payload = settings
+            .interactive_payload
+            .as_ref()
+            .expect("expected interactive payload");
+        assert!(!payload.is_xyz);
+        assert!(!payload.entries.is_empty());
+        assert!(!payload.entries[0].grid_lines.is_empty());
+        assert!(payload
+            .entries
+            .iter()
+            .any(|entry| !entry.axis1_lines.is_empty()));
+        assert!(payload
+            .entries
+            .iter()
+            .any(|entry| !entry.axis2_lines.is_empty()));
+        assert!(payload
+            .entries
+            .iter()
+            .any(|entry| !entry.axis3_lines.is_empty()));
+        assert!(parsed.diagnostics.iter().any(|d| d
+            .message
+            .contains("Interactive RAKE continuation payload is partially supported")));
+    }
+
+    #[test]
+    fn interactive_rake_xyz_wbt_seed_groups_are_captured() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("wbt_rake_style.com");
+        fs::write(
+            &file,
+            "FUNCTION 300\nRAKE/XYZ\n2\n-1\n\n2\n\n-1 .5 .1\n\n\nlines\ngreen\n\n2\n\n\n2\n-1\n\n4\n\n-1 .5 .1\n\n\nlines\ncyan\n\n2\n\n\nPLOT\n",
+        )
+        .expect("write script");
+
+        let parsed = parse_com_file(&file).expect("parse script");
+        let settings = parsed.actions.iter().find_map(|action| {
+            if let PlotAction::SetRakes(settings) = action {
+                Some(settings)
+            } else {
+                None
+            }
+        });
+        let settings = settings.expect("expected SetRakes action");
+        let payload = settings
+            .interactive_payload
+            .as_ref()
+            .expect("expected interactive payload");
+
+        assert!(payload.is_xyz);
+        assert!(payload.entries.len() >= 2);
+
+        let axis3_expected = vec!["-1".to_string(), ".5".to_string(), ".1".to_string()];
+        let has_green_group = payload.entries.iter().any(|entry| {
+            entry.grid_lines.iter().flatten().any(|t| t == "2")
+                && entry.axis1_lines.iter().flatten().any(|t| t == "-1")
+                && entry.axis2_lines.iter().flatten().any(|t| t == "2")
+                && entry.axis3_lines == vec![axis3_expected.clone()]
+                && entry
+                    .style_lines
+                    .iter()
+                    .flatten()
+                    .any(|t| t.eq_ignore_ascii_case("green"))
+        });
+        let has_cyan_group = payload.entries.iter().any(|entry| {
+            entry.grid_lines.iter().flatten().any(|t| t == "2")
+                && entry.axis1_lines.iter().flatten().any(|t| t == "-1")
+                && entry.axis2_lines.iter().flatten().any(|t| t == "4")
+                && entry.axis3_lines == vec![axis3_expected.clone()]
+                && entry
+                    .style_lines
+                    .iter()
+                    .flatten()
+                    .any(|t| t.eq_ignore_ascii_case("cyan"))
+        });
+
+        assert!(has_green_group, "missing first (green) rake seed group");
+        assert!(has_cyan_group, "missing second (cyan) rake seed group");
     }
 
     #[test]

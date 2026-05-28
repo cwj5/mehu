@@ -10,6 +10,7 @@
 /// empty) `Vec<Diagnostic>`.  This makes it easy to test without Tauri
 /// plumbing.
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Capability IDs (kept in sync with capability_catalog.md)
@@ -594,6 +595,29 @@ pub enum RakeIoMode {
     Write(String),
 }
 
+/// One interactive legacy RAKE entry collected from continuation-line prompts.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct RakeInteractiveEntry {
+    /// Raw tokenized lines used for grid hints/prompts.
+    pub grid_lines: Vec<Vec<String>>,
+    /// Raw tokenized lines for first axis (I or X).
+    pub axis1_lines: Vec<Vec<String>>,
+    /// Raw tokenized lines for second axis (J or Y).
+    pub axis2_lines: Vec<Vec<String>>,
+    /// Raw tokenized lines for third axis (K or Z).
+    pub axis3_lines: Vec<Vec<String>>,
+    /// Raw tokenized style payload lines (e.g., LINES/YELLOW/2).
+    pub style_lines: Vec<Vec<String>>,
+}
+
+/// Captured interactive RAKE continuation payload for deterministic replay.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct RakeInteractivePayload {
+    /// false = IJK prompt mode, true = XYZ prompt mode.
+    pub is_xyz: bool,
+    pub entries: Vec<RakeInteractiveEntry>,
+}
+
 /// Shared RAKES state. Geometry/particle rendering is deferred; parser/executor
 /// preserve deterministic command intent in PlotState.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -606,6 +630,8 @@ pub struct RakeSettings {
     pub max_points: Option<u32>,
     pub scalar_function: Option<u16>,
     pub scalar_function_disabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interactive_payload: Option<RakeInteractivePayload>,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -1194,7 +1220,57 @@ pub fn apply_action(mut state: PlotState, action: PlotAction) -> (PlotState, Vec
             ));
         }
 
-        PlotAction::SetRakes(settings) => {
+        PlotAction::SetRakes(mut settings) => {
+            if let Some(mode) = &settings.io_mode {
+                // Legacy FILNAM behavior defaults rake trace files to .PAR.
+                let maybe_with_suffix = |p: &str| {
+                    if Path::new(p).extension().is_none() {
+                        format!("{p}.PAR")
+                    } else {
+                        p.to_string()
+                    }
+                };
+
+                match mode {
+                    RakeIoMode::Read(path) => {
+                        settings.io_mode = Some(RakeIoMode::Read(maybe_with_suffix(path)));
+                        if settings.add {
+                            settings.add = false;
+                            diags.push(Diagnostic::warning(
+                                cap::RAKES,
+                                "RAKES /ADD is ignored when /READ is active",
+                            ));
+                        }
+                    }
+                    RakeIoMode::Write(path) => {
+                        settings.io_mode = Some(RakeIoMode::Write(maybe_with_suffix(path)));
+                    }
+                }
+            }
+
+            if let Some(v) = settings.max_points {
+                if v > 4000 {
+                    settings.max_points = Some(4000);
+                    diags.push(Diagnostic::warning(
+                        cap::RAKES,
+                        format!("RAKES /MAXPOINTS={v} exceeds legacy max 4000; clamped"),
+                    ));
+                }
+            }
+
+            if let Some(func) = settings.scalar_function {
+                if !(100..200).contains(&func) {
+                    settings.scalar_function = None;
+                    settings.scalar_function_disabled = true;
+                    diags.push(Diagnostic::warning(
+                        cap::RAKES,
+                        format!(
+                            "RAKES /SCALAR_FUNCTION={func} is not a scalar FUNCTION (expected 100-199)"
+                        ),
+                    ));
+                }
+            }
+
             state.rakes = Some(settings);
             diags.push(Diagnostic::info(
                 cap::RAKES,
@@ -1816,11 +1892,52 @@ mod tests {
             max_points: Some(400),
             scalar_function: Some(190),
             scalar_function_disabled: false,
+            interactive_payload: None,
         };
 
         let (new_state, diags) = apply_action(state, PlotAction::SetRakes(rakes.clone()));
         assert_eq!(new_state.rakes, Some(rakes));
         assert!(diags.iter().any(|d| d.capability == cap::RAKES));
+    }
+
+    #[test]
+    fn set_rakes_normalizes_read_mode_and_disables_add() {
+        let state = default_state();
+        let rakes = RakeSettings {
+            add: true,
+            io_mode: Some(RakeIoMode::Read("seedfile".to_string())),
+            ..RakeSettings::default()
+        };
+
+        let (new_state, diags) = apply_action(state, PlotAction::SetRakes(rakes));
+        let stored = new_state.rakes.expect("rakes state");
+        assert!(!stored.add);
+        assert_eq!(
+            stored.io_mode,
+            Some(RakeIoMode::Read("seedfile.PAR".to_string()))
+        );
+        assert!(diags
+            .iter()
+            .any(|d| d.message.contains("/ADD is ignored when /READ is active")));
+    }
+
+    #[test]
+    fn set_rakes_clamps_max_points_and_validates_scalar_function() {
+        let state = default_state();
+        let rakes = RakeSettings {
+            max_points: Some(9000),
+            scalar_function: Some(300),
+            scalar_function_disabled: false,
+            ..RakeSettings::default()
+        };
+
+        let (new_state, diags) = apply_action(state, PlotAction::SetRakes(rakes));
+        let stored = new_state.rakes.expect("rakes state");
+        assert_eq!(stored.max_points, Some(4000));
+        assert_eq!(stored.scalar_function, None);
+        assert!(stored.scalar_function_disabled);
+        assert!(diags.iter().any(|d| d.message.contains("clamped")));
+        assert!(diags.iter().any(|d| d.message.contains("expected 100-199")));
     }
 
     // ── Plot family ───────────────────────────────────────────────────────────

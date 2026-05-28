@@ -423,7 +423,11 @@ fn render_intent_image_for_cmd(
     let mut img = RgbaImage::new(width, height);
     let mut rendered = false;
 
-    if intent.state.scalar_field == ScalarField::None && !intent.state.walls.is_empty() {
+    if intent.state.scalar_field == ScalarField::None
+        && !intent.state.walls.is_empty()
+        && intent.state.rakes.is_none()
+        && intent.state.particle_function.is_none()
+    {
         if let Some(base_dir) = cmd_dir {
             if let Some(grids) = try_load_multigrid_scene(base_dir, &intent.state) {
                 let mut render_warnings: Vec<String> = Vec::new();
@@ -431,6 +435,7 @@ fn render_intent_image_for_cmd(
                     &mut img,
                     &grids,
                     &intent.state,
+                    true,
                     &mut render_warnings,
                 );
                 for w in render_warnings {
@@ -478,7 +483,38 @@ fn render_intent_image_for_cmd(
         if let Some(ref snapshot) = intent.snapshot {
             // Real data available — use the projection-based renderer.
             let mut render_warnings: Vec<String> = Vec::new();
-            renderer::render_snapshot(&mut img, snapshot, &intent.state, &mut render_warnings);
+            if !intent.state.walls.is_empty() {
+                if let Some(base_dir) = cmd_dir {
+                    if let Some(grids) = try_load_multigrid_scene(base_dir, &intent.state) {
+                        let multigrid_flow =
+                            try_load_multigrid_flow_samples(base_dir, &intent.state, &grids);
+                        renderer::render_snapshot_with_multigrid_walls(
+                            &mut img,
+                            snapshot,
+                            &grids,
+                            multigrid_flow.as_deref(),
+                            &intent.state,
+                            &mut render_warnings,
+                        );
+                    } else {
+                        renderer::render_snapshot(
+                            &mut img,
+                            snapshot,
+                            &intent.state,
+                            &mut render_warnings,
+                        );
+                    }
+                } else {
+                    renderer::render_snapshot(
+                        &mut img,
+                        snapshot,
+                        &intent.state,
+                        &mut render_warnings,
+                    );
+                }
+            } else {
+                renderer::render_snapshot(&mut img, snapshot, &intent.state, &mut render_warnings);
+            }
             for w in render_warnings {
                 eprintln!("[Warning] renderer: {w}");
             }
@@ -624,6 +660,28 @@ fn render_placeholder(img: &mut RgbaImage, intent: &RenderIntent) {
 /// sample velocity from the grid that actually contains flow data, not the
 /// background chimera block.  Falls back to 0 (first block) for all other frames.
 fn snapshot_grid_index(state: &PlotState) -> usize {
+    if let Some(grid_index) = state
+        .rakes
+        .as_ref()
+        .and_then(|rakes| rakes.interactive_payload.as_ref())
+        .and_then(|payload| {
+            payload.entries.iter().find_map(|entry| {
+                entry
+                    .grid_lines
+                    .iter()
+                    .flat_map(|line| line.iter())
+                    .find_map(|token| {
+                        token
+                            .parse::<usize>()
+                            .ok()
+                            .and_then(|grid| grid.checked_sub(1))
+                    })
+            })
+        })
+    {
+        return grid_index;
+    }
+
     if state.rakes.is_some() || state.vectors.is_some() {
         state
             .subsets
@@ -670,9 +728,10 @@ fn try_load_snapshot(cmd_dir: &Path, state: &PlotState) -> Option<SolutionSnapsh
         return None;
     }
 
-    let (ni, nj, nk, x, y, z) = p3d_reader::read_grid_n(&grid_path, snapshot_grid_index(state))
-        .map_err(|e| eprintln!("[Warning] Could not read grid {}: {e}", grid_path.display()))
-        .ok()?;
+    let (ni, nj, nk, x, y, z, iblank) =
+        p3d_reader::read_grid_n_with_iblank(&grid_path, snapshot_grid_index(state))
+            .map_err(|e| eprintln!("[Warning] Could not read grid {}: {e}", grid_path.display()))
+            .ok()?;
 
     let total = (ni as usize) * (nj as usize) * (nk as usize);
     let q = p3d_reader::read_q_n(&sol_path, snapshot_grid_index(state), total)
@@ -703,6 +762,7 @@ fn try_load_snapshot(cmd_dir: &Path, state: &PlotState) -> Option<SolutionSnapsh
         x,
         y,
         z,
+        iblank,
         scalar,
         u,
         v,
@@ -734,6 +794,66 @@ fn try_load_multigrid_scene(cmd_dir: &Path, state: &PlotState) -> Option<Vec<plo
                 )
             })
             .ok(),
+    }
+}
+
+fn try_load_multigrid_flow_samples(
+    cmd_dir: &Path,
+    state: &PlotState,
+    grids: &[plot3d::Plot3DGrid],
+) -> Option<Vec<renderer::FlowSamplePoint>> {
+    let sol_path_raw = state.dataset.solution_id.as_deref()?;
+    let sol_path = resolve_data_path(cmd_dir, sol_path_raw, &["fmt"]);
+    if !sol_path.exists() {
+        eprintln!(
+            "[Warning] Could not resolve solution dataset path '{}' relative to {}",
+            sol_path_raw,
+            cmd_dir.display()
+        );
+        return None;
+    }
+
+    let q_per_grid = p3d_reader::read_all_q_for_grids(&sol_path, grids)
+        .map_err(|e| {
+            eprintln!(
+                "[Warning] Could not read multigrid flow samples from {}: {e}",
+                sol_path.display()
+            )
+        })
+        .ok()?;
+
+    let mut samples: Vec<renderer::FlowSamplePoint> = Vec::new();
+    for (grid_idx, (grid, q)) in grids.iter().zip(q_per_grid.iter()).enumerate() {
+        let n_grid = grid.x_coords.len();
+        let n_sol = q.rho.len();
+        if n_grid == 0 || n_sol == 0 {
+            continue;
+        }
+        let n = n_grid.min(n_sol);
+        for idx in 0..n {
+            let rho = q.rho[idx];
+            let (u, v, w) = if rho.abs() <= 1e-12 {
+                (0.0, 0.0, 0.0)
+            } else {
+                (q.rhou[idx] / rho, q.rhov[idx] / rho, q.rhow[idx] / rho)
+            };
+            samples.push(renderer::FlowSamplePoint {
+                grid_id: grid_idx + 1,
+                x: grid.x_coords[idx],
+                y: grid.y_coords[idx],
+                z: grid.z_coords[idx],
+                u,
+                v,
+                w,
+                iblank: grid.iblank.as_ref().and_then(|vals| vals.get(idx)).copied(),
+            });
+        }
+    }
+
+    if samples.is_empty() {
+        None
+    } else {
+        Some(samples)
     }
 }
 
@@ -1113,6 +1233,7 @@ mod tests {
             x,
             y,
             z,
+            iblank: None,
             scalar,
             u: vec![1.0; n],
             v: vec![0.0; n],
